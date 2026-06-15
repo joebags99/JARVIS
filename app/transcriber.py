@@ -65,9 +65,17 @@ class Transcriber:
         try:
             if on_status:
                 on_status("Transcribing…")
-            segments, _info = self._model.transcribe(str(wav_path), beam_size=5)
+            # vad_filter=False: don't let Whisper's silence detector discard real audio.
+            segments, info = self._model.transcribe(
+                str(wav_path), beam_size=5, vad_filter=False
+            )
             text = " ".join(seg.text.strip() for seg in segments).strip()
-            log.info("transcription: %d chars", len(text))
+            log.info(
+                "transcription: %d chars (lang=%s prob=%.2f)",
+                len(text), info.language, info.language_probability,
+            )
+            if not text:
+                log.warning("Whisper returned empty — audio may be silence or too short")
             return text
         except Exception as exc:  # noqa: BLE001
             log.error("transcription failed: %s", exc)

@@ -156,16 +156,33 @@ class Recorder:
             self._stream = None
 
         if not self._frames:
-            log.info("no audio captured")
+            log.warning("no audio frames captured — button events may not be firing")
             return None
 
         try:
             from scipy.io import wavfile
 
             audio = self._np.concatenate(self._frames, axis=0)
+            duration_s = len(audio) / SAMPLE_RATE
+            rms = float(self._np.sqrt(self._np.mean(audio.astype("float32") ** 2)))
+            log.info(
+                "recording saved: %d samples (%.2fs), RMS=%.1f",
+                len(audio), duration_s, rms,
+            )
+            if rms < 10:
+                log.warning(
+                    "RMS=%.1f — audio appears to be silence; "
+                    "check AUDIO_INPUT_DEVICE or microphone permissions",
+                    rms,
+                )
+            if duration_s < 0.3:
+                log.warning(
+                    "recording only %.2fs — hold the button longer while speaking",
+                    duration_s,
+                )
+
             tmp = Path(tempfile.gettempdir()) / "jarvis_recording.wav"
             wavfile.write(str(tmp), SAMPLE_RATE, audio)
-            log.info("recording saved: %s (%d samples)", tmp.name, len(audio))
             return tmp
         except Exception as exc:  # noqa: BLE001
             log.error("could not save recording: %s", exc)

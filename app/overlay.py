@@ -295,7 +295,8 @@ class Overlay:
 
         def worker() -> None:
             if wav_path is None:
-                self.root.after(0, lambda: self.set_status(STATUS_IDLE))
+                self.root.after(0, lambda: self.set_status("No audio captured — check mic"))
+                self.root.after(0, lambda: self._set_state("idle"))
                 return
 
             def on_status(msg: str) -> None:
@@ -305,7 +306,7 @@ class Overlay:
             if text:
                 self.root.after(0, lambda: self._submit(text))
             else:
-                self.root.after(0, lambda: self.set_status("No speech detected"))
+                self.root.after(0, lambda: self.set_status("No speech detected — check logs"))
                 self.root.after(0, lambda: self._set_state("idle"))
 
         threading.Thread(target=worker, daemon=True).start()
