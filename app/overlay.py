@@ -177,12 +177,9 @@ class Overlay:
             fg_color=p.surface,
             hover_color=p.accent_dim,
             text_color=p.accent,
-            command=None,
+            command=self._toggle_recording,
         )
         self.record_btn.pack(side="left", padx=(8, 0))
-        # Push-to-talk: press to start, release to stop.
-        self.record_btn.bind("<ButtonPress-1>", lambda _e: self._start_recording())
-        self.record_btn.bind("<ButtonRelease-1>", lambda _e: self._stop_recording())
 
         self.send_btn = ctk.CTkButton(
             input_row,
@@ -275,6 +272,12 @@ class Overlay:
         threading.Thread(target=worker, daemon=True).start()
 
     # ── Voice ─────────────────────────────────────────────────────────────────
+    def _toggle_recording(self) -> None:
+        if self._recording:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
     def _start_recording(self) -> None:
         if not self.recorder.available or self._recording:
             return
@@ -282,13 +285,23 @@ class Overlay:
             self._recording = True
             self.set_status(STATUS_LISTENING)
             self._set_state("listening")
-            self.record_btn.configure(fg_color=self.palette.accent)
+            self.record_btn.configure(
+                text="⏹",
+                fg_color=self.palette.error,
+                hover_color=self.palette.error,
+                text_color=self.palette.text_primary,
+            )
 
     def _stop_recording(self) -> None:
         if not self._recording:
             return
         self._recording = False
-        self.record_btn.configure(fg_color=self.palette.surface)
+        self.record_btn.configure(
+            text="🎤",
+            fg_color=self.palette.surface,
+            hover_color=self.palette.accent_dim,
+            text_color=self.palette.accent,
+        )
         wav_path = self.recorder.stop()
         self.set_status(STATUS_TRANSCRIBING)
         self._set_state("thinking")
