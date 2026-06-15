@@ -109,10 +109,8 @@ class Config:
     )
 
     # Monarch Money (optional — leave blank to disable)
-    monarch_email: str = field(default_factory=lambda: _get("MONARCH_EMAIL"))
-    monarch_password: str = field(default_factory=lambda: _get("MONARCH_PASSWORD"))
-    # TOTP secret key (not the 6-digit code) — only needed if MFA is enabled.
-    monarch_mfa_secret: str = field(default_factory=lambda: _get("MONARCH_MFA_SECRET"))
+    # Get the token from Monarch → Settings → Integrations → API Key.
+    monarch_api_token: str = field(default_factory=lambda: _get("MONARCH_API_TOKEN"))
 
     # Outlook / Microsoft Graph
     outlook_client_id: str = field(default_factory=lambda: _get("OUTLOOK_CLIENT_ID"))
@@ -135,6 +133,10 @@ class Config:
         return bool(self.google_credentials_path) and (
             ROOT_DIR / self.google_credentials_path
         ).exists()
+
+    @property
+    def monarch_enabled(self) -> bool:
+        return bool(self.monarch_api_token)
 
     @property
     def outlook_enabled(self) -> bool:

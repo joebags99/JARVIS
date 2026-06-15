@@ -23,6 +23,9 @@ log = get_logger("claude")
 
 MAX_TOKENS = 1024
 
+_MONARCH_MCP_URL = "https://api.monarch.com/mcp"
+_MCP_BETA = "mcp-client-2025-04-04"
+
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
 CALENDAR_TOOLS = [
@@ -141,20 +144,6 @@ CALENDAR_TOOLS = [
         },
     },
     {
-        "name": "get_financial_summary",
-        "description": (
-            "Fetch a live financial snapshot from Monarch Money: month-to-date income, "
-            "expenses, savings rate, top spending categories, and account balances with "
-            "net worth. Use this whenever the user asks about money, spending, budget, "
-            "finances, accounts, net worth, or how they are doing financially."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
-    },
-    {
         "name": "load_knowledge_pool",
         "description": (
             "Load content from a named Google Docs knowledge pool to help answer the "
@@ -180,10 +169,7 @@ CALENDAR_TOOLS = [
 
 
 def _execute_tool(name: str, input_data: dict) -> str:
-    """Dispatch a tool call and return a result string."""
-    if name == "get_financial_summary":
-        from integrations.monarch_money import get_financial_summary
-        return get_financial_summary()
+    """Dispatch a local tool call and return a result string."""
     if name == "create_calendar_event":
         from integrations.google_calendar import create_event
         return create_event(
@@ -360,13 +346,26 @@ class ClaudeClient:
         full_text = ""
         try:
             # ── First pass: stream with tools enabled ─────────────────────────
-            with self._client.messages.stream(
+            first_kwargs: dict = dict(
                 model=CONFIG.anthropic_model,
                 max_tokens=MAX_TOKENS,
                 system=system_prompt,
                 messages=self.history,
                 tools=CALENDAR_TOOLS,
-            ) as stream:
+            )
+            if CONFIG.monarch_enabled:
+                first_kwargs["mcp_servers"] = [{
+                    "type": "url",
+                    "name": "monarch",
+                    "url": _MONARCH_MCP_URL,
+                    "authorization_token": CONFIG.monarch_api_token,
+                }]
+                first_kwargs["betas"] = [_MCP_BETA]
+                _stream_fn = self._client.beta.messages.stream
+            else:
+                _stream_fn = self._client.messages.stream
+
+            with _stream_fn(**first_kwargs) as stream:
                 for text in stream.text_stream:
                     full_text += text
                     if on_delta:
@@ -401,7 +400,7 @@ class ClaudeClient:
                     max_tokens=MAX_TOKENS,
                     system=system_prompt,
                     messages=self.history,
-                ) as stream:
+                ) as stream:  # no tools/MCP needed for follow-up text
                     for text in stream.text_stream:
                         followup += text
                         full_text += text
