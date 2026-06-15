@@ -109,8 +109,8 @@ class Config:
     )
 
     # Monarch Money (optional — leave blank to disable)
-    # Get the token from Monarch → Settings → Integrations → API Key.
-    monarch_api_token: str = field(default_factory=lambda: _get("MONARCH_API_TOKEN"))
+    monarch_email: str = field(default_factory=lambda: _get("MONARCH_EMAIL"))
+    monarch_password: str = field(default_factory=lambda: _get("MONARCH_PASSWORD"))
 
     # Outlook / Microsoft Graph
     outlook_client_id: str = field(default_factory=lambda: _get("OUTLOOK_CLIENT_ID"))
@@ -136,7 +136,7 @@ class Config:
 
     @property
     def monarch_enabled(self) -> bool:
-        return bool(self.monarch_api_token)
+        return bool(self.monarch_email and self.monarch_password)
 
     @property
     def outlook_enabled(self) -> bool:

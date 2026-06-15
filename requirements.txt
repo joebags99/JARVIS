@@ -28,3 +28,6 @@ requests>=2.31.0
 # ── Global hotkey (optional) ─────────────────────────────────
 keyboard>=0.13.5
 
+# ── Monarch Money (optional) ──────────────────────────────────
+monarchmoney>=0.8.0
+
