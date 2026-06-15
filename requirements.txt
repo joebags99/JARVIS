@@ -1,0 +1,29 @@
+# ── Core ─────────────────────────────────────────────────────
+anthropic>=0.40.0
+python-dotenv>=1.0.0
+
+# ── UI / tray ────────────────────────────────────────────────
+customtkinter>=5.2.2
+pystray>=0.19.5
+Pillow>=10.2.0
+
+# ── Voice input (optional — see README if install fails) ─────
+sounddevice>=0.4.6
+scipy>=1.11.0
+numpy>=1.24.0
+faster-whisper>=1.0.0
+
+# ── Notes ingestion ──────────────────────────────────────────
+watchdog>=4.0.0
+
+# ── Google Calendar (optional) ───────────────────────────────
+google-api-python-client>=2.0.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+
+# ── Outlook / Microsoft Graph (optional) ─────────────────────
+msal>=1.28.0
+requests>=2.31.0
+
+# ── Global hotkey (optional) ─────────────────────────────────
+keyboard>=0.13.5

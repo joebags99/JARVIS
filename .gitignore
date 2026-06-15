@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────
+# JARVIS — keep ALL personal data and secrets OFF GitHub
+# ─────────────────────────────────────────────────────────────
+
+# Secrets & API keys
+.env
+*.env
+!.env.example
+
+# OAuth / auth tokens & credentials (NEVER commit)
+token.json
+*token*.json
+credentials.json
+*credentials*.json
+.msal_cache.bin
+*.cache.bin
+
+# Personal context (your jobs, profile, D&D notes, etc.)
+# Everything in /context except the committed example templates.
+context/*
+!context/*.example.md
+!context/.gitkeep
+
+# Meeting notes — private by definition
+notes/*
+!notes/.gitkeep
+
+# Logs
+logs/*
+!logs/.gitkeep
+
+# Generated runtime assets
+assets/tray_icon.png
+
+# Whisper / model caches
+*.bin
+models/
+.cache/
+
+# ─────────────────────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Recordings / temp audio
+*.wav
+temp/
+tmp/
