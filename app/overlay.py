@@ -514,8 +514,10 @@ class Overlay:
         self.transcript.configure(state="normal")
         self.transcript.insert("end", "\nJARVIS\n", "label_assistant")
         # Mark where streamed content begins so we can replace it on finish.
-        self.transcript.mark_set("_stream_start", "end")
-        self.transcript.mark_gravity("_stream_start", "left")
+        # Must go through ._textbox — CTkTextbox doesn't wrap mark_set/mark_gravity.
+        tb = self.transcript._textbox
+        tb.mark_set("_stream_start", "end")
+        tb.mark_gravity("_stream_start", "left")
         self.transcript.configure(state="disabled")
         self.transcript.see("end")
 
@@ -529,10 +531,11 @@ class Overlay:
     def _finish_assistant_message(self, full_reply: str) -> None:
         """Replace raw streamed text with markdown-formatted version."""
         self.transcript.configure(state="normal")
+        # Delete via ._textbox so the mark set there is recognised.
         try:
-            self.transcript.delete("_stream_start", "end")
-        except Exception:  # noqa: BLE001
-            pass
+            self.transcript._textbox.delete("_stream_start", "end")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not delete streamed text for re-render: %s", exc)
         self._insert_markdown(full_reply, "assistant")
         self.transcript.insert("end", "\n")
         self.transcript.configure(state="disabled")
