@@ -67,9 +67,14 @@ def _load_credentials(account_name: str):
             log.warning("[%s] could not read token file: %s", account_name, exc)
 
     if creds and creds.valid:
-        # If the token predates the write scope, force re-authorization.
-        if creds.scopes and not set(SCOPES).issubset(set(creds.scopes)):
+        # Treat missing scope info (None) as insufficient — some token files
+        # don't store scopes. Also catches tokens created with calendar.readonly.
+        has_sufficient_scopes = (
+            bool(creds.scopes) and set(SCOPES).issubset(set(creds.scopes))
+        )
+        if not has_sufficient_scopes:
             log.info("[%s] token missing required scopes; re-authorizing", account_name)
+            creds = None  # fall through to OAuth flow
         else:
             log.debug("[%s] Google credentials valid", account_name)
             return creds
