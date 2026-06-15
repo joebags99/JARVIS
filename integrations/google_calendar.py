@@ -1,14 +1,18 @@
 """Google Calendar integration.
 
-First run opens a browser for OAuth2 consent; the resulting token is cached in
-``token.json`` (gitignored) so subsequent runs are silent. If credentials are
-missing or auth fails, every public function returns empty / no-ops and logs a
-warning — JARVIS keeps working without calendar context.
+Supports multiple Google accounts, each with its own OAuth token cached under
+``tokens/google/{account}.json`` (gitignored). Accounts are configured via the
+``GOOGLE_ACCOUNTS`` env var (comma-separated, e.g. ``personal,work``).
+
+First run for each account opens a browser for OAuth2 consent. If credentials
+are missing or auth fails for an account, that account is skipped and JARVIS
+keeps working with the remaining accounts.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,9 +21,8 @@ from app.logging_setup import get_logger
 
 log = get_logger("google_cal")
 
-# Read-only access to calendars.
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
-TOKEN_PATH = ROOT_DIR / "token.json"
+TOKEN_DIR = ROOT_DIR / "tokens" / "google"
 
 
 @dataclass
@@ -31,7 +34,7 @@ class CalEvent:
     end: dt.datetime | None
     location: str | None
     all_day: bool
-    source: str  # "Google" | "Outlook"
+    source: str  # e.g. "Google/personal", "Google/work", "Outlook"
 
     def format_line(self) -> str:
         when = self.start.strftime("%a %b %d") if self.all_day else self.start.strftime(
@@ -41,8 +44,8 @@ class CalEvent:
         return f"- {when} — {self.summary}{loc} [{self.source}]"
 
 
-def _load_credentials():
-    """Load cached creds, refreshing or running the OAuth flow as needed."""
+def _load_credentials(account_name: str):
+    """Load cached creds for *account_name*, refreshing or re-running OAuth as needed."""
     try:
         from google.oauth2.credentials import Credentials
         from google.auth.transport.requests import Request
@@ -51,42 +54,58 @@ def _load_credentials():
         log.warning("google api libraries not installed; skipping Google Calendar")
         return None
 
+    TOKEN_DIR.mkdir(parents=True, exist_ok=True)
+    token_path = TOKEN_DIR / f"{account_name}.json"
+
     creds = None
-    if TOKEN_PATH.exists():
+    if token_path.exists():
         try:
-            creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
         except Exception as exc:  # noqa: BLE001
-            log.warning("could not read token.json: %s", exc)
+            log.warning("[%s] could not read token file: %s", account_name, exc)
 
     if creds and creds.valid:
+        log.debug("[%s] Google credentials valid", account_name)
         return creds
 
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
+            token_path.write_text(creds.to_json(), encoding="utf-8")
+            log.info("[%s] Google credentials refreshed", account_name)
             return creds
         except Exception as exc:  # noqa: BLE001
-            log.warning("token refresh failed, re-authenticating: %s", exc)
+            log.warning("[%s] token refresh failed, re-authenticating: %s", account_name, exc)
 
-    cred_file = Path(ROOT_DIR / CONFIG.google_credentials_path)
+    cred_file = ROOT_DIR / CONFIG.google_credentials_path
     if not cred_file.exists():
-        log.info("Google credentials file not found (%s); skipping", cred_file.name)
+        log.info(
+            "[%s] Google credentials file not found (%s); skipping",
+            account_name,
+            cred_file.name,
+        )
         return None
 
     try:
         flow = InstalledAppFlow.from_client_secrets_file(str(cred_file), SCOPES)
-        creds = flow.run_local_server(port=0)
-        TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
-        log.info("Google Calendar authorized; token cached to token.json")
+        # prompt="consent" forces account-chooser so multi-account flows work cleanly.
+        # Fall back silently if this version of google-auth-oauthlib doesn't support it;
+        # in that case use an incognito window or the account-switcher in the browser.
+        sig = inspect.signature(flow.run_local_server)
+        if "prompt" in sig.parameters:
+            creds = flow.run_local_server(port=0, prompt="consent")
+        else:
+            creds = flow.run_local_server(port=0)
+        token_path.write_text(creds.to_json(), encoding="utf-8")
+        log.info("[%s] Google Calendar authorized; token cached to %s", account_name, token_path)
         return creds
     except Exception as exc:  # noqa: BLE001
-        log.error("Google OAuth flow failed: %s", exc)
+        log.error("[%s] Google OAuth flow failed: %s", account_name, exc)
         return None
 
 
 def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
-    """Return upcoming events for the next ``days`` days. Never raises."""
+    """Return upcoming events across all configured Google accounts. Never raises."""
     if not CONFIG.google_enabled:
         return []
 
@@ -95,37 +114,53 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
     except ImportError:
         return []
 
-    creds = _load_credentials()
-    if creds is None:
-        return []
+    accounts: list[str] = getattr(CONFIG, "google_accounts", None) or ["default"]
 
-    try:
-        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-        now = dt.datetime.now(dt.timezone.utc)
-        end = now + dt.timedelta(days=days)
-        result = (
-            service.events()
-            .list(
-                calendarId="primary",
-                timeMin=now.isoformat(),
-                timeMax=end.isoformat(),
-                singleEvents=True,
-                orderBy="startTime",
-                maxResults=max_events,
+    now = dt.datetime.now(dt.timezone.utc)
+    end = now + dt.timedelta(days=days)
+    all_events: list[CalEvent] = []
+
+    for account_name in accounts:
+        creds = _load_credentials(account_name)
+        if creds is None:
+            log.warning("[%s] skipping — no valid credentials", account_name)
+            continue
+
+        try:
+            service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+            result = (
+                service.events()
+                .list(
+                    calendarId="primary",
+                    timeMin=now.isoformat(),
+                    timeMax=end.isoformat(),
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=max_events,
+                )
+                .execute()
             )
-            .execute()
-        )
-        events: list[CalEvent] = []
-        for item in result.get("items", []):
-            events.append(_parse(item))
-        log.info("fetched %d Google Calendar events", len(events))
-        return [e for e in events if e is not None]
-    except Exception as exc:  # noqa: BLE001
-        log.error("failed to fetch Google Calendar events: %s", exc)
-        return []
+            source = f"Google/{account_name}"
+            fetched = [
+                parsed
+                for item in result.get("items", [])
+                if (parsed := _parse(item, source)) is not None
+            ]
+            log.info("[%s] fetched %d Google Calendar events", account_name, len(fetched))
+            all_events.extend(fetched)
+        except Exception as exc:  # noqa: BLE001
+            log.error("[%s] failed to fetch Google Calendar events: %s", account_name, exc)
+
+    def _sort_key(e: CalEvent) -> dt.datetime:
+        if e.start.tzinfo is None:
+            return e.start.replace(tzinfo=dt.timezone.utc)
+        return e.start
+
+    all_events.sort(key=_sort_key)
+    return all_events[:max_events]
 
 
-def _parse(item: dict) -> CalEvent | None:
+def _parse(item: dict, source: str = "Google") -> CalEvent | None:
     try:
         start_raw = item["start"]
         end_raw = item.get("end", {})
@@ -150,7 +185,7 @@ def _parse(item: dict) -> CalEvent | None:
             end=end,
             location=item.get("location"),
             all_day=all_day,
-            source="Google",
+            source=source,
         )
     except Exception as exc:  # noqa: BLE001
         log.debug("could not parse event: %s", exc)

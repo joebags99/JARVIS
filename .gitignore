@@ -14,6 +14,7 @@ credentials.json
 *credentials*.json
 .msal_cache.bin
 *.cache.bin
+tokens/
 
 # Personal context (your jobs, profile, D&D notes, etc.)
 # Everything in /context except the committed example templates.
