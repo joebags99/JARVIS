@@ -19,6 +19,18 @@ log = get_logger("monarch")
 
 SESSION_PATH = ROOT_DIR / "tokens" / "monarch_session.pickle"
 
+# The monarchmoney PyPI package (v0.1.15, Jan 2025) still points to the old
+# domain. Monarch migrated to api.monarch.com in early 2026; the fix exists in
+# PR #192 but the maintainer is unresponsive. Patch it here until a release lands.
+def _patch_domain() -> None:
+    try:
+        import monarchmoney.monarchmoney as _mm
+        _mm.MonarchMoneyEndpoints.BASE_URL = "https://api.monarch.com"
+    except Exception:
+        pass
+
+_patch_domain()
+
 
 async def _get_client():
     """Return an authenticated MonarchMoney client, reusing cached session if valid."""
