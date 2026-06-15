@@ -4,6 +4,11 @@ Records mono 16 kHz audio (what Whisper expects) into memory while the record
 button is held, then writes a temporary WAV on stop. If ``sounddevice`` isn't
 installed or no input device exists, ``available`` is False and the overlay
 disables the voice button.
+
+Set ``AUDIO_INPUT_DEVICE`` in .env to override the system default:
+  AUDIO_INPUT_DEVICE=1               # device index
+  AUDIO_INPUT_DEVICE=Blue Yeti       # partial name match (case-insensitive)
+Leave it empty to use whatever the OS default input device is.
 """
 
 from __future__ import annotations
@@ -11,12 +16,50 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+from .config import CONFIG
 from .logging_setup import get_logger
 
 log = get_logger("recorder")
 
 SAMPLE_RATE = 16_000
 CHANNELS = 1
+
+
+def _resolve_device(sd, preference: str) -> int | str | None:
+    """Return a sounddevice-compatible device specifier.
+
+    Returns the preference as-is if it looks like a device index (int string),
+    the matching device index if it's a partial name, or None (system default)
+    if the preference is empty or unresolvable.
+    """
+    if not preference:
+        return None
+
+    # Integer index — pass through directly.
+    try:
+        return int(preference)
+    except ValueError:
+        pass
+
+    # Partial name — search case-insensitively.
+    pref_lower = preference.lower()
+    try:
+        devices = sd.query_devices()
+        for idx, d in enumerate(devices):
+            if (
+                d.get("max_input_channels", 0) > 0
+                and pref_lower in d.get("name", "").lower()
+            ):
+                log.info("matched audio device %d: %s", idx, d["name"])
+                return idx
+        log.warning(
+            "AUDIO_INPUT_DEVICE=%r not found; falling back to system default",
+            preference,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not search audio devices: %s", exc)
+
+    return None
 
 
 class Recorder:
@@ -26,6 +69,7 @@ class Recorder:
         self._stream = None
         self._frames: list = []
         self._available = False
+        self._device: int | str | None = None
         self._probe()
 
     def _probe(self) -> None:
@@ -38,14 +82,30 @@ class Recorder:
 
         self._sd = sd
         self._np = np
+
         try:
             devices = sd.query_devices()
-            has_input = any(d.get("max_input_channels", 0) > 0 for d in devices)
-            if not has_input:
+            input_devices = [
+                (i, d) for i, d in enumerate(devices)
+                if d.get("max_input_channels", 0) > 0
+            ]
+            if not input_devices:
                 log.warning("no input audio device found; voice disabled")
                 return
+
+            log.info(
+                "available input devices: %s",
+                ", ".join(f"{i}:{d['name']}" for i, d in input_devices),
+            )
+
+            self._device = _resolve_device(sd, CONFIG.audio_input_device)
+            if self._device is not None:
+                log.info("using configured audio device: %r", self._device)
+            else:
+                default = sd.query_devices(kind="input")
+                log.info("using system default input: %s", default.get("name", "?"))
+
             self._available = True
-            log.info("microphone available")
         except Exception as exc:  # noqa: BLE001
             log.warning("could not query audio devices (%s); voice disabled", exc)
 
@@ -65,14 +125,18 @@ class Recorder:
             self._frames.append(indata.copy())
 
         try:
-            self._stream = self._sd.InputStream(
+            kwargs: dict = dict(
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
                 callback=_callback,
                 dtype="int16",
             )
+            if self._device is not None:
+                kwargs["device"] = self._device
+
+            self._stream = self._sd.InputStream(**kwargs)
             self._stream.start()
-            log.info("recording started")
+            log.info("recording started (device=%r)", self._device)
             return True
         except Exception as exc:  # noqa: BLE001
             log.error("could not start recording: %s", exc)

@@ -87,6 +87,10 @@ class Config:
 
     # Voice
     whisper_model: str = field(default_factory=lambda: _get("WHISPER_MODEL", "small"))
+    # Device index (int) or partial name string. Empty = system default.
+    audio_input_device: str = field(
+        default_factory=lambda: _get("AUDIO_INPUT_DEVICE", "")
+    )
 
     # Google Calendar
     google_credentials_path: str = field(
