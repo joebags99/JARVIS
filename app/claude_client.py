@@ -25,7 +25,40 @@ MAX_TOKENS = 1024
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
-CALENDAR_TOOLS = [
+TOOLS = [
+    {
+        "name": "get_calendar_events",
+        "description": (
+            "Fetch the user's upcoming calendar events. Call this whenever the user "
+            "asks about their schedule, appointments, meetings, what they have coming "
+            "up, or what they're doing on a specific day. Also call it before "
+            "creating or editing an event so you know the correct account_name and "
+            "calendar_name to use."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "How many days ahead to look. Default 7.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_recent_notes",
+        "description": (
+            "Load recent meeting notes from the user's notes folder. Call this when "
+            "the user asks about recent meetings, wants to reference notes, asks "
+            "what was discussed or decided, or asks about action items."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
     {
         "name": "update_calendar_event",
         "description": (
@@ -33,7 +66,8 @@ CALENDAR_TOOLS = [
             "Finds the event by its current title; supply only the fields that "
             "should change — everything else is left untouched. "
             "Use this instead of create_calendar_event whenever the user asks to "
-            "edit, reschedule, rename, or modify an existing event."
+            "edit, reschedule, rename, or modify an existing event. "
+            "Call get_calendar_events first if you need to confirm the account or calendar name."
         ),
         "input_schema": {
             "type": "object",
@@ -86,8 +120,8 @@ CALENDAR_TOOLS = [
         "name": "create_calendar_event",
         "description": (
             "Create an event on the user's Google Calendar. "
-            "The calendar events already in the system prompt show the account name "
-            "and calendar name in their source tag, e.g. '[Google/personal/Bills]' "
+            "Call get_calendar_events first to see existing events — their source "
+            "tags show the account and calendar name, e.g. '[Google/personal/Bills]' "
             "means account_name='personal', calendar_name='Bills'. "
             "Use existing events to infer appropriate timing when the user doesn't "
             "give exact times. Always include timezone offset in start/end."
@@ -181,6 +215,33 @@ CALENDAR_TOOLS = [
 
 def _execute_tool(name: str, input_data: dict) -> str:
     """Dispatch a tool call and return a result string."""
+    if name == "get_calendar_events":
+        from integrations import google_calendar, outlook_calendar
+        days = int(input_data.get("days") or 7)
+        events = []
+        try:
+            events += google_calendar.get_events(days, 20)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("google calendar fetch failed: %s", exc)
+        try:
+            events += outlook_calendar.get_events(days, 20)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("outlook calendar fetch failed: %s", exc)
+        if not events:
+            return "(No upcoming events found.)"
+        events.sort(key=lambda e: e.start.replace(tzinfo=None))
+        return "\n".join(e.format_line() for e in events[:20])
+    if name == "get_recent_notes":
+        import datetime as dt
+        from integrations import notes_watcher
+        notes = notes_watcher.read_recent_notes(5, 2000)
+        if not notes:
+            return "(No meeting notes in /notes yet.)"
+        blocks = []
+        for note in notes:
+            modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d")
+            blocks.append(f"### {note.path.name} (modified {modified})\n{note.content}")
+        return "\n\n".join(blocks)
     if name == "get_financial_summary":
         from integrations.monarch_money import get_financial_summary
         return get_financial_summary()
@@ -365,7 +426,7 @@ class ClaudeClient:
                 max_tokens=MAX_TOKENS,
                 system=system_prompt,
                 messages=self.history,
-                tools=CALENDAR_TOOLS,
+                tools=TOOLS,
             ) as stream:
                 for text in stream.text_stream:
                     full_text += text
