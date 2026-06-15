@@ -128,28 +128,41 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
 
         try:
             service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-            result = (
-                service.events()
-                .list(
-                    calendarId="primary",
-                    timeMin=now.isoformat(),
-                    timeMax=end.isoformat(),
-                    singleEvents=True,
-                    orderBy="startTime",
-                    maxResults=max_events,
-                )
-                .execute()
-            )
-            source = f"Google/{account_name}"
-            fetched = [
-                parsed
-                for item in result.get("items", [])
-                if (parsed := _parse(item, source)) is not None
-            ]
-            log.info("[%s] fetched %d Google Calendar events", account_name, len(fetched))
-            all_events.extend(fetched)
+
+            cal_list = service.calendarList().list().execute()
+            calendars = cal_list.get("items", [])
+            log.info("[%s] found %d calendars", account_name, len(calendars))
+
+            for cal in calendars:
+                cal_id = cal["id"]
+                cal_name = cal.get("summary", cal_id)
+                source = f"Google/{account_name}/{cal_name}"
+                try:
+                    result = (
+                        service.events()
+                        .list(
+                            calendarId=cal_id,
+                            timeMin=now.isoformat(),
+                            timeMax=end.isoformat(),
+                            singleEvents=True,
+                            orderBy="startTime",
+                            maxResults=max_events,
+                        )
+                        .execute()
+                    )
+                    fetched = [
+                        parsed
+                        for item in result.get("items", [])
+                        if (parsed := _parse(item, source)) is not None
+                    ]
+                    if fetched:
+                        log.info("[%s/%s] fetched %d events", account_name, cal_name, len(fetched))
+                    all_events.extend(fetched)
+                except Exception as exc:  # noqa: BLE001
+                    log.error("[%s/%s] failed to fetch events: %s", account_name, cal_name, exc)
+
         except Exception as exc:  # noqa: BLE001
-            log.error("[%s] failed to fetch Google Calendar events: %s", account_name, exc)
+            log.error("[%s] failed to list calendars: %s", account_name, exc)
 
     def _sort_key(e: CalEvent) -> dt.datetime:
         if e.start.tzinfo is None:
