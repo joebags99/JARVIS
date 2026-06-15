@@ -141,6 +141,20 @@ CALENDAR_TOOLS = [
         },
     },
     {
+        "name": "get_financial_summary",
+        "description": (
+            "Fetch a live financial snapshot from Monarch Money: month-to-date income, "
+            "expenses, savings rate, top spending categories, and account balances with "
+            "net worth. Use this whenever the user asks about money, spending, budget, "
+            "finances, accounts, net worth, or how they are doing financially."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
         "name": "load_knowledge_pool",
         "description": (
             "Load content from a named Google Docs knowledge pool to help answer the "
@@ -167,6 +181,9 @@ CALENDAR_TOOLS = [
 
 def _execute_tool(name: str, input_data: dict) -> str:
     """Dispatch a tool call and return a result string."""
+    if name == "get_financial_summary":
+        from integrations.monarch_money import get_financial_summary
+        return get_financial_summary()
     if name == "create_calendar_event":
         from integrations.google_calendar import create_event
         return create_event(
