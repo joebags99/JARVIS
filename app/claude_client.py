@@ -23,6 +23,9 @@ log = get_logger("claude")
 
 MAX_TOKENS = 1024
 
+_MONARCH_MCP_URL = "https://api.monarch.com/mcp"
+_MCP_BETA = "mcp-client-2025-04-04"
+
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
 TOOLS = [
@@ -172,20 +175,6 @@ TOOLS = [
                 },
             },
             "required": ["account_name", "calendar_name", "summary", "start", "end"],
-        },
-    },
-    {
-        "name": "get_financial_summary",
-        "description": (
-            "Fetch a live financial snapshot from Monarch Money: month-to-date income, "
-            "expenses, savings rate, top spending categories, and account balances with "
-            "net worth. Use this whenever the user asks about money, spending, budget, "
-            "finances, accounts, net worth, or how they are doing financially."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": [],
         },
     },
     {
@@ -420,14 +409,33 @@ class ClaudeClient:
 
         full_text = ""
         try:
-            # ── First pass: stream with tools enabled ─────────────────────────
-            with self._client.messages.stream(
+            # ── Build API kwargs; add Monarch MCP server when enabled ─────────
+            stream_kwargs: dict = dict(
                 model=CONFIG.anthropic_model,
                 max_tokens=MAX_TOKENS,
                 system=system_prompt,
                 messages=self.history,
                 tools=TOOLS,
-            ) as stream:
+            )
+            if CONFIG.monarch_enabled:
+                try:
+                    from integrations.monarch_oauth import get_monarch_token
+                    stream_kwargs["mcp_servers"] = [{
+                        "type": "url",
+                        "name": "monarch",
+                        "url": _MONARCH_MCP_URL,
+                        "authorization_token": get_monarch_token(),
+                    }]
+                    stream_kwargs["betas"] = [_MCP_BETA]
+                    _stream_fn = self._client.beta.messages.stream
+                except Exception as exc:
+                    log.error("Monarch token error: %s", exc)
+                    _stream_fn = self._client.messages.stream
+            else:
+                _stream_fn = self._client.messages.stream
+
+            # ── First pass: stream with tools enabled ─────────────────────────
+            with _stream_fn(**stream_kwargs) as stream:
                 for text in stream.text_stream:
                     full_text += text
                     if on_delta:

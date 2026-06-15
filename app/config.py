@@ -108,9 +108,11 @@ class Config:
         default_factory=lambda: _get("KNOWLEDGE_POOLS_FILE", "knowledge_pools.json")
     )
 
-    # Monarch Money (optional — leave blank to disable)
-    monarch_email: str = field(default_factory=lambda: _get("MONARCH_EMAIL"))
-    monarch_password: str = field(default_factory=lambda: _get("MONARCH_PASSWORD"))
+    # Monarch Money — connects via official MCP server using OAuth.
+    # Set MONARCH_ENABLED=true; a browser opens on first use for authorization.
+    monarch_enabled: bool = field(
+        default_factory=lambda: _get("MONARCH_ENABLED").lower() in ("true", "1", "yes")
+    )
 
     # Outlook / Microsoft Graph
     outlook_client_id: str = field(default_factory=lambda: _get("OUTLOOK_CLIENT_ID"))
@@ -133,10 +135,6 @@ class Config:
         return bool(self.google_credentials_path) and (
             ROOT_DIR / self.google_credentials_path
         ).exists()
-
-    @property
-    def monarch_enabled(self) -> bool:
-        return bool(self.monarch_email and self.monarch_password)
 
     @property
     def outlook_enabled(self) -> bool:
