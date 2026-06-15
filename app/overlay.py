@@ -513,11 +513,9 @@ class Overlay:
     def _start_assistant_message(self) -> None:
         self.transcript.configure(state="normal")
         self.transcript.insert("end", "\nJARVIS\n", "label_assistant")
-        # Mark where streamed content begins so we can replace it on finish.
-        # Must go through ._textbox — CTkTextbox doesn't wrap mark_set/mark_gravity.
-        tb = self.transcript._textbox
-        tb.mark_set("_stream_start", "end")
-        tb.mark_gravity("_stream_start", "left")
+        # Record where streaming content will begin as a fixed "line.col" index.
+        # Avoids marks entirely — marks interact poorly with CTkTextbox's state mgmt.
+        self._stream_start_idx = self.transcript._textbox.index("end")
         self.transcript.configure(state="disabled")
         self.transcript.see("end")
 
@@ -529,11 +527,11 @@ class Overlay:
         self.transcript.see("end")
 
     def _finish_assistant_message(self, full_reply: str) -> None:
-        """Replace raw streamed text with markdown-formatted version."""
+        """Delete raw streamed text and re-render with markdown formatting."""
         self.transcript.configure(state="normal")
-        # Delete via ._textbox so the mark set there is recognised.
+        tb = self.transcript._textbox
         try:
-            self.transcript._textbox.delete("_stream_start", "end")
+            tb.delete(self._stream_start_idx, "end")
         except Exception as exc:  # noqa: BLE001
             log.warning("could not delete streamed text for re-render: %s", exc)
         self._insert_markdown(full_reply, "assistant")
