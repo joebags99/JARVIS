@@ -17,9 +17,10 @@ Dynamic (fetched fresh per query):
 from __future__ import annotations
 
 import datetime as dt
+import json
 from pathlib import Path
 
-from .config import CONFIG, CONTEXT_DIR
+from .config import CONFIG, CONTEXT_DIR, ROOT_DIR
 from .logging_setup import get_logger
 from integrations import google_calendar, outlook_calendar, notes_watcher
 
@@ -112,6 +113,26 @@ class ContextBuilder:
             blocks.append(f"### {note.path.name} (modified {modified})\n{note.content}")
         return "\n\n".join(blocks)
 
+    def _knowledge_pools_section(self) -> str:
+        pools_file = ROOT_DIR / CONFIG.knowledge_pools_file
+        if not pools_file.exists():
+            return ""
+        try:
+            data = json.loads(pools_file.read_text(encoding="utf-8"))
+            pools = data.get("pools", {})
+            if not pools:
+                return ""
+            lines = [
+                "Use the `load_knowledge_pool` tool when answering questions about these topics:"
+            ]
+            for name, pool in pools.items():
+                desc = pool.get("description", "")
+                lines.append(f"- **{name}**: {desc}")
+            return "\n".join(lines)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not read knowledge pools file: %s", exc)
+            return ""
+
     # ── Assembly ──────────────────────────────────────────────────────────────
     def build_system_prompt(self) -> str:
         name = CONFIG.user_name
@@ -126,6 +147,10 @@ class ContextBuilder:
             f"## Upcoming Calendar Events (next {CALENDAR_DAYS} days)\n{self._calendar_section()}",
             f"## Recent Meeting Notes\n{self._notes_section()}",
         ]
+
+        pools = self._knowledge_pools_section()
+        if pools:
+            sections.append(f"## Available Knowledge Pools\n{pools}")
 
         other = self._other_context_section()
         if other:

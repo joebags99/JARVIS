@@ -139,7 +139,29 @@ CALENDAR_TOOLS = [
             },
             "required": ["account_name", "calendar_name", "summary", "start", "end"],
         },
-    }
+    },
+    {
+        "name": "load_knowledge_pool",
+        "description": (
+            "Load content from a named Google Docs knowledge pool to help answer the "
+            "user's question. Call this when a question relates to a topic listed in "
+            "the Available Knowledge Pools section of your system prompt (e.g. 'work', "
+            "'finances', 'personal'). Do NOT call it for general questions unrelated "
+            "to those topics."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pool_name": {
+                    "type": "string",
+                    "description": (
+                        "The exact pool name to load, e.g. 'work', 'finances', 'personal'."
+                    ),
+                },
+            },
+            "required": ["pool_name"],
+        },
+    },
 ]
 
 
@@ -169,6 +191,32 @@ def _execute_tool(name: str, input_data: dict) -> str:
             new_description=input_data.get("new_description"),
             new_location=input_data.get("new_location"),
         )
+    if name == "load_knowledge_pool":
+        import json
+        from .config import ROOT_DIR
+        pools_path = ROOT_DIR / CONFIG.knowledge_pools_file
+        if not pools_path.exists():
+            return (
+                "No knowledge_pools.json found. "
+                "Copy knowledge_pools.json.example and fill in your Google Doc IDs."
+            )
+        try:
+            data = json.loads(pools_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            return f"Error reading knowledge_pools.json: {exc}"
+        pool_name = input_data.get("pool_name", "")
+        pools = data.get("pools", {})
+        pool = pools.get(pool_name)
+        if pool is None:
+            available = ", ".join(pools.keys()) or "(none configured)"
+            return (
+                f"Pool '{pool_name}' not found. Available pools: {available}"
+            )
+        account = data.get("account", CONFIG.google_accounts[0])
+        from integrations.google_docs import load_pool
+        content = load_pool(pool, account)
+        header = f"## Knowledge Pool: {pool_name}\n_{pool.get('description', '')}_"
+        return f"{header}\n\n{content}"
     return f"Unknown tool: {name}"
 
 

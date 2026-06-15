@@ -1,0 +1,49 @@
+{
+  "_comment": "Copy this file to knowledge_pools.json and fill in your Google Doc/Folder IDs.",
+  "_how_to_find_ids": {
+    "doc": "Open any Google Doc → the URL is docs.google.com/document/d/THIS_IS_THE_ID/edit",
+    "folder": "Open any Drive folder → the URL is drive.google.com/drive/folders/THIS_IS_THE_ID"
+  },
+  "account": "personal",
+  "pools": {
+    "work": {
+      "description": "Work projects, tasks, and professional notes",
+      "max_chars": 4000,
+      "sources": [
+        {
+          "type": "file",
+          "id": "PASTE_GOOGLE_DOC_ID_HERE",
+          "name": "Project Alpha Notes"
+        },
+        {
+          "type": "folder",
+          "id": "PASTE_GOOGLE_FOLDER_ID_HERE",
+          "name": "Work Projects",
+          "max_files": 3
+        }
+      ]
+    },
+    "personal": {
+      "description": "Personal journal entries, goals, and reflections",
+      "max_chars": 3000,
+      "sources": [
+        {
+          "type": "file",
+          "id": "PASTE_GOOGLE_DOC_ID_HERE",
+          "name": "Personal Journal"
+        }
+      ]
+    },
+    "finances": {
+      "description": "Budget, expenses, and savings tracking",
+      "max_chars": 3000,
+      "sources": [
+        {
+          "type": "file",
+          "id": "PASTE_GOOGLE_DOC_ID_HERE",
+          "name": "Monthly Budget"
+        }
+      ]
+    }
+  }
+}
