@@ -143,20 +143,6 @@ class Overlay:
         title.pack(side="left", padx=14)
         self._bind_drag(title)
 
-        # Clear-chat button (saves summary then resets)
-        clear_btn = ctk.CTkButton(
-            header,
-            text="↺",
-            width=28,
-            height=28,
-            fg_color="transparent",
-            hover_color=p.border,
-            text_color=p.text_muted,
-            command=self._on_close,
-            font=("Segoe UI", 16),
-        )
-        clear_btn.pack(side="right", padx=(0, 4))
-
         close_btn = ctk.CTkButton(
             header,
             text="✕",
@@ -168,6 +154,20 @@ class Overlay:
             command=self._on_close,
         )
         close_btn.pack(side="right", padx=(0, 4))
+
+        # ↺ clears chat but keeps overlay open
+        clear_btn = ctk.CTkButton(
+            header,
+            text="↺",
+            width=28,
+            height=28,
+            fg_color="transparent",
+            hover_color=p.border,
+            text_color=p.text_muted,
+            command=self._clear_chat,
+            font=("Segoe UI", 16),
+        )
+        clear_btn.pack(side="right", padx=(0, 4))
 
         # Conversation area
         self.transcript = ctk.CTkTextbox(
@@ -319,6 +319,24 @@ class Overlay:
         self.root.withdraw()
         self._visible = False
         log.info("overlay hidden")
+
+    def _clear_chat(self) -> None:
+        """↺ button: save summary if warranted, clear chat, stay open."""
+        user_turns = sum(
+            1 for m in self.claude.history if m.get("role") == "user"
+        )
+        if user_turns >= MIN_TURNS_FOR_SUMMARY:
+            history_snapshot = list(self.claude.history)
+            threading.Thread(
+                target=self._save_session_summary,
+                args=(history_snapshot,),
+                daemon=True,
+            ).start()
+        self.claude.reset_session()
+        self._clear_transcript()
+        self._show_entry_placeholder()
+        self.set_status(STATUS_IDLE)
+        log.info("chat cleared")
 
     def _on_close(self) -> None:
         """✕ / Escape: save summary if warranted, clear chat, hide."""
