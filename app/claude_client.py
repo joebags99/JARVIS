@@ -437,6 +437,10 @@ class ClaudeClient:
             tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
 
             if tool_uses:
+                # Discard any pre-tool text streamed during first pass — the real
+                # answer comes after the tool result, not before it.
+                full_text = ""
+
                 # Commit assistant turn (text + tool_use blocks) to history.
                 self.history.append({
                     "role": "assistant",
