@@ -1,0 +1,117 @@
+"""Central configuration for JARVIS.
+
+Loads settings from the .env file (via python-dotenv) and exposes them as a
+single ``CONFIG`` object plus a few well-known paths. Everything personal lives
+on disk in gitignored files; this module just reads it.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Project root = parent of the app/ package.
+ROOT_DIR = Path(__file__).resolve().parent.parent
+
+# Load .env from the project root if present (no error if missing).
+load_dotenv(ROOT_DIR / ".env")
+
+# ── Well-known directories ───────────────────────────────────────────────────
+CONTEXT_DIR = ROOT_DIR / "context"
+NOTES_DIR = ROOT_DIR / "notes"
+LOGS_DIR = ROOT_DIR / "logs"
+ASSETS_DIR = ROOT_DIR / "assets"
+LOG_FILE = LOGS_DIR / "jarvis.log"
+TRAY_ICON_PATH = ASSETS_DIR / "tray_icon.png"
+
+# Ensure runtime dirs exist (they're gitignored but must be present at runtime).
+for _d in (CONTEXT_DIR, NOTES_DIR, LOGS_DIR, ASSETS_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
+
+
+# ── UI color palette (from the spec) ─────────────────────────────────────────
+@dataclass(frozen=True)
+class Palette:
+    background: str = "#0f0f0f"
+    surface: str = "#1a1a1a"
+    border: str = "#2a2a2a"
+    accent: str = "#00bcd4"
+    accent_dim: str = "#006f7e"
+    text_primary: str = "#e8e8e8"
+    text_muted: str = "#666666"
+    error: str = "#cf6679"
+    success: str = "#4caf79"
+
+
+def _get(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip()
+
+
+def _get_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+@dataclass
+class Config:
+    """Resolved runtime configuration."""
+
+    # Anthropic
+    anthropic_api_key: str = field(default_factory=lambda: _get("ANTHROPIC_API_KEY"))
+    anthropic_model: str = field(
+        default_factory=lambda: _get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+    )
+
+    # App
+    user_name: str = field(default_factory=lambda: _get("JARVIS_USER_NAME", "User"))
+    window_position: str = field(
+        default_factory=lambda: _get("JARVIS_WINDOW_POSITION", "top-right")
+    )
+    hotkey: str = field(default_factory=lambda: _get("JARVIS_HOTKEY"))
+    max_context_chars: int = field(
+        default_factory=lambda: _get_int("JARVIS_MAX_CONTEXT_CHARS", 32000)
+    )
+
+    # Voice
+    whisper_model: str = field(default_factory=lambda: _get("WHISPER_MODEL", "small"))
+
+    # Google Calendar
+    google_credentials_path: str = field(
+        default_factory=lambda: _get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
+    )
+
+    # Outlook / Microsoft Graph
+    outlook_client_id: str = field(default_factory=lambda: _get("OUTLOOK_CLIENT_ID"))
+    outlook_tenant_id: str = field(
+        default_factory=lambda: _get("OUTLOOK_TENANT_ID", "common")
+    )
+    outlook_client_secret: str = field(
+        default_factory=lambda: _get("OUTLOOK_CLIENT_SECRET")
+    )
+
+    palette: Palette = field(default_factory=Palette)
+
+    # ── Derived helpers ──────────────────────────────────────────────────────
+    @property
+    def has_anthropic_key(self) -> bool:
+        return bool(self.anthropic_api_key) and self.anthropic_api_key != "sk-ant-..."
+
+    @property
+    def google_enabled(self) -> bool:
+        return bool(self.google_credentials_path) and (
+            ROOT_DIR / self.google_credentials_path
+        ).exists()
+
+    @property
+    def outlook_enabled(self) -> bool:
+        return bool(self.outlook_client_id)
+
+
+# Singleton-ish config used across the app.
+CONFIG = Config()
