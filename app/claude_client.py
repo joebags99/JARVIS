@@ -234,6 +234,46 @@ class ClaudeClient:
     def reload_context(self) -> None:
         self.context.reload_static()
 
+    def summarize_session(self, history: list[dict]) -> str:
+        """One-shot summary of a conversation history. Returns '' on failure."""
+        if not self.ready or not history:
+            return ""
+
+        lines = []
+        for m in history:
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if isinstance(content, str) and content.strip():
+                lines.append(f"{role.upper()}: {content.strip()}")
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        t = block.get("text", "").strip()
+                        if t:
+                            lines.append(f"{role.upper()}: {t}")
+
+        if not lines:
+            return ""
+
+        try:
+            response = self._client.messages.create(
+                model=CONFIG.anthropic_model,
+                max_tokens=400,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Summarize this JARVIS assistant conversation in 3-5 concise "
+                        "bullet points. Focus on topics discussed, decisions made, and "
+                        "any calendar events or actions taken.\n\n"
+                        + "\n".join(lines)
+                    ),
+                }],
+            )
+            return response.content[0].text if response.content else ""
+        except Exception as exc:  # noqa: BLE001
+            log.error("summarize_session failed: %s", exc)
+            return ""
+
     def send(
         self,
         user_message: str,

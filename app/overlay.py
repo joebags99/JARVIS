@@ -1,18 +1,21 @@
 """The floating overlay window — JARVIS's face.
 
-A frameless, always-on-top, dark window pinned to a screen corner. It owns the
-tkinter root and is driven by callbacks from the tray. All slow work (API calls,
-transcription, recording) is dispatched to background threads; UI mutations are
-marshalled back with ``self.root.after`` so the UI thread is never blocked.
+Behavior:
+- Click away  → fades to 30% opacity (stays on screen)
+- Hover back  → restores to 100%
+- ✕ / Escape  → saves session summary (if 5+ user turns), clears chat, hides
+- Chat persists across show/hide cycles until explicitly closed
 """
 
 from __future__ import annotations
 
+import datetime as dt
+import re
 import sys
 import threading
 from typing import Callable
 
-from .config import CONFIG
+from .config import CONFIG, NOTES_DIR
 from .logging_setup import get_logger
 
 log = get_logger("overlay")
@@ -20,13 +23,18 @@ log = get_logger("overlay")
 WINDOW_W = 400
 WINDOW_H = 600
 MARGIN = 16
+ALPHA_FULL = 1.0
+ALPHA_FADE = 0.3
+MIN_TURNS_FOR_SUMMARY = 5  # user messages required before auto-saving a summary
 
-# Status labels
 STATUS_IDLE = "Idle"
 STATUS_LISTENING = "Listening…"
 STATUS_TRANSCRIBING = "Transcribing…"
 STATUS_THINKING = "Thinking…"
 STATUS_DONE = "Done"
+
+# Inline markdown: **bold**, *italic*, `code`
+_INLINE_RE = re.compile(r"(\*\*[^*\n]+\*\*|\*[^*\n]+\*|`[^`\n]+`)")
 
 
 class Overlay:
@@ -56,17 +64,17 @@ class Overlay:
         self.root = ctk.CTk()
         self._build_window()
         self._build_widgets()
-        self.root.withdraw()  # start hidden in tray
+        self.root.withdraw()
 
-        # Surface an init error (e.g. missing API key) immediately.
         if not self.claude.ready and self.claude.init_error:
             self._append_message("system", self.claude.init_error)
 
     # ── Window chrome ─────────────────────────────────────────────────────────
+
     def _build_window(self) -> None:
         self.root.title("JARVIS")
         self.root.geometry(f"{WINDOW_W}x{WINDOW_H}")
-        self.root.overrideredirect(True)  # frameless
+        self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         try:
             self.root.configure(fg_color=self.palette.background)
@@ -74,9 +82,11 @@ class Overlay:
             pass
         self._position_window()
 
-        # Esc hides; clicking outside hides.
-        self.root.bind("<Escape>", lambda _e: self.hide())
+        # Escape / focus-out fade; hover restores.
+        self.root.bind("<Escape>", lambda _e: self._on_close())
         self.root.bind("<FocusOut>", self._on_focus_out)
+        self.root.bind("<Enter>", lambda _e: self._restore_opacity())
+        self.root.bind("<Leave>", self._on_mouse_leave)
 
     def _position_window(self) -> None:
         self.root.update_idletasks()
@@ -88,8 +98,6 @@ class Overlay:
         self.root.geometry(f"{WINDOW_W}x{WINDOW_H}+{x}+{y}")
 
     def _on_focus_out(self, _event) -> None:
-        # Hide when focus leaves the window (click outside). Guard against the
-        # transient focus loss that happens while interacting with child widgets.
         if not self._visible:
             return
         try:
@@ -97,9 +105,25 @@ class Overlay:
         except Exception:  # noqa: BLE001
             focus = None
         if focus is None:
-            self.hide()
+            self._fade()
+
+    def _on_mouse_leave(self, event) -> None:
+        # Only fade when the mouse truly leaves the window bounds.
+        wx, wy = self.root.winfo_rootx(), self.root.winfo_rooty()
+        ww, wh = self.root.winfo_width(), self.root.winfo_height()
+        if not (wx <= event.x_root <= wx + ww and wy <= event.y_root <= wy + wh):
+            self._fade()
+
+    def _fade(self) -> None:
+        if self._visible:
+            self.root.attributes("-alpha", ALPHA_FADE)
+
+    def _restore_opacity(self) -> None:
+        if self._visible:
+            self.root.attributes("-alpha", ALPHA_FULL)
 
     # ── Widgets ───────────────────────────────────────────────────────────────
+
     def _build_widgets(self) -> None:
         ctk = self.ctk
         p = self.palette
@@ -119,6 +143,20 @@ class Overlay:
         title.pack(side="left", padx=14)
         self._bind_drag(title)
 
+        # Clear-chat button (saves summary then resets)
+        clear_btn = ctk.CTkButton(
+            header,
+            text="↺",
+            width=28,
+            height=28,
+            fg_color="transparent",
+            hover_color=p.border,
+            text_color=p.text_muted,
+            command=self._on_close,
+            font=("Segoe UI", 16),
+        )
+        clear_btn.pack(side="right", padx=(0, 4))
+
         close_btn = ctk.CTkButton(
             header,
             text="✕",
@@ -127,11 +165,11 @@ class Overlay:
             fg_color="transparent",
             hover_color=p.border,
             text_color=p.text_muted,
-            command=self.hide,
+            command=self._on_close,
         )
-        close_btn.pack(side="right", padx=8)
+        close_btn.pack(side="right", padx=(0, 4))
 
-        # Conversation area (scrollable)
+        # Conversation area
         self.transcript = ctk.CTkTextbox(
             self.root,
             fg_color=p.background,
@@ -158,16 +196,23 @@ class Overlay:
         input_row = ctk.CTkFrame(self.root, fg_color=p.background)
         input_row.pack(fill="x", padx=12, pady=(0, 12))
 
-        self.entry = ctk.CTkEntry(
+        # Multi-line input that grows up to ~4 lines then scrolls.
+        self.entry = ctk.CTkTextbox(
             input_row,
-            placeholder_text="Ask JARVIS…",
             fg_color=p.surface,
             border_color=p.border,
+            border_width=1,
             text_color=p.text_primary,
             height=40,
+            wrap="word",
+            font=("Segoe UI", 13),
         )
         self.entry.pack(side="left", fill="x", expand=True)
-        self.entry.bind("<Return>", lambda _e: self._on_send())
+        self.entry.bind("<Return>", self._on_entry_return)
+        self.entry.bind("<KeyRelease>", self._on_entry_key)
+        # Insert placeholder-style hint (cleared on first keypress)
+        self._entry_placeholder = True
+        self._show_entry_placeholder()
 
         self.record_btn = ctk.CTkButton(
             input_row,
@@ -195,26 +240,55 @@ class Overlay:
 
         if not self.recorder.available or not self.transcriber.available:
             self.record_btn.configure(state="disabled", text_color=p.text_muted)
-            log.info("voice disabled (recorder=%s, stt=%s)",
-                     self.recorder.available, self.transcriber.available)
+            log.info(
+                "voice disabled (recorder=%s, stt=%s)",
+                self.recorder.available, self.transcriber.available,
+            )
+
+    def _show_entry_placeholder(self) -> None:
+        self.entry.configure(state="normal")
+        self.entry.delete("1.0", "end")
+        self.entry.insert("1.0", "Ask JARVIS…")
+        self.entry.configure(text_color=self.palette.text_muted)
+        self._entry_placeholder = True
+
+    def _clear_entry_placeholder(self) -> None:
+        if self._entry_placeholder:
+            self.entry.delete("1.0", "end")
+            self.entry.configure(text_color=self.palette.text_primary)
+            self._entry_placeholder = False
 
     def _configure_tags(self) -> None:
         p = self.palette
         box = self.transcript
+        # Role tags
         box.tag_config("user", foreground=p.accent)
         box.tag_config("assistant", foreground=p.text_primary)
         box.tag_config("system", foreground=p.error)
         box.tag_config("label_user", foreground=p.text_muted)
         box.tag_config("label_assistant", foreground=p.accent_dim)
+        # Markdown tags
+        box.tag_config("md_bold",    font=("Segoe UI", 13, "bold"))
+        box.tag_config("md_italic",  font=("Segoe UI", 13, "italic"))
+        box.tag_config("md_h1",      font=("Segoe UI", 17, "bold"))
+        box.tag_config("md_h2",      font=("Segoe UI", 15, "bold"))
+        box.tag_config("md_h3",      font=("Segoe UI", 13, "bold"))
+        box.tag_config("md_code",    font=("Consolas", 12), foreground="#a8c7fa")
+        box.tag_config("md_code_block", font=("Consolas", 12), foreground="#a8c7fa",
+                       lmargin1=16, lmargin2=16)
+        box.tag_config("md_bullet",  foreground=p.accent_dim)
 
     # ── Dragging ──────────────────────────────────────────────────────────────
+
     def _bind_drag(self, widget) -> None:
         widget.bind("<ButtonPress-1>", self._drag_start)
         widget.bind("<B1-Motion>", self._drag_move)
 
     def _drag_start(self, event) -> None:
-        self._drag_offset = (event.x_root - self.root.winfo_x(),
-                             event.y_root - self.root.winfo_y())
+        self._drag_offset = (
+            event.x_root - self.root.winfo_x(),
+            event.y_root - self.root.winfo_y(),
+        )
 
     def _drag_move(self, event) -> None:
         x = event.x_root - self._drag_offset[0]
@@ -222,15 +296,13 @@ class Overlay:
         self.root.geometry(f"+{x}+{y}")
 
     # ── Visibility ────────────────────────────────────────────────────────────
+
     def show(self) -> None:
-        # Fresh session each time the overlay is opened.
-        self.claude.reset_session()
-        self._clear_transcript()
-        if not self.claude.ready and self.claude.init_error:
-            self._append_message("system", self.claude.init_error)
+        """Show (or un-fade) the overlay. Chat history is preserved."""
         self.root.deiconify()
         self.root.lift()
         self.root.attributes("-topmost", True)
+        self.root.attributes("-alpha", ALPHA_FULL)
         self._apply_windows_shadow()
         self.entry.focus_force()
         self._visible = True
@@ -238,21 +310,89 @@ class Overlay:
         log.info("overlay shown")
 
     def hide(self) -> None:
+        """Withdraw window without clearing chat (used internally for fade-hide)."""
         if self._recording:
             self._stop_recording()
         self.root.withdraw()
         self._visible = False
         log.info("overlay hidden")
 
+    def _on_close(self) -> None:
+        """✕ / Escape: save summary if warranted, clear chat, hide."""
+        if self._recording:
+            self._stop_recording()
+
+        user_turns = sum(
+            1 for m in self.claude.history if m.get("role") == "user"
+        )
+        if user_turns >= MIN_TURNS_FOR_SUMMARY:
+            history_snapshot = list(self.claude.history)
+            threading.Thread(
+                target=self._save_session_summary,
+                args=(history_snapshot,),
+                daemon=True,
+            ).start()
+
+        self.claude.reset_session()
+        self._clear_transcript()
+        self._show_entry_placeholder()
+        self.root.attributes("-alpha", ALPHA_FULL)
+        self.root.withdraw()
+        self._visible = False
+        log.info("overlay closed and chat cleared")
+
     def toggle(self) -> None:
         self.hide() if self._visible else self.show()
 
-    # ── Messaging ─────────────────────────────────────────────────────────────
+    # ── Session summary ───────────────────────────────────────────────────────
+
+    def _save_session_summary(self, history: list[dict]) -> None:
+        """Generate a summary via Claude and write it to notes/. Background thread."""
+        summary = self.claude.summarize_session(history)
+        if not summary:
+            return
+        now = dt.datetime.now()
+        filename = now.strftime("session_%Y-%m-%d_%H-%M.md")
+        path = NOTES_DIR / filename
+        content = (
+            f"# JARVIS Session — {now.strftime('%B %d, %Y %I:%M %p')}\n\n"
+            f"{summary}\n"
+        )
+        try:
+            path.write_text(content, encoding="utf-8")
+            log.info("session summary saved: %s", filename)
+        except Exception as exc:  # noqa: BLE001
+            log.error("could not save session summary: %s", exc)
+
+    # ── Input handling ────────────────────────────────────────────────────────
+
+    def _on_entry_return(self, event) -> str:
+        if event.state & 0x1:  # Shift held — insert literal newline
+            self.entry.insert("insert", "\n")
+            self._on_entry_key()
+        else:
+            self._on_send()
+        return "break"  # always suppress CTkTextbox default
+
+    def _on_entry_key(self, _event=None) -> None:
+        """Auto-resize the input box (1–4 lines)."""
+        if self._entry_placeholder:
+            self._clear_entry_placeholder()
+            return
+        content = self.entry.get("1.0", "end-1c")
+        lines = content.count("\n") + 1
+        new_h = min(max(40, lines * 24 + 16), 112)
+        self.entry.configure(height=new_h)
+
     def _on_send(self) -> None:
-        text = self.entry.get().strip()
+        if self._entry_placeholder:
+            return
+        text = self.entry.get("1.0", "end-1c").strip()
         if not text:
             return
-        self.entry.delete(0, "end")
+        self.entry.delete("1.0", "end")
+        self.entry.configure(height=40)
+        self._entry_placeholder = False
         self._submit(text)
 
     def _submit(self, text: str) -> None:
@@ -272,6 +412,7 @@ class Overlay:
         threading.Thread(target=worker, daemon=True).start()
 
     # ── Voice ─────────────────────────────────────────────────────────────────
+
     def _toggle_recording(self) -> None:
         if self._recording:
             self._stop_recording()
@@ -325,38 +466,54 @@ class Overlay:
         threading.Thread(target=worker, daemon=True).start()
 
     # ── Transcript rendering ──────────────────────────────────────────────────
+
     def _clear_transcript(self) -> None:
         self.transcript.configure(state="normal")
         self.transcript.delete("1.0", "end")
         self.transcript.configure(state="disabled")
 
     def _append_message(self, role: str, text: str) -> None:
-        labels = {"user": f"{CONFIG.user_name}", "assistant": "JARVIS",
-                  "system": "⚠ System"}
-        self.transcript.configure(state="normal")
+        labels = {
+            "user": CONFIG.user_name,
+            "assistant": "JARVIS",
+            "system": "⚠ System",
+        }
         label_tag = "label_user" if role == "user" else "label_assistant"
+        self.transcript.configure(state="normal")
         self.transcript.insert("end", f"\n{labels.get(role, role)}\n", label_tag)
-        self.transcript.insert("end", f"{text}\n", role)
+        if role == "assistant":
+            self._insert_markdown(text, "assistant")
+            self.transcript.insert("end", "\n")
+        else:
+            self.transcript.insert("end", f"{text}\n", role)
         self.transcript.configure(state="disabled")
         self.transcript.see("end")
 
     def _start_assistant_message(self) -> None:
         self.transcript.configure(state="normal")
         self.transcript.insert("end", "\nJARVIS\n", "label_assistant")
-        self._assistant_mark = self.transcript.index("end-1c")
+        # Mark where streamed content begins so we can replace it on finish.
+        self.transcript.mark_set("_stream_start", "end")
+        self.transcript.mark_gravity("_stream_start", "left")
         self.transcript.configure(state="disabled")
         self.transcript.see("end")
 
     def _append_stream(self, chunk: str) -> None:
+        """Insert raw streaming text; replaced with formatted version on finish."""
         self.transcript.configure(state="normal")
         self.transcript.insert("end", chunk, "assistant")
         self.transcript.configure(state="disabled")
         self.transcript.see("end")
 
     def _finish_assistant_message(self, full_reply: str) -> None:
-        # If streaming produced nothing (e.g. an error string), render it now.
+        """Replace raw streamed text with markdown-formatted version."""
         self.transcript.configure(state="normal")
-        self.transcript.insert("end", "\n", "assistant")
+        try:
+            self.transcript.delete("_stream_start", "end")
+        except Exception:  # noqa: BLE001
+            pass
+        self._insert_markdown(full_reply, "assistant")
+        self.transcript.insert("end", "\n")
         self.transcript.configure(state="disabled")
         self.transcript.see("end")
         self.set_status(STATUS_DONE)
@@ -364,7 +521,63 @@ class Overlay:
         self._set_inputs_enabled(True)
         self.entry.focus_set()
 
+    # ── Markdown renderer ─────────────────────────────────────────────────────
+
+    def _insert_markdown(self, text: str, base_tag: str) -> None:
+        """Parse and insert markdown-formatted text into the transcript."""
+        box = self.transcript
+        in_code_block = False
+        lines = text.rstrip("\n").split("\n")
+
+        for i, line in enumerate(lines):
+            nl = "\n" if i < len(lines) - 1 else ""
+
+            if line.startswith("```"):
+                in_code_block = not in_code_block
+                continue
+
+            if in_code_block:
+                box.insert("end", line + nl, "md_code_block")
+                continue
+
+            if line.startswith("### "):
+                box.insert("end", line[4:] + nl, (base_tag, "md_h3"))
+            elif line.startswith("## "):
+                box.insert("end", line[3:] + nl, (base_tag, "md_h2"))
+            elif line.startswith("# "):
+                box.insert("end", line[2:] + nl, (base_tag, "md_h1"))
+            elif re.match(r"^[-*] ", line):
+                box.insert("end", "  • ", "md_bullet")
+                self._insert_inline(line[2:], base_tag)
+                box.insert("end", nl)
+            elif re.match(r"^\d+\. ", line):
+                m = re.match(r"^(\d+\.) (.*)", line)
+                if m:
+                    box.insert("end", f"  {m.group(1)} ", "md_bullet")
+                    self._insert_inline(m.group(2), base_tag)
+                    box.insert("end", nl)
+                else:
+                    self._insert_inline(line, base_tag)
+                    box.insert("end", nl)
+            else:
+                self._insert_inline(line, base_tag)
+                box.insert("end", nl)
+
+    def _insert_inline(self, text: str, base_tag: str) -> None:
+        """Insert a line of text with bold/italic/code spans parsed out."""
+        box = self.transcript
+        for part in _INLINE_RE.split(text):
+            if part.startswith("**") and part.endswith("**") and len(part) > 4:
+                box.insert("end", part[2:-2], (base_tag, "md_bold"))
+            elif part.startswith("*") and part.endswith("*") and len(part) > 2:
+                box.insert("end", part[1:-1], (base_tag, "md_italic"))
+            elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+                box.insert("end", part[1:-1], "md_code")
+            else:
+                box.insert("end", part, base_tag)
+
     # ── Helpers ───────────────────────────────────────────────────────────────
+
     def set_status(self, text: str) -> None:
         self.status_label.configure(text=text)
 
@@ -381,7 +594,6 @@ class Overlay:
         self.send_btn.configure(state=state)
 
     def _apply_windows_shadow(self) -> None:
-        """Apply a DWM drop shadow on Windows (no-op elsewhere)."""
         if not sys.platform.startswith("win"):
             return
         try:
@@ -397,6 +609,7 @@ class Overlay:
             log.debug("could not apply windows shadow: %s", exc)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
+
     def reload_context(self) -> None:
         self.claude.reload_context()
         if self._visible:
