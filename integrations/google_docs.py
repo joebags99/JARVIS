@@ -23,6 +23,16 @@ _MAX_CHARS_PER_DOC = 2000
 _DEFAULT_POOL_MAX = 4000
 _DEFAULT_FOLDER_FILES = 2
 
+# Maps Google Workspace MIME types to their plain-text export formats.
+_EXPORT_MIME: dict[str, str] = {
+    "application/vnd.google-apps.document": "text/plain",
+    "application/vnd.google-apps.spreadsheet": "text/csv",
+}
+
+_SUPPORTED_MIMES = " or ".join(
+    f"mimeType='{m}'" for m in _EXPORT_MIME
+)
+
 
 def _load_credentials(account_name: str):
     """Load Drive credentials for *account_name*; separate token file from calendar."""
@@ -93,9 +103,16 @@ def _load_credentials(account_name: str):
 
 
 def fetch_doc_content(
-    doc_id: str, account_name: str, max_chars: int = _MAX_CHARS_PER_DOC
+    doc_id: str,
+    account_name: str,
+    max_chars: int = _MAX_CHARS_PER_DOC,
+    mime_type: str | None = None,
 ) -> str:
-    """Export a Google Doc as plain text, truncated to max_chars."""
+    """Export a Google Doc or Sheet as text, truncated to max_chars.
+
+    Docs export as plain text; Sheets export as CSV.
+    Pass mime_type to skip the metadata lookup (e.g. when already known from a folder listing).
+    """
     creds = _load_credentials(account_name)
     if creds is None:
         return "[Google Docs not authorized]"
@@ -107,9 +124,18 @@ def fetch_doc_content(
 
     try:
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+        if mime_type is None:
+            meta = service.files().get(fileId=doc_id, fields="mimeType").execute()
+            mime_type = meta.get("mimeType", "")
+
+        export_type = _EXPORT_MIME.get(mime_type)
+        if export_type is None:
+            return f"[Unsupported file type: {mime_type}]"
+
         content = (
             service.files()
-            .export_media(fileId=doc_id, mimeType="text/plain")
+            .export_media(fileId=doc_id, mimeType=export_type)
             .execute()
         )
         text = content.decode("utf-8").strip()
@@ -124,7 +150,7 @@ def fetch_doc_content(
 def list_folder_files(
     folder_id: str, account_name: str, max_files: int = _DEFAULT_FOLDER_FILES
 ) -> list[dict]:
-    """Return the max_files most recently modified Google Docs in a folder."""
+    """Return the max_files most recently modified Google Docs and Sheets in a folder."""
     creds = _load_credentials(account_name)
     if creds is None:
         return []
@@ -138,12 +164,12 @@ def list_folder_files(
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
         query = (
             f"'{folder_id}' in parents "
-            "and mimeType='application/vnd.google-apps.document' "
+            f"and ({_SUPPORTED_MIMES}) "
             "and trashed=false"
         )
         result = service.files().list(
             q=query,
-            fields="files(id, name, modifiedTime)",
+            fields="files(id, name, mimeType, modifiedTime)",
             orderBy="modifiedTime desc",
             pageSize=max_files,
         ).execute()
@@ -192,7 +218,8 @@ def load_pool(pool_config: dict, account_name: str) -> str:
                     break
                 remaining = pool_max - total_chars
                 content = fetch_doc_content(
-                    f["id"], account_name, min(_MAX_CHARS_PER_DOC, remaining)
+                    f["id"], account_name, min(_MAX_CHARS_PER_DOC, remaining),
+                    mime_type=f.get("mimeType"),
                 )
                 folder_parts.append(f"#### {f['name']}\n{content}")
                 total_chars += len(content)
