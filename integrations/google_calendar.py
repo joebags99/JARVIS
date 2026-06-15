@@ -133,6 +133,7 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
             calendars = cal_list.get("items", [])
             log.info("[%s] found %d calendars", account_name, len(calendars))
 
+            seen_ids: set[str] = set()
             for cal in calendars:
                 cal_id = cal["id"]
                 cal_name = cal.get("summary", cal_id)
@@ -150,11 +151,15 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
                         )
                         .execute()
                     )
-                    fetched = [
-                        parsed
-                        for item in result.get("items", [])
-                        if (parsed := _parse(item, source)) is not None
-                    ]
+                    fetched = []
+                    for item in result.get("items", []):
+                        event_id = item.get("id")
+                        if event_id in seen_ids:
+                            continue
+                        seen_ids.add(event_id)
+                        parsed = _parse(item, source)
+                        if parsed is not None:
+                            fetched.append(parsed)
                     if fetched:
                         log.info("[%s/%s] fetched %d events", account_name, cal_name, len(fetched))
                     all_events.extend(fetched)
