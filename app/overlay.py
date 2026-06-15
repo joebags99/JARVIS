@@ -261,22 +261,25 @@ class Overlay:
     def _configure_tags(self) -> None:
         p = self.palette
         box = self.transcript
-        # Role tags
+        # Role tags — no font, CTkTextbox wrapper is fine.
         box.tag_config("user", foreground=p.accent)
         box.tag_config("assistant", foreground=p.text_primary)
         box.tag_config("system", foreground=p.error)
         box.tag_config("label_user", foreground=p.text_muted)
         box.tag_config("label_assistant", foreground=p.accent_dim)
-        # Markdown tags
-        box.tag_config("md_bold",    font=("Segoe UI", 13, "bold"))
-        box.tag_config("md_italic",  font=("Segoe UI", 13, "italic"))
-        box.tag_config("md_h1",      font=("Segoe UI", 17, "bold"))
-        box.tag_config("md_h2",      font=("Segoe UI", 15, "bold"))
-        box.tag_config("md_h3",      font=("Segoe UI", 13, "bold"))
-        box.tag_config("md_code",    font=("Consolas", 12), foreground="#a8c7fa")
-        box.tag_config("md_code_block", font=("Consolas", 12), foreground="#a8c7fa",
-                       lmargin1=16, lmargin2=16)
-        box.tag_config("md_bullet",  foreground=p.accent_dim)
+        box.tag_config("md_bullet", foreground=p.accent_dim)
+        # Font-bearing tags must go on the underlying tk.Text directly because
+        # CTkTextbox.tag_config() forbids 'font' to protect its DPI scaling.
+        tb = box._textbox
+        tb.tag_config("md_bold",       font=("Segoe UI", 13, "bold"))
+        tb.tag_config("md_italic",     font=("Segoe UI", 13, "italic"))
+        tb.tag_config("md_h1",         font=("Segoe UI", 17, "bold"))
+        tb.tag_config("md_h2",         font=("Segoe UI", 15, "bold"))
+        tb.tag_config("md_h3",         font=("Segoe UI", 13, "bold"))
+        tb.tag_config("md_code",       font=("Consolas", 12), foreground="#a8c7fa")
+        tb.tag_config("md_code_block", font=("Consolas", 12), foreground="#a8c7fa",
+                      lmargin1=16, lmargin2=16)
+        box.tag_config("md_bullet",    foreground=p.accent_dim)
 
     # ── Dragging ──────────────────────────────────────────────────────────────
 
