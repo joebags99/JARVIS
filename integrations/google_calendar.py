@@ -21,7 +21,9 @@ from app.logging_setup import get_logger
 
 log = get_logger("google_cal")
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+# calendar (not calendar.readonly) so we can create/edit events too.
+# Existing readonly tokens will be detected as insufficient and re-authorized.
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TOKEN_DIR = ROOT_DIR / "tokens" / "google"
 
 
@@ -65,8 +67,12 @@ def _load_credentials(account_name: str):
             log.warning("[%s] could not read token file: %s", account_name, exc)
 
     if creds and creds.valid:
-        log.debug("[%s] Google credentials valid", account_name)
-        return creds
+        # If the token predates the write scope, force re-authorization.
+        if creds.scopes and not set(SCOPES).issubset(set(creds.scopes)):
+            log.info("[%s] token missing required scopes; re-authorizing", account_name)
+        else:
+            log.debug("[%s] Google credentials valid", account_name)
+            return creds
 
     if creds and creds.expired and creds.refresh_token:
         try:
@@ -176,6 +182,78 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
 
     all_events.sort(key=_sort_key)
     return all_events[:max_events]
+
+
+def create_event(
+    account_name: str,
+    calendar_name: str,
+    summary: str,
+    start_iso: str,
+    end_iso: str,
+    description: str | None = None,
+    location: str | None = None,
+) -> str:
+    """Create a calendar event. Returns a human-readable status string for Claude."""
+    try:
+        from googleapiclient.discovery import build
+    except ImportError:
+        return "Error: Google API libraries not installed."
+
+    creds = _load_credentials(account_name)
+    if creds is None:
+        return f"Error: no valid credentials for account '{account_name}'."
+
+    try:
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+
+        # Resolve calendar name → ID (exact match first, then partial).
+        cal_list = service.calendarList().list().execute()
+        cal_id: str | None = None
+        matched_name = calendar_name
+        for cal in cal_list.get("items", []):
+            if cal.get("summary", "").lower() == calendar_name.lower():
+                cal_id = cal["id"]
+                matched_name = cal.get("summary", calendar_name)
+                break
+        if cal_id is None:
+            for cal in cal_list.get("items", []):
+                if calendar_name.lower() in cal.get("summary", "").lower():
+                    cal_id = cal["id"]
+                    matched_name = cal.get("summary", calendar_name)
+                    break
+        if cal_id is None:
+            available = [cal.get("summary", "?") for cal in cal_list.get("items", [])]
+            return (
+                f"Error: calendar '{calendar_name}' not found on account '{account_name}'. "
+                f"Available calendars: {', '.join(available)}"
+            )
+
+        # All-day events use date strings ("YYYY-MM-DD"); timed events use dateTime.
+        def _start_end(iso: str) -> dict:
+            return {"date": iso} if len(iso) == 10 else {"dateTime": iso}
+
+        body: dict = {
+            "summary": summary,
+            "start": _start_end(start_iso),
+            "end": _start_end(end_iso),
+        }
+        if description:
+            body["description"] = description
+        if location:
+            body["location"] = location
+
+        created = service.events().insert(calendarId=cal_id, body=body).execute()
+        log.info(
+            "[%s/%s] created event '%s' at %s (id=%s)",
+            account_name, matched_name, summary, start_iso, created.get("id"),
+        )
+        return (
+            f"Event '{summary}' created on the '{matched_name}' calendar "
+            f"starting {start_iso}."
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.error("[%s] create_event failed: %s", account_name, exc)
+        return f"Error creating event: {exc}"
 
 
 def _parse(item: dict, source: str = "Google") -> CalEvent | None:
