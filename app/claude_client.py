@@ -1,9 +1,14 @@
-"""Anthropic Claude API client with streaming and context injection.
+"""Anthropic Claude API client with streaming, context injection, and tool use.
 
 Maintains the per-session conversation history and streams responses token by
 token via a callback so the overlay can update the UI in real time. All network
 work happens on a background thread (the caller is responsible for that); this
 module is intentionally synchronous and stream-oriented.
+
+Tool use flow:
+  1. First stream pass — Claude may emit text AND a tool_use block.
+  2. Tools are executed locally; results fed back as tool_result messages.
+  3. Second stream pass — Claude emits the final confirmation (streamed).
 """
 
 from __future__ import annotations
@@ -18,6 +23,170 @@ log = get_logger("claude")
 
 MAX_TOKENS = 1024
 
+# ── Tool definitions ──────────────────────────────────────────────────────────
+
+CALENDAR_TOOLS = [
+    {
+        "name": "update_calendar_event",
+        "description": (
+            "Update (edit) an existing Google Calendar event. "
+            "Finds the event by its current title; supply only the fields that "
+            "should change — everything else is left untouched. "
+            "Use this instead of create_calendar_event whenever the user asks to "
+            "edit, reschedule, rename, or modify an existing event."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_name": {
+                    "type": "string",
+                    "description": "Google account name from the source tags, e.g. 'personal'.",
+                },
+                "calendar_name": {
+                    "type": "string",
+                    "description": "Calendar name from the source tags, e.g. 'Family', 'Bills'.",
+                },
+                "event_summary": {
+                    "type": "string",
+                    "description": "Current title of the event to find and update.",
+                },
+                "start_hint": {
+                    "type": "string",
+                    "description": (
+                        "ISO 8601 date or datetime to narrow down which occurrence "
+                        "to update, e.g. '2026-06-16'. Required when multiple events "
+                        "share the same title."
+                    ),
+                },
+                "new_summary": {
+                    "type": "string",
+                    "description": "New title (omit to keep current).",
+                },
+                "new_start": {
+                    "type": "string",
+                    "description": "New start as ISO 8601 with timezone offset (omit to keep current).",
+                },
+                "new_end": {
+                    "type": "string",
+                    "description": "New end as ISO 8601 with timezone offset (omit to keep current).",
+                },
+                "new_description": {
+                    "type": "string",
+                    "description": "New description (omit to keep current).",
+                },
+                "new_location": {
+                    "type": "string",
+                    "description": "New location (omit to keep current).",
+                },
+            },
+            "required": ["account_name", "calendar_name", "event_summary"],
+        },
+    },
+    {
+        "name": "create_calendar_event",
+        "description": (
+            "Create an event on the user's Google Calendar. "
+            "The calendar events already in the system prompt show the account name "
+            "and calendar name in their source tag, e.g. '[Google/personal/Bills]' "
+            "means account_name='personal', calendar_name='Bills'. "
+            "Use existing events to infer appropriate timing when the user doesn't "
+            "give exact times. Always include timezone offset in start/end."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_name": {
+                    "type": "string",
+                    "description": (
+                        "Google account name from the source tags, e.g. 'personal', "
+                        "'work', 'default'."
+                    ),
+                },
+                "calendar_name": {
+                    "type": "string",
+                    "description": (
+                        "Calendar name from the source tags, e.g. 'Joseph Konkle', "
+                        "'Bills', 'Family', 'Tasks'."
+                    ),
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Event title.",
+                },
+                "start": {
+                    "type": "string",
+                    "description": (
+                        "Start as ISO 8601 with timezone offset, "
+                        "e.g. '2026-06-15T14:00:00-05:00'. "
+                        "For all-day events use 'YYYY-MM-DD'."
+                    ),
+                },
+                "end": {
+                    "type": "string",
+                    "description": (
+                        "End as ISO 8601 with timezone offset. "
+                        "Default to 1 hour after start for unspecified durations."
+                    ),
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional event notes.",
+                },
+                "location": {
+                    "type": "string",
+                    "description": "Optional location.",
+                },
+            },
+            "required": ["account_name", "calendar_name", "summary", "start", "end"],
+        },
+    }
+]
+
+
+def _execute_tool(name: str, input_data: dict) -> str:
+    """Dispatch a tool call and return a result string."""
+    if name == "create_calendar_event":
+        from integrations.google_calendar import create_event
+        return create_event(
+            account_name=input_data["account_name"],
+            calendar_name=input_data["calendar_name"],
+            summary=input_data["summary"],
+            start_iso=input_data["start"],
+            end_iso=input_data["end"],
+            description=input_data.get("description"),
+            location=input_data.get("location"),
+        )
+    if name == "update_calendar_event":
+        from integrations.google_calendar import update_event
+        return update_event(
+            account_name=input_data["account_name"],
+            calendar_name=input_data["calendar_name"],
+            event_summary=input_data["event_summary"],
+            start_hint=input_data.get("start_hint"),
+            new_summary=input_data.get("new_summary"),
+            new_start_iso=input_data.get("new_start"),
+            new_end_iso=input_data.get("new_end"),
+            new_description=input_data.get("new_description"),
+            new_location=input_data.get("new_location"),
+        )
+    return f"Unknown tool: {name}"
+
+
+def _block_to_dict(block) -> dict:
+    """Serialize an Anthropic content block to a plain dict for history storage."""
+    if block.type == "text":
+        return {"type": "text", "text": block.text}
+    if block.type == "tool_use":
+        return {
+            "type": "tool_use",
+            "id": block.id,
+            "name": block.name,
+            "input": block.input,
+        }
+    return {"type": block.type}
+
+
+# ── Client ────────────────────────────────────────────────────────────────────
 
 class ClaudeClient:
     """Wraps the Anthropic SDK and owns session conversation history."""
@@ -65,6 +234,46 @@ class ClaudeClient:
     def reload_context(self) -> None:
         self.context.reload_static()
 
+    def summarize_session(self, history: list[dict]) -> str:
+        """One-shot summary of a conversation history. Returns '' on failure."""
+        if not self.ready or not history:
+            return ""
+
+        lines = []
+        for m in history:
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if isinstance(content, str) and content.strip():
+                lines.append(f"{role.upper()}: {content.strip()}")
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        t = block.get("text", "").strip()
+                        if t:
+                            lines.append(f"{role.upper()}: {t}")
+
+        if not lines:
+            return ""
+
+        try:
+            response = self._client.messages.create(
+                model=CONFIG.anthropic_model,
+                max_tokens=400,
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Summarize this JARVIS assistant conversation in 3-5 concise "
+                        "bullet points. Focus on topics discussed, decisions made, and "
+                        "any calendar events or actions taken.\n\n"
+                        + "\n".join(lines)
+                    ),
+                }],
+            )
+            return response.content[0].text if response.content else ""
+        except Exception as exc:  # noqa: BLE001
+            log.error("summarize_session failed: %s", exc)
+            return ""
+
     def send(
         self,
         user_message: str,
@@ -72,8 +281,10 @@ class ClaudeClient:
     ) -> str:
         """Send a message with full context; stream deltas via ``on_delta``.
 
-        Returns the complete assistant reply. Raises no network errors to the
-        caller — failures return a readable error string instead.
+        Handles a single round of tool use transparently: if Claude calls a
+        tool (e.g. create_calendar_event), the tool executes locally and Claude
+        streams a confirmation response. Returns the complete assistant reply.
+        Never raises — failures return a readable error string.
         """
         if not self.ready:
             return self._init_error or "Claude client is not available."
@@ -83,22 +294,64 @@ class ClaudeClient:
 
         full_text = ""
         try:
+            # ── First pass: stream with tools enabled ─────────────────────────
             with self._client.messages.stream(
                 model=CONFIG.anthropic_model,
                 max_tokens=MAX_TOKENS,
                 system=system_prompt,
                 messages=self.history,
+                tools=CALENDAR_TOOLS,
             ) as stream:
                 for text in stream.text_stream:
                     full_text += text
                     if on_delta:
                         on_delta(text)
-            self.history.append({"role": "assistant", "content": full_text})
+                final_msg = stream.get_final_message()
+
+            tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
+
+            if tool_uses:
+                # Commit assistant turn (text + tool_use blocks) to history.
+                self.history.append({
+                    "role": "assistant",
+                    "content": [_block_to_dict(b) for b in final_msg.content],
+                })
+
+                # Execute each tool, collect results.
+                results = []
+                for tu in tool_uses:
+                    outcome = _execute_tool(tu.name, tu.input)
+                    log.info("tool %s -> %r", tu.name, outcome[:120])
+                    results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tu.id,
+                        "content": outcome,
+                    })
+                self.history.append({"role": "user", "content": results})
+
+                # ── Second pass: stream Claude's follow-up confirmation ────────
+                followup = ""
+                with self._client.messages.stream(
+                    model=CONFIG.anthropic_model,
+                    max_tokens=MAX_TOKENS,
+                    system=system_prompt,
+                    messages=self.history,
+                ) as stream:
+                    for text in stream.text_stream:
+                        followup += text
+                        full_text += text
+                        if on_delta:
+                            on_delta(text)
+                self.history.append({"role": "assistant", "content": followup})
+            else:
+                self.history.append({"role": "assistant", "content": full_text})
+
             log.info("response received (%d chars)", len(full_text))
             return full_text
+
         except Exception as exc:  # noqa: BLE001
             log.error("Claude API call failed: %s", exc)
-            # Roll back the unanswered user turn so history stays consistent.
-            if self.history and self.history[-1]["role"] == "user":
+            # Roll back to keep history consistent — remove any partial turns.
+            while self.history and self.history[-1]["role"] == "user":
                 self.history.pop()
             return f"⚠️ Error contacting Claude: {exc}"

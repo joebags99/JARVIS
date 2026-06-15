@@ -80,8 +80,8 @@ class ContextBuilder:
         return "\n\n".join(parts).strip()
 
     def _datetime_section(self) -> str:
-        now = dt.datetime.now()
-        return now.strftime("%A, %B %d, %Y — %I:%M %p")
+        now = dt.datetime.now().astimezone()
+        return now.strftime("%A, %B %d, %Y — %I:%M %p %Z (UTC%z)")
 
     def _calendar_section(self) -> str:
         events = []

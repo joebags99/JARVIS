@@ -58,6 +58,13 @@ def _get_int(name: str, default: int) -> int:
         return default
 
 
+def _get_list(name: str, default: list[str]) -> list[str]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 @dataclass
 class Config:
     """Resolved runtime configuration."""
@@ -80,10 +87,20 @@ class Config:
 
     # Voice
     whisper_model: str = field(default_factory=lambda: _get("WHISPER_MODEL", "small"))
+    # Device index (int) or partial name string. Empty = system default.
+    audio_input_device: str = field(
+        default_factory=lambda: _get("AUDIO_INPUT_DEVICE", "")
+    )
 
     # Google Calendar
     google_credentials_path: str = field(
         default_factory=lambda: _get("GOOGLE_CREDENTIALS_PATH", "credentials.json")
+    )
+    # Comma-separated account names, e.g. "personal,work,northrop".
+    # Each name maps to tokens/google/{name}.json.
+    # Defaults to ["default"] for single-account backward compatibility.
+    google_accounts: list[str] = field(
+        default_factory=lambda: _get_list("GOOGLE_ACCOUNTS", ["default"])
     )
 
     # Outlook / Microsoft Graph
