@@ -261,6 +261,135 @@ def create_event(
         return f"Error creating event: {exc}"
 
 
+def update_event(
+    account_name: str,
+    calendar_name: str,
+    event_summary: str,
+    start_hint: str | None = None,
+    new_summary: str | None = None,
+    new_start_iso: str | None = None,
+    new_end_iso: str | None = None,
+    new_description: str | None = None,
+    new_location: str | None = None,
+) -> str:
+    """Find an existing event by title and PATCH only the supplied fields.
+
+    Returns a human-readable status string for Claude. Uses Google's PATCH
+    so unmentioned fields are left untouched.
+    """
+    try:
+        from googleapiclient.discovery import build
+    except ImportError:
+        return "Error: Google API libraries not installed."
+
+    creds = _load_credentials(account_name)
+    if creds is None:
+        return f"Error: no valid credentials for account '{account_name}'."
+
+    try:
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+
+        # Resolve calendar name → ID.
+        cal_list = service.calendarList().list().execute()
+        cal_id: str | None = None
+        matched_cal_name = calendar_name
+        for cal in cal_list.get("items", []):
+            if cal.get("summary", "").lower() == calendar_name.lower():
+                cal_id = cal["id"]
+                matched_cal_name = cal.get("summary", calendar_name)
+                break
+        if cal_id is None:
+            for cal in cal_list.get("items", []):
+                if calendar_name.lower() in cal.get("summary", "").lower():
+                    cal_id = cal["id"]
+                    matched_cal_name = cal.get("summary", calendar_name)
+                    break
+        if cal_id is None:
+            available = [cal.get("summary", "?") for cal in cal_list.get("items", [])]
+            return (
+                f"Error: calendar '{calendar_name}' not found on account '{account_name}'. "
+                f"Available: {', '.join(available)}"
+            )
+
+        # Search a wide window so we catch recent and upcoming events.
+        now = dt.datetime.now(dt.timezone.utc)
+        result = service.events().list(
+            calendarId=cal_id,
+            timeMin=(now - dt.timedelta(days=7)).isoformat(),
+            timeMax=(now + dt.timedelta(days=90)).isoformat(),
+            singleEvents=True,
+            q=event_summary,
+        ).execute()
+
+        matches = [
+            item for item in result.get("items", [])
+            if event_summary.lower() in item.get("summary", "").lower()
+        ]
+
+        if not matches:
+            return (
+                f"Error: no event matching '{event_summary}' found on the "
+                f"'{matched_cal_name}' calendar in the next 90 days."
+            )
+
+        if len(matches) > 1 and start_hint is None:
+            options = "; ".join(
+                f"'{m.get('summary')}' on "
+                f"{m['start'].get('dateTime', m['start'].get('date', '?'))}"
+                for m in matches[:5]
+            )
+            return (
+                f"Found {len(matches)} events matching '{event_summary}'. "
+                f"Specify which one with a start_hint date. Options: {options}"
+            )
+
+        target = matches[0]
+        if start_hint and len(matches) > 1:
+            hint_date = start_hint[:10]
+            for m in matches:
+                event_dt = m["start"].get("dateTime", m["start"].get("date", ""))
+                if event_dt.startswith(hint_date):
+                    target = m
+                    break
+
+        # Build a partial patch — only include fields the caller specified.
+        patch: dict = {}
+        if new_summary is not None:
+            patch["summary"] = new_summary
+        if new_description is not None:
+            patch["description"] = new_description
+        if new_location is not None:
+            patch["location"] = new_location
+
+        def _start_end(iso: str) -> dict:
+            return {"date": iso} if len(iso) == 10 else {"dateTime": iso}
+
+        if new_start_iso is not None:
+            patch["start"] = _start_end(new_start_iso)
+        if new_end_iso is not None:
+            patch["end"] = _start_end(new_end_iso)
+
+        if not patch:
+            return "Error: no fields to update were specified."
+
+        service.events().patch(
+            calendarId=cal_id,
+            eventId=target["id"],
+            body=patch,
+        ).execute()
+
+        display_name = new_summary or target.get("summary", event_summary)
+        log.info(
+            "[%s/%s] updated event '%s' (id=%s)",
+            account_name, matched_cal_name, display_name, target["id"],
+        )
+        return f"Event '{display_name}' updated on the '{matched_cal_name}' calendar."
+
+    except Exception as exc:  # noqa: BLE001
+        log.error("[%s] update_event failed: %s", account_name, exc)
+        return f"Error updating event: {exc}"
+
+
 def _parse(item: dict, source: str = "Google") -> CalEvent | None:
     try:
         start_raw = item["start"]

@@ -27,6 +27,62 @@ MAX_TOKENS = 1024
 
 CALENDAR_TOOLS = [
     {
+        "name": "update_calendar_event",
+        "description": (
+            "Update (edit) an existing Google Calendar event. "
+            "Finds the event by its current title; supply only the fields that "
+            "should change — everything else is left untouched. "
+            "Use this instead of create_calendar_event whenever the user asks to "
+            "edit, reschedule, rename, or modify an existing event."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_name": {
+                    "type": "string",
+                    "description": "Google account name from the source tags, e.g. 'personal'.",
+                },
+                "calendar_name": {
+                    "type": "string",
+                    "description": "Calendar name from the source tags, e.g. 'Family', 'Bills'.",
+                },
+                "event_summary": {
+                    "type": "string",
+                    "description": "Current title of the event to find and update.",
+                },
+                "start_hint": {
+                    "type": "string",
+                    "description": (
+                        "ISO 8601 date or datetime to narrow down which occurrence "
+                        "to update, e.g. '2026-06-16'. Required when multiple events "
+                        "share the same title."
+                    ),
+                },
+                "new_summary": {
+                    "type": "string",
+                    "description": "New title (omit to keep current).",
+                },
+                "new_start": {
+                    "type": "string",
+                    "description": "New start as ISO 8601 with timezone offset (omit to keep current).",
+                },
+                "new_end": {
+                    "type": "string",
+                    "description": "New end as ISO 8601 with timezone offset (omit to keep current).",
+                },
+                "new_description": {
+                    "type": "string",
+                    "description": "New description (omit to keep current).",
+                },
+                "new_location": {
+                    "type": "string",
+                    "description": "New location (omit to keep current).",
+                },
+            },
+            "required": ["account_name", "calendar_name", "event_summary"],
+        },
+    },
+    {
         "name": "create_calendar_event",
         "description": (
             "Create an event on the user's Google Calendar. "
@@ -99,6 +155,19 @@ def _execute_tool(name: str, input_data: dict) -> str:
             end_iso=input_data["end"],
             description=input_data.get("description"),
             location=input_data.get("location"),
+        )
+    if name == "update_calendar_event":
+        from integrations.google_calendar import update_event
+        return update_event(
+            account_name=input_data["account_name"],
+            calendar_name=input_data["calendar_name"],
+            event_summary=input_data["event_summary"],
+            start_hint=input_data.get("start_hint"),
+            new_summary=input_data.get("new_summary"),
+            new_start_iso=input_data.get("new_start"),
+            new_end_iso=input_data.get("new_end"),
+            new_description=input_data.get("new_description"),
+            new_location=input_data.get("new_location"),
         )
     return f"Unknown tool: {name}"
 
