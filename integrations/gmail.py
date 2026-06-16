@@ -18,6 +18,7 @@ for Claude instead of raising.
 from __future__ import annotations
 
 import base64
+import inspect
 from email.mime.text import MIMEText
 
 from app.config import ROOT_DIR, CONFIG
@@ -78,7 +79,14 @@ def _load_credentials(account_name: str):
 
     try:
         flow = InstalledAppFlow.from_client_secrets_file(str(cred_file), SCOPES)
-        creds = flow.run_local_server(port=0)
+        # Force the account chooser so each configured account can be tied to a
+        # different Google login (same trick as google_calendar.py); fall back
+        # silently if this google-auth-oauthlib version lacks the kwarg.
+        sig = inspect.signature(flow.run_local_server)
+        if "prompt" in sig.parameters:
+            creds = flow.run_local_server(port=0, prompt="consent")
+        else:
+            creds = flow.run_local_server(port=0)
         token_path.write_text(creds.to_json(), encoding="utf-8")
         log.info("[%s] Gmail authorized; token cached to %s", account_name, token_path)
         return creds
@@ -87,9 +95,8 @@ def _load_credentials(account_name: str):
         return None
 
 
-def _first_account() -> str:
-    accounts = getattr(CONFIG, "google_accounts", None) or ["default"]
-    return accounts[0]
+def _accounts() -> list[str]:
+    return CONFIG.gmail_accounts_resolved or ["default"]
 
 
 def _header(headers: list[dict], name: str) -> str:
@@ -99,29 +106,14 @@ def _header(headers: list[dict], name: str) -> str:
     return ""
 
 
-def list_emails(query: str | None = None, max_results: int = 10) -> str:
-    """List recent emails (sender, subject, date, snippet). Never raises.
+def _list_one(account: str, q: str, max_results: int) -> tuple[list[str], str | None]:
+    """List emails for a single account. Returns (blocks, error_or_None)."""
+    from googleapiclient.discovery import build
 
-    *query* is a Gmail search string (e.g. 'is:unread', 'from:sam newer_than:7d').
-    Defaults to the inbox. Reads from the first configured Google account.
-    """
-    if not CONFIG.gmail_available:
-        return (
-            "Gmail is not configured. Set GMAIL_ENABLED=true and make sure "
-            "Google credentials.json is present."
-        )
-
-    try:
-        from googleapiclient.discovery import build
-    except ImportError:
-        return "Error: Google API libraries not installed."
-
-    account = _first_account()
     creds = _load_credentials(account)
     if creds is None:
-        return f"Error: no valid Gmail credentials for account '{account}'."
+        return [], f"[{account}] no valid Gmail credentials."
 
-    q = query or "in:inbox"
     try:
         service = build("gmail", "v1", credentials=creds, cache_discovery=False)
         listing = (
@@ -130,9 +122,6 @@ def list_emails(query: str | None = None, max_results: int = 10) -> str:
             .execute()
         )
         message_ids = [m["id"] for m in listing.get("messages", [])]
-        if not message_ids:
-            return f"(No emails matching '{q}'.)"
-
         blocks = []
         for mid in message_ids:
             msg = (
@@ -149,17 +138,77 @@ def list_emails(query: str | None = None, max_results: int = 10) -> str:
             unread = "UNREAD" in msg.get("labelIds", [])
             flag = " [unread]" if unread else ""
             blocks.append(
-                f"- From: {sender}{flag}\n  Subject: {subject}\n  Date: {date}\n  {snippet}"
+                f"- [{account}] From: {sender}{flag}\n"
+                f"  Subject: {subject}\n  Date: {date}\n  {snippet}"
             )
         log.info("[%s] listed %d emails (q=%r)", account, len(blocks), q)
-        return "\n".join(blocks)
+        return blocks, None
     except Exception as exc:  # noqa: BLE001
         log.error("[%s] list_emails failed (q=%r): %s", account, q, exc)
-        return f"Error fetching emails: {exc}"
+        return [], f"[{account}] error fetching emails: {exc}"
 
 
-def create_draft(to: str, subject: str, body: str, cc: str | None = None) -> str:
-    """Create a Gmail draft (never auto-sends). Returns a status string. Never raises."""
+def list_emails(
+    query: str | None = None, max_results: int = 10, account: str | None = None
+) -> str:
+    """List recent emails across the configured Gmail accounts. Never raises.
+
+    *query* is a Gmail search string (e.g. 'is:unread', 'from:sam newer_than:7d');
+    defaults to the inbox. *max_results* is per account. Pass *account* to scope
+    to a single configured account name; omit to search all of them. Each result
+    line is tagged with its source account, e.g. '[work]'.
+    """
+    if not CONFIG.gmail_available:
+        return (
+            "Gmail is not configured. Set GMAIL_ENABLED=true and make sure "
+            "Google credentials.json is present."
+        )
+
+    try:
+        import googleapiclient.discovery  # noqa: F401
+    except ImportError:
+        return "Error: Google API libraries not installed."
+
+    all_accounts = _accounts()
+    if account is not None:
+        if account not in all_accounts:
+            return (
+                f"Error: unknown Gmail account '{account}'. "
+                f"Configured accounts: {', '.join(all_accounts)}."
+            )
+        targets = [account]
+    else:
+        targets = all_accounts
+
+    q = query or "in:inbox"
+    blocks: list[str] = []
+    errors: list[str] = []
+    for acct in targets:
+        acct_blocks, err = _list_one(acct, q, max_results)
+        blocks.extend(acct_blocks)
+        if err:
+            errors.append(err)
+
+    if not blocks:
+        if errors:
+            return "Error fetching emails:\n" + "\n".join(errors)
+        return f"(No emails matching '{q}'.)"
+
+    out = "\n".join(blocks)
+    if errors:
+        out += "\n\nSome accounts had problems:\n" + "\n".join(errors)
+    return out
+
+
+def create_draft(
+    to: str, subject: str, body: str, cc: str | None = None, account: str | None = None
+) -> str:
+    """Create a Gmail draft (never auto-sends). Returns a status string. Never raises.
+
+    *account* picks which configured Gmail account the draft is saved under. It
+    may be omitted only when a single account is configured; with several, the
+    caller must say which one (this returns a message listing them otherwise).
+    """
     if not CONFIG.gmail_available:
         return (
             "Gmail is not configured. Set GMAIL_ENABLED=true and make sure "
@@ -171,7 +220,21 @@ def create_draft(to: str, subject: str, body: str, cc: str | None = None) -> str
     except ImportError:
         return "Error: Google API libraries not installed."
 
-    account = _first_account()
+    all_accounts = _accounts()
+    if account is None:
+        if len(all_accounts) == 1:
+            account = all_accounts[0]
+        else:
+            return (
+                "Multiple Gmail accounts are configured — specify which one to "
+                f"draft from. Options: {', '.join(all_accounts)}."
+            )
+    elif account not in all_accounts:
+        return (
+            f"Error: unknown Gmail account '{account}'. "
+            f"Configured accounts: {', '.join(all_accounts)}."
+        )
+
     creds = _load_credentials(account)
     if creds is None:
         return f"Error: no valid Gmail credentials for account '{account}'."
@@ -191,8 +254,8 @@ def create_draft(to: str, subject: str, body: str, cc: str | None = None) -> str
         )
         log.info("[%s] created draft to %s (id=%s)", account, to, draft.get("id"))
         return (
-            f"Draft saved to Gmail (to {to}, subject '{subject}'). "
-            "It was NOT sent — review and send it yourself from Gmail."
+            f"Draft saved to the '{account}' Gmail account (to {to}, subject "
+            f"'{subject}'). It was NOT sent — review and send it yourself from Gmail."
         )
     except Exception as exc:  # noqa: BLE001
         log.error("[%s] create_draft failed: %s", account, exc)

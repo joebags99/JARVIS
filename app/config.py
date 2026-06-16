@@ -139,6 +139,13 @@ class Config:
     gmail_enabled: bool = field(
         default_factory=lambda: _get("GMAIL_ENABLED").lower() in ("true", "1", "yes")
     )
+    # Which Google accounts to use for Gmail (comma-separated names, each with
+    # its own mail token under tokens/google_mail/{name}.json). Defaults to the
+    # calendar's GOOGLE_ACCOUNTS list when unset, so a single GOOGLE_ACCOUNTS
+    # covers both — set GMAIL_ACCOUNTS only when the mail accounts differ.
+    gmail_accounts: list[str] = field(
+        default_factory=lambda: _get_list("GMAIL_ACCOUNTS", [])
+    )
 
     # Outlook / Microsoft Graph
     outlook_client_id: str = field(default_factory=lambda: _get("OUTLOOK_CLIENT_ID"))
@@ -182,6 +189,11 @@ class Config:
     def gmail_available(self) -> bool:
         """Gmail is usable only if opted in AND Google credentials exist on disk."""
         return self.gmail_enabled and self.google_enabled
+
+    @property
+    def gmail_accounts_resolved(self) -> list[str]:
+        """Gmail account names, falling back to the calendar's GOOGLE_ACCOUNTS."""
+        return self.gmail_accounts or self.google_accounts
 
 
 # Singleton-ish config used across the app.

@@ -632,9 +632,11 @@ EMAIL_TOOLS = [
         "description": (
             "List the user's recent emails (sender, subject, date, snippet). Call "
             "this when the user asks about their inbox, recent mail, unread "
-            "messages, or wants you to find or summarize an email. Use the query "
-            "to narrow results with Gmail search syntax, e.g. 'is:unread', "
-            "'from:sam', 'newer_than:7d', 'subject:invoice'. Defaults to the inbox."
+            "messages, or wants you to find or summarize an email. Searches all "
+            "configured Gmail accounts by default; each result line is tagged with "
+            "its source account, e.g. '[work]'. Use the query to narrow results "
+            "with Gmail search syntax, e.g. 'is:unread', 'from:sam', "
+            "'newer_than:7d', 'subject:invoice'. Defaults to the inbox."
         ),
         "input_schema": {
             "type": "object",
@@ -648,7 +650,15 @@ EMAIL_TOOLS = [
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "How many emails to return (1-25). Default 10.",
+                    "description": "How many emails to return per account (1-25). Default 10.",
+                },
+                "account": {
+                    "type": "string",
+                    "description": (
+                        "Restrict the search to one configured Gmail account by its "
+                        "name (the tag shown in earlier results, e.g. 'work'). Omit "
+                        "to search every account at once."
+                    ),
                 },
             },
             "required": [],
@@ -661,7 +671,9 @@ EMAIL_TOOLS = [
             "JARVIS never sends mail automatically — this only saves a draft. Use "
             "it when the user asks you to write, draft, or reply to an email. "
             "Confirm the recipient and the gist with the user if either is unclear "
-            "rather than inventing an address or details."
+            "rather than inventing an address or details. When several Gmail "
+            "accounts are configured you MUST set account; if it's unclear which "
+            "one the draft should come from, ask the user before drafting."
         ),
         "input_schema": {
             "type": "object",
@@ -675,6 +687,14 @@ EMAIL_TOOLS = [
                 "cc": {
                     "type": "string",
                     "description": "Optional CC recipient(s), comma-separated.",
+                },
+                "account": {
+                    "type": "string",
+                    "description": (
+                        "Which configured Gmail account to save the draft under "
+                        "(the account name, e.g. 'work'). Required when more than "
+                        "one account is configured."
+                    ),
                 },
             },
             "required": ["to", "subject", "body"],
@@ -845,6 +865,7 @@ def _execute_tool(name: str, input_data: dict) -> str:
         return gmail.list_emails(
             query=input_data.get("query"),
             max_results=int(input_data.get("max_results") or 10),
+            account=input_data.get("account"),
         )
     if name == "create_email_draft":
         from integrations import gmail
@@ -853,6 +874,7 @@ def _execute_tool(name: str, input_data: dict) -> str:
             subject=input_data["subject"],
             body=input_data["body"],
             cc=input_data.get("cc"),
+            account=input_data.get("account"),
         )
     return f"Unknown tool: {name}"
 

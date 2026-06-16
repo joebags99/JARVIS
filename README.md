@@ -127,12 +127,24 @@ mail scopes (read + draft), so it's opt-in:
 1. In the [Google Cloud Console](https://console.cloud.google.com/), enable the
    **Gmail API** on the same project.
 2. Set `GMAIL_ENABLED=true` in `.env`.
-3. On first email request, a browser opens to authorize the mail scopes; the
-   token is cached under `tokens/google_mail/` (gitignored).
+3. List the inboxes you want under `GMAIL_ACCOUNTS` (comma-separated names). For
+   three accounts: `GMAIL_ACCOUNTS=personal,work,side`. Leave it blank to reuse
+   the calendar's `GOOGLE_ACCOUNTS` instead.
+4. The **first** time each account is used, a browser opens to authorize it —
+   pick the matching Google login in the account chooser for each one. Tokens
+   are cached per account under `tokens/google_mail/{name}.json` (gitignored).
 
-JARVIS reads recent mail and **drafts** replies for you to review — it never
-sends mail on its own, since sending is hard to undo. Ask things like "any
-unread email from Sam this week?" or "draft a reply to the invoice thread."
+JARVIS searches **all** configured inboxes at once (each result is tagged with
+its account, e.g. `[work]`), reads recent mail, and **drafts** replies for you
+to review — it never sends mail on its own, since sending is hard to undo. With
+several accounts, tell it which to draft from ("draft a reply from my work
+email"). Ask things like "any unread from Sam this week across my inboxes?" or
+"summarize today's email."
+
+> **Authorizing 3 accounts:** the very first "check my email" will walk through
+> the browser consent for each account in turn (one window per account). After
+> that the tokens are cached and it's silent. If a window picks the wrong Google
+> login, delete that account's file under `tokens/google_mail/` and try again.
 
 ### 8. Add your personal context
 ```bash
@@ -192,6 +204,7 @@ notes from the 16th and add any action items to Todoist."
 | `OUTLOOK_ICS_URL` | Published calendar ICS link — no-Azure fallback, busy/free only. |
 | `TODOIST_API_KEY` | Personal API token from Todoist's Developer settings. |
 | `GMAIL_ENABLED` | `true` to enable Gmail read/draft tools (reuses Google `credentials.json`). |
+| `GMAIL_ACCOUNTS` | Comma-separated Gmail account names, e.g. `personal,work,side` (blank = reuse `GOOGLE_ACCOUNTS`). |
 
 ---
 
