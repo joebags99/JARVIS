@@ -103,29 +103,49 @@ TOOLS = [
     {
         "name": "get_recent_notes",
         "description": (
-            "Load recent meeting notes from the user's notes folder. Call this when "
-            "the user asks about recent meetings, wants to reference notes, asks "
-            "what was discussed or decided, or asks about action items."
+            "Load recent meeting notes from one category of the user's notes folder "
+            "— Daedabyte, Brightpoint, and General are kept in fully separate "
+            "subfolders and must never be mixed or merged together in a single "
+            "answer. Call this when the user asks about recent meetings, wants to "
+            "reference notes, asks what was discussed or decided, or asks about "
+            "action items. The user will often say which company/category they "
+            "mean; if they don't and it's genuinely unclear which one, ask before "
+            "calling this tool rather than guessing or fetching multiple categories."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
-            "required": [],
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "description": "Which notes stream to read. Ask the user if unclear — never guess.",
+                },
+            },
+            "required": ["category"],
         },
     },
     {
         "name": "create_note",
         "description": (
-            "Save a new meeting/conversation note to the user's notes folder. Use "
-            "this when the user asks you to log, save, or write down a note about "
-            "something (e.g. 'make a note about my meeting with Sam on the 16th') "
-            "instead of just summarizing in chat — capture what they actually told "
-            "you about it (who, what was discussed, decisions, action items) rather "
-            "than inventing detail they didn't give you."
+            "Save a new meeting/conversation note to one category of the user's "
+            "notes folder — Daedabyte, Brightpoint, and General are kept in fully "
+            "separate subfolders and must never be mixed. Use this when the user "
+            "asks you to log, save, or write down a note about something (e.g. "
+            "'make a note about my meeting with Sam on the 16th') instead of just "
+            "summarizing in chat — capture what they actually told you about it "
+            "(who, what was discussed, decisions, action items) rather than "
+            "inventing detail they didn't give you. The user will often say which "
+            "company/category the note belongs to; if they don't and it's genuinely "
+            "unclear which one, ask before calling this tool rather than guessing."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "description": "Which notes stream this belongs to. Ask the user if unclear — never guess.",
+                },
                 "content": {
                     "type": "string",
                     "description": "The note body — what was discussed, decided, follow-ups, etc.",
@@ -139,7 +159,7 @@ TOOLS = [
                     "description": "YYYY-MM-DD the note is about. Defaults to today if omitted.",
                 },
             },
-            "required": ["content"],
+            "required": ["category", "content"],
         },
     },
     {
@@ -591,9 +611,10 @@ def _execute_tool(name: str, input_data: dict) -> str:
     if name == "get_recent_notes":
         import datetime as dt
         from integrations import notes_watcher
-        notes = notes_watcher.read_recent_notes(5, 2000)
+        category = input_data["category"]
+        notes = notes_watcher.read_recent_notes(category, 5, 2000)
         if not notes:
-            return "(No meeting notes in /notes yet.)"
+            return f"(No {category} notes yet.)"
         blocks = []
         for note in notes:
             modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d")
@@ -602,6 +623,7 @@ def _execute_tool(name: str, input_data: dict) -> str:
     if name == "create_note":
         from integrations import notes_watcher
         return notes_watcher.create_note(
+            category=input_data["category"],
             content=input_data["content"],
             title=input_data.get("title"),
             date=input_data.get("date"),

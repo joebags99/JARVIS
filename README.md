@@ -132,19 +132,24 @@ the overlay.
 
 ## Using the `/notes/` folder
 
-Drop meeting notes as `.txt` or `.md` files into `notes/`. The **5 most recent**
-(by modified time) are included in JARVIS's context automatically, newest first.
+Notes are split into three separate streams, one subfolder each, so they never
+mix: `notes/Daedabyte/`, `notes/Brightpoint/`, and `notes/General/` (anything
+that isn't either job). Drop meeting notes as `.txt` or `.md` files into the
+matching subfolder; when asked, JARVIS reads the **5 most recent** (by modified
+time) from whichever single category you mean, newest first — it never merges
+the two work streams together. If you don't say which one and it's not obvious,
+JARVIS asks rather than guessing.
 
 Suggested naming: `YYYY-MM-DD_topic.md` (e.g. `2026-06-15_standup.md`).
 
 To keep prompts lean, each note is truncated to ~2000 characters in context.
 
-You can also ask JARVIS to write the note for you — e.g. "make a note about my
-meeting with Sam on the 16th, we discussed Q3 timelines" — and it saves a
-`YYYY-MM-DD_topic.md` file into `notes/` using what you told it, no manual
-file-dropping required. Tell it the same way to extract Todoist tasks from
-notes you've already dropped in, e.g. "check the meeting notes from the 16th
-and add any action items to Todoist."
+You can also ask JARVIS to write the note for you — e.g. "make a note for
+Daedabyte about my meeting with Sam on the 16th, we discussed Q3 timelines" —
+and it saves a `YYYY-MM-DD_topic.md` file into the right subfolder using what
+you told it, no manual file-dropping required. Tell it the same way to extract
+Todoist tasks from notes you've already dropped in, e.g. "check the Brightpoint
+notes from the 16th and add any action items to Todoist."
 
 ---
 
