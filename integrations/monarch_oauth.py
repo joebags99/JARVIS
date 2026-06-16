@@ -94,32 +94,87 @@ def _post_json(url: str, data: dict, timeout: int = 10) -> dict:
 
 # ── OAuth helpers ─────────────────────────────────────────────────────────────
 
-def _protected_resource_metadata() -> dict | None:
-    """Probe the MCP endpoint for a 401 + WWW-Authenticate resource_metadata
-    hint (RFC 9728), as defined by the MCP authorization spec. The resulting
-    document lists the actual authorization server(s) for this resource —
-    which may live on a completely different host than api.monarch.com.
+def _probe_for_resource_metadata_url(req: Request) -> str | None:
+    """Send one probe request and look for a 401 + WWW-Authenticate
+    resource_metadata hint. Logs whatever it actually got back (status code,
+    headers, body excerpt) at warning level so failures are diagnosable.
     """
-    req = Request(_MCP_RESOURCE, headers={"Accept": "application/json"})
     try:
-        with urlopen(req, timeout=10):
-            pass
+        with urlopen(req, timeout=10) as r:
+            log.warning(
+                "probe %s %s returned %s (expected 401) — no auth challenge to read",
+                req.get_method(), req.full_url, r.status,
+            )
+            return None
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             www_auth = exc.headers.get("WWW-Authenticate", "")
             m = re.search(r'resource_metadata="([^"]+)"', www_auth)
             if m:
-                try:
-                    return _get_json(m.group(1))
-                except Exception as inner:
-                    log.debug("failed to fetch resource metadata %s: %s", m.group(1), inner)
-            else:
-                log.debug("401 from MCP endpoint had no resource_metadata hint: %s", www_auth)
+                log.info("found resource_metadata hint: %s", m.group(1))
+                return m.group(1)
+            log.warning(
+                "probe %s %s got 401 but no resource_metadata hint in "
+                "WWW-Authenticate: %r (body: %s)",
+                req.get_method(), req.full_url, www_auth, _read_http_error(exc)[:300],
+            )
         else:
-            log.debug("unexpected status probing MCP endpoint: %s", exc.code)
+            log.warning(
+                "probe %s %s got %s (expected 401): %s",
+                req.get_method(), req.full_url, exc.code, _read_http_error(exc)[:300],
+            )
     except Exception as exc:
-        log.debug("probing MCP resource %s failed: %s", _MCP_RESOURCE, exc)
+        log.warning("probe %s %s failed: %s", req.get_method(), req.full_url, exc)
     return None
+
+
+def _protected_resource_metadata() -> dict | None:
+    """Probe the MCP endpoint for a 401 + WWW-Authenticate resource_metadata
+    hint (RFC 9728), as defined by the MCP authorization spec. The resulting
+    document lists the actual authorization server(s) for this resource —
+    which may live on a completely different host than api.monarch.com.
+
+    Tries both GET and POST (with a minimal JSON-RPC body) since the MCP
+    streamable-HTTP transport expects POST as the primary request type and
+    some servers reject a bare GET before ever checking auth.
+    """
+    probes = [
+        Request(
+            _MCP_RESOURCE,
+            headers={"Accept": "application/json, text/event-stream"},
+        ),
+        Request(
+            _MCP_RESOURCE,
+            data=json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "JARVIS", "version": "1.0"},
+                },
+            }).encode(),
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        ),
+    ]
+
+    metadata_url = None
+    for req in probes:
+        metadata_url = _probe_for_resource_metadata_url(req)
+        if metadata_url:
+            break
+
+    if not metadata_url:
+        return None
+
+    try:
+        return _get_json(metadata_url)
+    except Exception as exc:
+        log.warning("failed to fetch resource metadata %s: %s", metadata_url, exc)
+        return None
 
 
 def _discover() -> dict:
