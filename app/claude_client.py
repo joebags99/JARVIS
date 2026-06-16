@@ -6,9 +6,11 @@ work happens on a background thread (the caller is responsible for that); this
 module is intentionally synchronous and stream-oriented.
 
 Tool use flow:
-  1. First stream pass — Claude may emit text AND a tool_use block.
-  2. Tools are executed locally; results fed back as tool_result messages.
-  3. Second stream pass — Claude emits the final confirmation (streamed).
+  Bounded loop (see MAX_TOOL_ROUNDS): each round streams a response, and if
+  Claude emits a local tool_use block, the tool runs and its result is fed
+  back for another round. Parallel tool use is disabled so a local tool_use
+  and the remote Monarch MCP tool are never requested in the same turn —
+  that combination left a dangling, unpaired mcp_tool_use block in history.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from .logging_setup import get_logger
 log = get_logger("claude")
 
 MAX_TOKENS = 1024
+MAX_TOOL_ROUNDS = 5  # safety cap on local tool_use <-> tool_result round trips
 
 _MONARCH_MCP_URL = "https://api.monarch.com/mcp"
 _MCP_BETA = "mcp-client-2025-04-04"
@@ -409,58 +412,68 @@ class ClaudeClient:
 
         full_text = ""
         try:
-            # ── Build API kwargs; add Monarch MCP server when enabled ─────────
-            stream_kwargs: dict = dict(
+            # ── Build API kwargs; add Monarch MCP server when enabled. These are
+            # reused on every round of the loop below, so local tools and the
+            # Monarch MCP tool stay available across sequential tool rounds.
+            base_kwargs: dict = dict(
                 model=CONFIG.anthropic_model,
                 max_tokens=MAX_TOKENS,
                 system=system_prompt,
-                messages=self.history,
                 tools=TOOLS,
+                # A local tool_use always forces the API to stop the turn (it
+                # needs a client-supplied tool_result before continuing). If the
+                # model also requested the remote Monarch MCP tool in that same
+                # turn, the server never gets to resolve/pair it before the stop,
+                # leaving a dangling mcp_tool_use block that breaks the next
+                # call. Disabling parallel tool use keeps local and MCP tool
+                # calls on separate rounds instead.
+                tool_choice={"type": "auto", "disable_parallel_tool_use": True},
             )
+            stream_fn = self._client.messages.stream
             if CONFIG.monarch_enabled:
                 try:
                     from integrations.monarch_oauth import get_monarch_token
-                    stream_kwargs["mcp_servers"] = [{
+                    base_kwargs["mcp_servers"] = [{
                         "type": "url",
                         "name": "monarch",
                         "url": _MONARCH_MCP_URL,
                         "authorization_token": get_monarch_token(),
                     }]
-                    stream_kwargs["betas"] = [_MCP_BETA]
-                    _stream_fn = self._client.beta.messages.stream
+                    base_kwargs["betas"] = [_MCP_BETA]
+                    stream_fn = self._client.beta.messages.stream
                     log.info("using beta endpoint with monarch mcp_servers attached")
                 except Exception as exc:
                     log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
-                    _stream_fn = self._client.messages.stream
-            else:
-                _stream_fn = self._client.messages.stream
 
-            # ── First pass: stream with tools enabled ─────────────────────────
-            with _stream_fn(**stream_kwargs) as stream:
-                for text in stream.text_stream:
-                    full_text += text
-                    if on_delta:
-                        on_delta(text)
-                final_msg = stream.get_final_message()
+            # ── Bounded tool-use loop: keep tools/mcp_servers attached on every
+            # round so local tools (e.g. load_knowledge_pool) and the Monarch
+            # MCP tool can both be used for one question, just sequentially.
+            for round_num in range(1, MAX_TOOL_ROUNDS + 1):
+                with stream_fn(messages=self.history, **base_kwargs) as stream:
+                    for text in stream.text_stream:
+                        full_text += text
+                        if on_delta:
+                            on_delta(text)
+                    final_msg = stream.get_final_message()
 
-            log.info(
-                "first pass content block types: %s",
-                [b.type for b in final_msg.content],
-            )
-            tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
+                log.info(
+                    "round %d content block types: %s",
+                    round_num, [b.type for b in final_msg.content],
+                )
 
-            if tool_uses:
-                # Discard any pre-tool text streamed during first pass — the real
-                # answer comes after the tool result, not before it.
-                full_text = ""
-
-                # Commit assistant turn (text + tool_use blocks) to history.
                 self.history.append({
                     "role": "assistant",
                     "content": [_block_to_dict(b) for b in final_msg.content],
                 })
 
-                # Execute each tool, collect results.
+                tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
+                if not tool_uses:
+                    break
+
+                # Discard any pre-tool text streamed this round — the real
+                # answer comes after the tool result, not before it.
+                full_text = ""
+
                 results = []
                 for tu in tool_uses:
                     outcome = _execute_tool(tu.name, tu.input)
@@ -471,33 +484,8 @@ class ClaudeClient:
                         "content": outcome,
                     })
                 self.history.append({"role": "user", "content": results})
-
-                # ── Second pass: stream Claude's follow-up confirmation ────────
-                # Reuse whichever endpoint/betas the first pass used — the history
-                # may now contain MCP-specific block types that only the matching
-                # endpoint can correctly interpret.
-                followup_kwargs: dict = dict(
-                    model=CONFIG.anthropic_model,
-                    max_tokens=MAX_TOKENS,
-                    system=system_prompt,
-                    messages=self.history,
-                )
-                if "betas" in stream_kwargs:
-                    followup_kwargs["betas"] = stream_kwargs["betas"]
-                    followup_stream_fn = self._client.beta.messages.stream
-                else:
-                    followup_stream_fn = self._client.messages.stream
-
-                followup = ""
-                with followup_stream_fn(**followup_kwargs) as stream:
-                    for text in stream.text_stream:
-                        followup += text
-                        full_text += text
-                        if on_delta:
-                            on_delta(text)
-                self.history.append({"role": "assistant", "content": followup})
             else:
-                self.history.append({"role": "assistant", "content": full_text})
+                log.warning("hit max tool rounds (%d) without a final answer", MAX_TOOL_ROUNDS)
 
             log.info("response received (%d chars)", len(full_text))
             return full_text
