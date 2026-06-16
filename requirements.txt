@@ -1,5 +1,6 @@
 # ── Core ─────────────────────────────────────────────────────
-anthropic>=0.40.0
+# >=0.60.0 needed for the native web_search tool type used by meal prep.
+anthropic>=0.60.0
 python-dotenv>=1.0.0
 
 # ── UI / tray ────────────────────────────────────────────────
@@ -24,6 +25,7 @@ google-auth-oauthlib>=1.2.0
 
 # ── Timezone detection ─────────────────────────────────────────
 tzlocal>=5.0
+tzdata>=2024.1; sys_platform == 'win32'  # zoneinfo needs this on Windows for America/New_York lookups
 
 # ── Outlook / Microsoft Graph (optional) ─────────────────────
 msal>=1.28.0

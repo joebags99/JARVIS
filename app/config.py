@@ -31,6 +31,12 @@ TRAY_ICON_PATH = ASSETS_DIR / "tray_icon.png"
 for _d in (CONTEXT_DIR, NOTES_DIR, LOGS_DIR, ASSETS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
+# Notes are split into per-category subfolders so separate work streams never
+# mix (mirrors integrations/notes_watcher.py's CATEGORIES — duplicated here,
+# not imported, to avoid a circular import with that module).
+for _cat in ("Daedabyte", "General", "Brightpoint", "DnD"):
+    (NOTES_DIR / _cat).mkdir(parents=True, exist_ok=True)
+
 
 # ── UI color palette (from the spec) ─────────────────────────────────────────
 @dataclass(frozen=True)

@@ -20,6 +20,7 @@ import datetime as dt
 import json
 import sys
 import threading
+from ctypes import wintypes
 from pathlib import Path
 from typing import Callable
 
@@ -32,6 +33,10 @@ WINDOW_W = 420
 WINDOW_H = 640
 MARGIN = 16
 MIN_TURNS_FOR_SUMMARY = 5  # user messages required before auto-saving a summary
+
+# 0 = fully invisible, 255 = fully opaque.
+WINDOW_ALPHA_IDLE = 150  # ~58% opaque — tints the desktop through when unfocused
+WINDOW_ALPHA_FOCUSED = 255  # fully opaque while focused/hovered/interacting
 
 STATUS_IDLE = "Idle"
 STATUS_LISTENING = "Listening…"
@@ -52,6 +57,41 @@ def _screen_size() -> tuple[int, int]:
         except Exception:  # noqa: BLE001
             pass
     return 1920, 1080
+
+
+def _enable_real_transparency(title: str, alpha: int) -> None:
+    """Blend the whole window against the desktop with a constant alpha.
+
+    pywebview's own ``transparent=True`` only sets the WebView2 control's
+    background to transparent *inside* the host Form (avoiding a white
+    flash and giving the rounded corners clean edges) — the Form itself is
+    still a perfectly opaque top-level window as far as the desktop
+    compositor is concerned, which is why the window never actually showed
+    anything behind it no matter what alpha the CSS background used. Real
+    desktop blending needs the Win32 layered-window attribute, which
+    pywebview doesn't set up, so we do it ourselves here.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        user32 = ctypes.windll.user32
+        user32.FindWindowW.restype = wintypes.HWND
+        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        hwnd = user32.FindWindowW(None, title)
+        if not hwnd:
+            log.warning("could not find window handle for layered transparency")
+            return
+
+        GWL_EXSTYLE = -20
+        WS_EX_LAYERED = 0x00080000
+        LWA_ALPHA = 0x2
+
+        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+        user32.SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA)
+        log.info("layered window transparency enabled (alpha=%d)", alpha)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not enable layered transparency: %s", exc)
 
 
 class _JSApi:
@@ -75,6 +115,9 @@ class _JSApi:
     def move_window(self, dx: float, dy: float) -> None:
         self._overlay._drag_move(dx, dy)
 
+    def set_focused(self, is_focused: bool) -> None:
+        self._overlay._set_focused(is_focused)
+
 
 class Overlay:
     def __init__(
@@ -96,6 +139,8 @@ class Overlay:
         self._visible = False
         self._recording = False
         self._win_x, self._win_y = self._initial_position()
+        self._current_alpha: int = WINDOW_ALPHA_IDLE
+        self._alpha_cancel: threading.Event | None = None
 
         self._js_api = _JSApi(self)
         self.window = webview.create_window(
@@ -137,6 +182,7 @@ class Overlay:
         # the window is shown (not created with hidden=True) — see the "hack to
         # make transparent window work" in its winforms backend. So we start
         # visible and hide ourselves now that the page has finished loading.
+        _enable_real_transparency("JARVIS", WINDOW_ALPHA_IDLE)
         self.window.hide()
 
     def _eval(self, fn_name: str, *args) -> None:
@@ -152,10 +198,41 @@ class Overlay:
     def show(self) -> None:
         """Show (or un-fade) the overlay. Chat history is preserved."""
         self.window.show()
-        self._eval("clearFade")
+        self._set_focused(True)
         self._visible = True
         self.set_status(STATUS_IDLE)
         log.info("overlay shown")
+
+    def _set_focused(self, is_focused: bool) -> None:
+        """Animate the window alpha toward fully opaque (focused) or idle (unfocused)."""
+        target = WINDOW_ALPHA_FOCUSED if is_focused else WINDOW_ALPHA_IDLE
+        if self._current_alpha == target:
+            return
+
+        # Cancel any in-flight animation.
+        if self._alpha_cancel is not None:
+            self._alpha_cancel.set()
+
+        cancel = threading.Event()
+        self._alpha_cancel = cancel
+
+        start = self._current_alpha
+
+        def _animate() -> None:
+            # 200 ms total, ~10 ms per step → ~20 steps.
+            DURATION_MS = 200
+            STEP_MS = 10
+            steps = max(1, DURATION_MS // STEP_MS)
+            for i in range(1, steps + 1):
+                if cancel.is_set():
+                    return
+                alpha = round(start + (target - start) * i / steps)
+                self._current_alpha = alpha
+                _enable_real_transparency("JARVIS", alpha)
+                if i < steps:
+                    cancel.wait(STEP_MS / 1000)
+
+        threading.Thread(target=_animate, daemon=True).start()
 
     def hide(self) -> None:
         """Hide window without clearing chat (used internally for fade-hide)."""

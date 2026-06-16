@@ -34,14 +34,10 @@ html, body {
   flex-direction: column;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 0;
   box-shadow: 0 0 24px rgba(0, 188, 212, 0.18), 0 0 1px var(--accent-dim) inset;
   overflow: hidden;
   transition: opacity 0.25s ease;
-}
-
-body.faded #app {
-  opacity: 0.22;
 }
 
 #particles {
@@ -141,6 +137,9 @@ body[data-state="listening"] #core {
   font-size: 13px;
   line-height: 1.5;
   user-select: text;
+  /* background is now translucent, so text needs its own contrast
+     since whatever's behind the window is unpredictable */
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
 }
 
 /* ── Idle HUD — a big JARVIS-style ring that greets you before the first

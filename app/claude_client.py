@@ -24,6 +24,10 @@ from .logging_setup import get_logger
 log = get_logger("claude")
 
 MAX_TOKENS = 1024
+# Meal-plan tool calls carry 14 dinners with recipe text plus a shopping
+# list — easily several times MAX_TOKENS — so they get a bigger budget for
+# that turn instead of risking a truncated, invalid tool_use JSON payload.
+_MEAL_MAX_TOKENS = 4096
 MAX_TOOL_ROUNDS = 8  # safety cap on local tool_use <-> tool_result round trips
 
 _MONARCH_MCP_URL = "https://api.monarch.com/mcp"
@@ -39,6 +43,23 @@ _FINANCIAL_KEYWORDS = (
     "subscription", "paycheck", "afford", "owe", "debt",
 )
 
+# Meal-related keywords used to decide whether to attach the native web
+# search tool — same reasoning as _FINANCIAL_KEYWORDS: only pay for it when
+# the conversation is actually about food.
+_MEAL_KEYWORDS = (
+    "meal", "dinner", "recipe", "cook", "cooking", "groceries", "grocery",
+    "meal prep", "meal plan", "what's for dinner", "leftovers",
+)
+
+# Native server-side web search tool (no separate API key — billed through
+# the Anthropic account). Dated tool versions follow the same convention as
+# other Claude tool types; bump this if Anthropic ships a newer one.
+_WEB_SEARCH_TOOL = {
+    "type": "web_search_20260209",
+    "name": "web_search",
+    "max_uses": 5,
+}
+
 # History compaction: once a session accumulates more than this many user
 # turns, older turns are summarized away to bound per-request token cost.
 HISTORY_MAX_TURNS = 8
@@ -48,6 +69,11 @@ HISTORY_KEEP_TURNS = 3
 def _looks_financial(message: str) -> bool:
     lowered = message.lower()
     return any(kw in lowered for kw in _FINANCIAL_KEYWORDS)
+
+
+def _looks_meal_related(message: str) -> bool:
+    lowered = message.lower()
+    return any(kw in lowered for kw in _MEAL_KEYWORDS)
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -77,14 +103,63 @@ TOOLS = [
     {
         "name": "get_recent_notes",
         "description": (
-            "Load recent meeting notes from the user's notes folder. Call this when "
-            "the user asks about recent meetings, wants to reference notes, asks "
-            "what was discussed or decided, or asks about action items."
+            "Load recent meeting notes from one category of the user's notes folder "
+            "— Daedabyte, Brightpoint, DnD, and General are kept in fully separate "
+            "subfolders and must never be mixed or merged together in a single "
+            "answer. Call this when the user asks about recent meetings, wants to "
+            "reference notes, asks what was discussed or decided, or asks about "
+            "action items. The user will often say which company/category they "
+            "mean; if they don't and it's genuinely unclear which one, ask before "
+            "calling this tool rather than guessing or fetching multiple categories."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {},
-            "required": [],
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
+                    "description": "Which notes stream to read. Ask the user if unclear — never guess.",
+                },
+            },
+            "required": ["category"],
+        },
+    },
+    {
+        "name": "create_note",
+        "description": (
+            "Save a new meeting/conversation note to one category of the user's "
+            "notes folder — Daedabyte, Brightpoint, DnD, and General are kept in "
+            "fully separate subfolders and must never be mixed. Use this when the "
+            "user asks you to log, save, or write down a note about something (e.g. "
+            "'make a note about my meeting with Sam on the 16th') instead of just "
+            "summarizing in chat — capture what they actually told you about it "
+            "(who, what was discussed, decisions, action items) rather than "
+            "inventing detail they didn't give you. The user will often say which "
+            "company/category the note belongs to; if they don't and it's genuinely "
+            "unclear which one, ask before calling this tool rather than guessing."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {
+                    "type": "string",
+                    "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
+                    "description": "Which notes stream this belongs to. Ask the user if unclear — never guess.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The note body — what was discussed, decided, follow-ups, etc.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short topic/title, e.g. 'Meeting with Sam'. Used in the filename and as a heading.",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD the note is about. Defaults to today if omitted.",
+                },
+            },
+            "required": ["category", "content"],
         },
     },
     {
@@ -265,7 +340,12 @@ TOOLS = [
         "description": (
             "Add a new task to the user's Todoist. Always classify the task into "
             "one of the user's categories — ask the user if it's genuinely unclear "
-            "which one fits."
+            "which one fits. If the task is really a multi-step goal or a nested "
+            "set of objectives (e.g. 'plan the team offsite' with steps like "
+            "booking a venue, sending invites, ordering catering), pass each step "
+            "as a string in subtasks instead of creating separate flat tasks or "
+            "cramming them into one task's text — Todoist will nest them under "
+            "the parent task as a checklist."
         ),
         "input_schema": {
             "type": "object",
@@ -276,7 +356,7 @@ TOOLS = [
                 },
                 "category": {
                     "type": "string",
-                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
                     "description": "Which category/project this task belongs to.",
                 },
                 "due_string": {
@@ -292,6 +372,16 @@ TOOLS = [
                 "description": {
                     "type": "string",
                     "description": "Optional extra notes for the task.",
+                },
+                "subtasks": {
+                    "type": "array",
+                    "description": (
+                        "Optional ordered list of step/objective strings to nest "
+                        "under this task as Todoist subtasks, e.g. ['Book venue', "
+                        "'Send invites', 'Order catering']. Omit for a plain "
+                        "single-step task."
+                    ),
+                    "items": {"type": "string"},
                 },
             },
             "required": ["content", "category"],
@@ -364,11 +454,126 @@ TOOLS = [
                 },
                 "new_category": {
                     "type": "string",
-                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
                     "description": "New category/project (omit to keep current).",
                 },
             },
             "required": ["content"],
+        },
+    },
+    {
+        "name": "get_meal_history",
+        "description": (
+            "Look up recent 2-week dinner-plan cycles, including the active one if "
+            "any. Call this before proposing a new meal plan so you can avoid "
+            "repeating recent dinners, and whenever the user asks what's for "
+            "dinner or what they ate recently."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "cycles_back": {
+                    "type": "integer",
+                    "description": "How many past cycles to include. Default 3.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "create_meal_plan",
+        "description": (
+            "Save an approved 2-week meal plan: creates one calendar event per "
+            "meal and one Todoist Groceries task per shopping-list item, then "
+            "records the cycle. Dinners default to 5:30 PM Eastern Time and "
+            "lunches (only if the user wants lunches planned too) default to "
+            "12:30 PM Eastern — don't change these unless the user asks for a "
+            "different time. Before calling this tool: "
+            "(1) call get_calendar_events with days set high enough to cover every "
+            "date from today through the last day of the planning window, and check "
+            "it for anything that overlaps a dinner (or lunch) date — trips, flights, "
+            "multi-day or all-day events, evenings already booked, etc. For each "
+            "affected date, ask the user directly what they want to do (e.g. 'It "
+            "looks like you'll be on a trip from the 19th to the 21st — want "
+            "travel-friendly snacks/food for those days, or should I just skip "
+            "planned dinners then?') and use their answer instead of guessing; "
+            "(2) ask the user what meat and produce they currently have on hand "
+            "and roughly how long each item has been stored, and schedule the "
+            "most perishable items earliest in the cycle; "
+            "(3) call get_meal_history to avoid repeating recent dinners; "
+            "(4) use web search for recipe ideas that fit the user's preferences, "
+            "what they already have, and any travel days flagged in step 1; "
+            "(5) present the full overview — date, dish, and a recipe link "
+            "or short recipe summary for each (noting any day intentionally left "
+            "without a planned dinner) — plus the shopping list, and wait "
+            "for explicit approval. Never call this tool without that approval. "
+            "Default to account_name='personal' and calendar_name='Family' for "
+            "meal events unless the user says otherwise; get_calendar_events also "
+            "tells you if those names need confirming."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_name": {
+                    "type": "string",
+                    "description": "Google account name from the source tags, e.g. 'personal'.",
+                },
+                "calendar_name": {
+                    "type": "string",
+                    "description": "Calendar name from the source tags, e.g. 'Family'.",
+                },
+                "start_date": {
+                    "type": "string",
+                    "description": "First day of the 2-week stretch, YYYY-MM-DD.",
+                },
+                "dinner_time": {
+                    "type": "string",
+                    "description": (
+                        "24-hour HH:MM Eastern Time start for each dinner event. "
+                        "Default '17:30' (5:30 PM ET) — only override if the user "
+                        "asks for a different dinner time."
+                    ),
+                },
+                "lunch_time": {
+                    "type": "string",
+                    "description": (
+                        "24-hour HH:MM Eastern Time start for each lunch event "
+                        "(meals with meal_type='lunch'). Default '12:30' (12:30 PM ET)."
+                    ),
+                },
+                "meals": {
+                    "type": "array",
+                    "description": "One entry per meal date in the cycle (dinners, plus lunches if the user wants those too).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "date": {"type": "string", "description": "YYYY-MM-DD."},
+                            "dish": {"type": "string", "description": "Meal name, e.g. 'Sheet-pan chicken fajitas'."},
+                            "meal_type": {
+                                "type": "string",
+                                "enum": ["dinner", "lunch"],
+                                "description": "Defaults to 'dinner' if omitted. Use 'lunch' for a midday meal.",
+                            },
+                            "notes": {
+                                "type": "string",
+                                "description": (
+                                    "Recipe link or brief recipe text for this dish — "
+                                    "becomes the calendar event's description, so include "
+                                    "it for every meal unless the user explicitly says "
+                                    "they don't want one."
+                                ),
+                            },
+                        },
+                        "required": ["date", "dish"],
+                    },
+                },
+                "shopping_list": {
+                    "type": "array",
+                    "description": "Consolidated grocery items for the whole cycle.",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["account_name", "calendar_name", "start_date", "meals", "shopping_list"],
         },
     },
     {
@@ -421,14 +626,23 @@ def _execute_tool(name: str, input_data: dict) -> str:
     if name == "get_recent_notes":
         import datetime as dt
         from integrations import notes_watcher
-        notes = notes_watcher.read_recent_notes(5, 2000)
+        category = input_data["category"]
+        notes = notes_watcher.read_recent_notes(category, 5, 2000)
         if not notes:
-            return "(No meeting notes in /notes yet.)"
+            return f"(No {category} notes yet.)"
         blocks = []
         for note in notes:
             modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d")
             blocks.append(f"### {note.path.name} (modified {modified})\n{note.content}")
         return "\n\n".join(blocks)
+    if name == "create_note":
+        from integrations import notes_watcher
+        return notes_watcher.create_note(
+            category=input_data["category"],
+            content=input_data["content"],
+            title=input_data.get("title"),
+            date=input_data.get("date"),
+        )
     if name == "create_calendar_event":
         from integrations.google_calendar import create_event
         return create_event(
@@ -467,6 +681,7 @@ def _execute_tool(name: str, input_data: dict) -> str:
             category=input_data["category"],
             due_string=input_data.get("due_string"),
             description=input_data.get("description"),
+            subtasks=input_data.get("subtasks"),
         )
     if name == "complete_todo":
         from integrations import todoist
@@ -483,6 +698,20 @@ def _execute_tool(name: str, input_data: dict) -> str:
             new_due_string=input_data.get("new_due_string"),
             new_description=input_data.get("new_description"),
             new_category=input_data.get("new_category"),
+        )
+    if name == "get_meal_history":
+        from integrations import meal_prep
+        return meal_prep.get_history(int(input_data.get("cycles_back") or 3))
+    if name == "create_meal_plan":
+        from integrations import meal_prep
+        return meal_prep.create_cycle(
+            start_date=input_data["start_date"],
+            account_name=input_data["account_name"],
+            calendar_name=input_data["calendar_name"],
+            meals=input_data["meals"],
+            shopping_list=input_data["shopping_list"],
+            dinner_time=input_data.get("dinner_time") or meal_prep.DEFAULT_DINNER_TIME,
+            lunch_time=input_data.get("lunch_time") or meal_prep.DEFAULT_LUNCH_TIME,
         )
     if name == "load_knowledge_pool":
         import json
@@ -548,6 +777,8 @@ class ClaudeClient:
         # attached for follow-ups (e.g. "what about last month?") even if
         # they don't repeat a financial keyword.
         self._monarch_active = False
+        # Same stickiness for meal-prep conversations and the web search tool.
+        self._meal_active = False
         self._init_client()
 
     def _init_client(self) -> None:
@@ -581,6 +812,7 @@ class ClaudeClient:
         """Clear conversation history (called when overlay reopens)."""
         self.history.clear()
         self._monarch_active = False
+        self._meal_active = False
         log.info("session history cleared")
 
     def reload_context(self) -> None:
@@ -669,6 +901,7 @@ class ClaudeClient:
             return self._init_error or "Claude client is not available."
 
         self._compact_history()
+        history_snapshot = len(self.history)
         self.history.append({"role": "user", "content": user_message})
         system_prompt = self.context.build_system_prompt()
 
@@ -708,6 +941,19 @@ class ClaudeClient:
                 except Exception as exc:
                     log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
 
+            # Native web search — only attached for meal/recipe conversations
+            # (sticky for the session) so it isn't billed on every message.
+            if self._meal_active or _looks_meal_related(user_message):
+                self._meal_active = True
+                base_kwargs["tools"] = TOOLS + [_WEB_SEARCH_TOOL]
+                # The API rejects disable_parallel_tool_use alongside this
+                # "programmatic" server tool ("tool_choice.disable_parallel_tool_use:
+                # true cannot be used with programmatic tool calling") — drop it
+                # for this turn rather than disabling web search.
+                base_kwargs["tool_choice"] = {"type": "auto"}
+                base_kwargs["max_tokens"] = _MEAL_MAX_TOKENS
+                log.info("web search tool attached (meal-related conversation)")
+
             # ── Bounded tool-use loop: keep tools/mcp_servers attached on every
             # round so local tools (e.g. load_knowledge_pool) and the Monarch
             # MCP tool can both be used for one question, just sequentially.
@@ -739,7 +985,19 @@ class ClaudeClient:
 
                 results = []
                 for tu in tool_uses:
-                    outcome = _execute_tool(tu.name, tu.input)
+                    try:
+                        outcome = _execute_tool(tu.name, tu.input)
+                    except Exception as exc:  # noqa: BLE001
+                        # A tool_use block always needs a paired tool_result —
+                        # if execution raises (e.g. a required field was missing
+                        # from a truncated/malformed call), report it as the
+                        # result instead of letting it escape and leave a
+                        # dangling tool_use in history for the next request.
+                        log.error("tool %s raised: %s", tu.name, exc)
+                        outcome = (
+                            f"Error: tool '{tu.name}' failed ({exc}). "
+                            "Check that all required fields were provided and try again."
+                        )
                     log.info("tool %s -> %r", tu.name, outcome[:120])
                     results.append({
                         "type": "tool_result",
@@ -773,7 +1031,10 @@ class ClaudeClient:
 
         except Exception as exc:  # noqa: BLE001
             log.error("Claude API call failed: %s", exc)
-            # Roll back to keep history consistent — remove any partial turns.
-            while self.history and self.history[-1]["role"] == "user":
-                self.history.pop()
+            # Roll back the entire failed turn (the user message plus any
+            # partial assistant/tool_result exchanges already appended this
+            # round) so a dangling tool_use can never linger into the next
+            # request — truncating to the pre-turn length handles that
+            # regardless of which round the failure happened in.
+            del self.history[history_snapshot:]
             return f"⚠️ Error contacting Claude: {exc}"

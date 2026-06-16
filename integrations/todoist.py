@@ -93,13 +93,18 @@ def _resolve_project(category: str) -> tuple[str, str]:
     return created["id"], created["name"]
 
 
-def _format_task(task: dict, project_names: dict[str, str]) -> str:
+def _format_task(task: dict, project_names: dict[str, str], indent: int = 0) -> str:
     due = task.get("due") or {}
     when = due.get("string") or due.get("date") or "no due date"
     project = project_names.get(task.get("project_id"), "?")
     priority = task.get("priority", 1)
     flag = " !" * (priority - 1) if priority > 1 else ""
-    return f"- [{task['id']}] {task['content']} (due: {when}) [{project}]{flag}"
+    prefix = "  " * indent + "- "
+    return f"{prefix}[{task['id']}] {task['content']} (due: {when}) [{project}]{flag}"
+
+
+def _due_sort_key(task: dict) -> str:
+    return (task.get("due") or {}).get("date") or "9999-99-99"
 
 
 def list_tasks(filter_str: str | None = None) -> str:
@@ -130,8 +135,30 @@ def list_tasks(filter_str: str | None = None) -> str:
         log.warning("could not fetch Todoist projects for labeling: %s", exc)
         project_names = {}
 
-    tasks.sort(key=lambda t: (t.get("due") or {}).get("date") or "9999-99-99")
-    return "\n".join(_format_task(t, project_names) for t in tasks)
+    # Nest subtasks under their parent instead of listing them as confusing
+    # flat siblings. A task whose parent didn't also match the filter (e.g.
+    # the parent has no due date and the filter is date-based) is rendered
+    # at the top level rather than dropped.
+    ids = {t["id"] for t in tasks}
+    children: dict[str, list[dict]] = {}
+    top_level: list[dict] = []
+    for t in tasks:
+        parent_id = t.get("parent_id")
+        if parent_id and parent_id in ids:
+            children.setdefault(parent_id, []).append(t)
+        else:
+            top_level.append(t)
+
+    def render(task: dict, indent: int) -> list[str]:
+        lines = [_format_task(task, project_names, indent)]
+        for child in sorted(children.get(task["id"], []), key=_due_sort_key):
+            lines.extend(render(child, indent + 1))
+        return lines
+
+    lines: list[str] = []
+    for t in sorted(top_level, key=_due_sort_key):
+        lines.extend(render(t, 0))
+    return "\n".join(lines)
 
 
 def create_task(
@@ -139,8 +166,17 @@ def create_task(
     category: str,
     due_string: str | None = None,
     description: str | None = None,
+    subtasks: list[str] | None = None,
 ) -> str:
-    """Create a new Todoist task in the given category (project). Never raises."""
+    """Create a new Todoist task in the given category (project). Never raises.
+
+    If *subtasks* is given, each string becomes a child task nested under the
+    new task via Todoist's ``parent_id`` (the project is inherited from the
+    parent, so subtasks don't need their own project_id). Partial subtask
+    failures are reported in the summary rather than aborting — the parent
+    task is already created by that point and shouldn't disappear over one
+    failed child.
+    """
     if not CONFIG.todoist_enabled:
         return "Todoist is not configured. Add TODOIST_API_KEY to your .env file."
 
@@ -167,7 +203,30 @@ def create_task(
     due = (created.get("due") or {}).get("string")
     when = f" (due {due})" if due else ""
     log.info("created task '%s' in '%s'%s (id=%s)", content, matched_name, when, created["id"])
-    return f"Task '{content}' added to '{matched_name}'{when}."
+    summary = f"Task '{content}' added to '{matched_name}'{when}."
+
+    if subtasks:
+        added = 0
+        errors: list[str] = []
+        for step in subtasks:
+            try:
+                sub_resp = requests.post(
+                    f"{BASE}/tasks",
+                    headers=_headers(),
+                    json={"content": step, "parent_id": created["id"]},
+                    timeout=15,
+                )
+                sub_resp.raise_for_status()
+                added += 1
+            except Exception as exc:  # noqa: BLE001
+                log.error("create_task: subtask '%s' failed: %s", step, exc)
+                errors.append(f"'{step}': {exc}")
+        summary += f" Added {added}/{len(subtasks)} subtasks."
+        if errors:
+            summary += "\n\nSome subtasks failed:\n" + "\n".join(f"- {e}" for e in errors)
+
+    return summary
+
 
 
 def _find_task(content: str, due_hint: str | None = None) -> tuple[dict | None, str | None]:

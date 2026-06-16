@@ -233,10 +233,6 @@ function setVoiceAvailable(available) {
   micBtn.disabled = !available;
 }
 
-function clearFade() {
-  document.body.classList.remove("faded");
-}
-
 // ── Input handling ───────────────────────────────────────────────────────
 
 function autoResize() {
@@ -288,11 +284,17 @@ window.addEventListener("mouseup", () => {
   dragging = false;
 });
 
-// ── Fade on blur, restore on hover/focus ───────────────────────────────────
+// ── Go fully opaque while focused/hovered, see-through otherwise ───────────
+// The real window transparency is OS-level (see app/overlay.py), so the
+// page just tells Python when to switch it — CSS opacity can't do this.
 
-window.addEventListener("blur", () => document.body.classList.add("faded"));
-window.addEventListener("focus", () => document.body.classList.remove("faded"));
-document.body.addEventListener("mouseenter", () => document.body.classList.remove("faded"));
+window.addEventListener("blur", () => callApi("set_focused", false));
+window.addEventListener("focus", () => callApi("set_focused", true));
+document.body.addEventListener("mouseenter", () => callApi("set_focused", true));
+document.body.addEventListener("mouseleave", () => {
+  if (document.hasFocus()) return;
+  callApi("set_focused", false);
+});
 
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") callApi("close_overlay");
