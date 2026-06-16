@@ -104,7 +104,7 @@ TOOLS = [
         "name": "get_recent_notes",
         "description": (
             "Load recent meeting notes from one category of the user's notes folder "
-            "— Daedabyte, Brightpoint, and General are kept in fully separate "
+            "— Daedabyte, Brightpoint, DnD, and General are kept in fully separate "
             "subfolders and must never be mixed or merged together in a single "
             "answer. Call this when the user asks about recent meetings, wants to "
             "reference notes, asks what was discussed or decided, or asks about "
@@ -117,7 +117,7 @@ TOOLS = [
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
                     "description": "Which notes stream to read. Ask the user if unclear — never guess.",
                 },
             },
@@ -128,9 +128,9 @@ TOOLS = [
         "name": "create_note",
         "description": (
             "Save a new meeting/conversation note to one category of the user's "
-            "notes folder — Daedabyte, Brightpoint, and General are kept in fully "
-            "separate subfolders and must never be mixed. Use this when the user "
-            "asks you to log, save, or write down a note about something (e.g. "
+            "notes folder — Daedabyte, Brightpoint, DnD, and General are kept in "
+            "fully separate subfolders and must never be mixed. Use this when the "
+            "user asks you to log, save, or write down a note about something (e.g. "
             "'make a note about my meeting with Sam on the 16th') instead of just "
             "summarizing in chat — capture what they actually told you about it "
             "(who, what was discussed, decisions, action items) rather than "
@@ -143,7 +143,7 @@ TOOLS = [
             "properties": {
                 "category": {
                     "type": "string",
-                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
                     "description": "Which notes stream this belongs to. Ask the user if unclear — never guess.",
                 },
                 "content": {
@@ -351,7 +351,7 @@ TOOLS = [
                 },
                 "category": {
                     "type": "string",
-                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
                     "description": "Which category/project this task belongs to.",
                 },
                 "due_string": {
@@ -439,7 +439,7 @@ TOOLS = [
                 },
                 "new_category": {
                     "type": "string",
-                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
                     "description": "New category/project (omit to keep current).",
                 },
             },

@@ -102,9 +102,9 @@ above if you ever get access to both.
 1. In Todoist, go to **Settings → Integrations → Developer** and copy your
    personal **API token**.
 2. Paste it into `.env` as `TODOIST_API_KEY=...`.
-3. Categories (e.g. "Daedabyte", "General", "Brightpoint") map to Todoist
-   projects — JARVIS creates the project automatically the first time it
-   files a task under a category that doesn't exist yet.
+3. Categories (e.g. "Daedabyte", "General", "Brightpoint", "DnD") map to
+   Todoist projects — JARVIS creates the project automatically the first time
+   it files a task under a category that doesn't exist yet.
 
 ### 7b. (Optional) Meal prep
 Reuses the Google Calendar and Todoist setup above — no extra config. Just
@@ -132,13 +132,13 @@ the overlay.
 
 ## Using the `/notes/` folder
 
-Notes are split into three separate streams, one subfolder each, so they never
-mix: `notes/Daedabyte/`, `notes/Brightpoint/`, and `notes/General/` (anything
-that isn't either job). Drop meeting notes as `.txt` or `.md` files into the
-matching subfolder; when asked, JARVIS reads the **5 most recent** (by modified
-time) from whichever single category you mean, newest first — it never merges
-the two work streams together. If you don't say which one and it's not obvious,
-JARVIS asks rather than guessing.
+Notes are split into separate streams, one subfolder each, so they never mix:
+`notes/Daedabyte/`, `notes/Brightpoint/`, `notes/DnD/`, and `notes/General/`
+(anything that isn't a job or D&D). Drop meeting/session notes as `.txt` or
+`.md` files into the matching subfolder; when asked, JARVIS reads the **5
+most recent** (by modified time) from whichever single category you mean,
+newest first — it never merges streams together. If you don't say which one
+and it's not obvious, JARVIS asks rather than guessing.
 
 Suggested naming: `YYYY-MM-DD_topic.md` (e.g. `2026-06-15_standup.md`).
 

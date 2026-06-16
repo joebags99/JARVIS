@@ -34,7 +34,7 @@ for _d in (CONTEXT_DIR, NOTES_DIR, LOGS_DIR, ASSETS_DIR):
 # Notes are split into per-category subfolders so separate work streams never
 # mix (mirrors integrations/notes_watcher.py's CATEGORIES — duplicated here,
 # not imported, to avoid a circular import with that module).
-for _cat in ("Daedabyte", "General", "Brightpoint"):
+for _cat in ("Daedabyte", "General", "Brightpoint", "DnD"):
     (NOTES_DIR / _cat).mkdir(parents=True, exist_ok=True)
 
 

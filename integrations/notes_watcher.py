@@ -1,9 +1,9 @@
 """Meeting-notes ingestion.
 
-Notes are split into three separate streams — Daedabyte, Brightpoint, and
-General — each its own subfolder under ``notes/``, so the two work streams
-never mix and JARVIS never has to guess which one a note belongs to. This
-mirrors the category convention already used for Todoist projects
+Notes are split into separate streams — Daedabyte, Brightpoint, DnD, and
+General — each its own subfolder under ``notes/``, so the work/personal
+streams never mix and JARVIS never has to guess which one a note belongs to.
+This mirrors the category convention already used for Todoist projects
 (``integrations/todoist.py``): a fixed set of named buckets, not a free-form
 tag.
 
@@ -27,7 +27,7 @@ from app.logging_setup import get_logger
 log = get_logger("notes")
 
 NOTE_EXTENSIONS = (".txt", ".md")
-CATEGORIES = ("Daedabyte", "General", "Brightpoint")
+CATEGORIES = ("Daedabyte", "General", "Brightpoint", "DnD")
 
 
 def _resolve_category(category: str) -> str:
