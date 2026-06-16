@@ -18,6 +18,7 @@ import base64
 import hashlib
 import http.server
 import json
+import re
 import secrets
 import threading
 import time
@@ -93,20 +94,64 @@ def _post_json(url: str, data: dict, timeout: int = 10) -> dict:
 
 # ── OAuth helpers ─────────────────────────────────────────────────────────────
 
+def _protected_resource_metadata() -> dict | None:
+    """Probe the MCP endpoint for a 401 + WWW-Authenticate resource_metadata
+    hint (RFC 9728), as defined by the MCP authorization spec. The resulting
+    document lists the actual authorization server(s) for this resource —
+    which may live on a completely different host than api.monarch.com.
+    """
+    req = Request(_MCP_RESOURCE, headers={"Accept": "application/json"})
+    try:
+        with urlopen(req, timeout=10):
+            pass
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            www_auth = exc.headers.get("WWW-Authenticate", "")
+            m = re.search(r'resource_metadata="([^"]+)"', www_auth)
+            if m:
+                try:
+                    return _get_json(m.group(1))
+                except Exception as inner:
+                    log.debug("failed to fetch resource metadata %s: %s", m.group(1), inner)
+            else:
+                log.debug("401 from MCP endpoint had no resource_metadata hint: %s", www_auth)
+        else:
+            log.debug("unexpected status probing MCP endpoint: %s", exc.code)
+    except Exception as exc:
+        log.debug("probing MCP resource %s failed: %s", _MCP_RESOURCE, exc)
+    return None
+
+
 def _discover() -> dict:
-    """Return OAuth server metadata, trying discovery URLs in order."""
-    for url in _DISCOVERY_URLS:
+    """Return OAuth authorization-server metadata.
+
+    Follows RFC 9728 + RFC 8414: probe the MCP resource for the
+    authorization server(s) it trusts, then fetch each one's metadata
+    (trying both the OAuth and OpenID Connect discovery document names,
+    since the AS may be a third-party identity provider). Falls back to
+    guessing well-known paths on api.monarch.com itself as a last resort.
+    """
+    candidates: list[str] = []
+    resource_meta = _protected_resource_metadata()
+    if resource_meta:
+        for server in resource_meta.get("authorization_servers", []):
+            server = server.rstrip("/")
+            candidates.append(f"{server}/.well-known/oauth-authorization-server")
+            candidates.append(f"{server}/.well-known/openid-configuration")
+    candidates.extend(_DISCOVERY_URLS)
+
+    for url in candidates:
         try:
             meta = _get_json(url)
-            log.debug("OAuth metadata from %s", url)
+            log.info("OAuth metadata from %s", url)
             return meta
         except Exception as exc:
             log.debug("discovery at %s failed: %s", url, exc)
-    log.warning("OAuth discovery failed for all URLs — using default endpoints")
-    return {
-        "authorization_endpoint": f"{_OAUTH_BASE}/oauth/authorize",
-        "token_endpoint": f"{_OAUTH_BASE}/oauth/token",
-    }
+
+    raise RuntimeError(
+        "Could not discover Monarch's OAuth authorization server metadata. "
+        f"Tried: {candidates}"
+    )
 
 
 def _dynamic_register(registration_endpoint: str) -> str | None:
