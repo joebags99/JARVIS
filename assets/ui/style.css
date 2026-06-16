@@ -34,7 +34,7 @@ html, body {
   flex-direction: column;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 0;
   box-shadow: 0 0 24px rgba(0, 188, 212, 0.18), 0 0 1px var(--accent-dim) inset;
   overflow: hidden;
   transition: opacity 0.25s ease;

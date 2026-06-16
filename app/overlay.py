@@ -139,6 +139,8 @@ class Overlay:
         self._visible = False
         self._recording = False
         self._win_x, self._win_y = self._initial_position()
+        self._current_alpha: int = WINDOW_ALPHA_IDLE
+        self._alpha_cancel: threading.Event | None = None
 
         self._js_api = _JSApi(self)
         self.window = webview.create_window(
@@ -202,9 +204,35 @@ class Overlay:
         log.info("overlay shown")
 
     def _set_focused(self, is_focused: bool) -> None:
-        """Go fully opaque while focused/hovered; see-through otherwise."""
-        alpha = WINDOW_ALPHA_FOCUSED if is_focused else WINDOW_ALPHA_IDLE
-        _enable_real_transparency("JARVIS", alpha)
+        """Animate the window alpha toward fully opaque (focused) or idle (unfocused)."""
+        target = WINDOW_ALPHA_FOCUSED if is_focused else WINDOW_ALPHA_IDLE
+        if self._current_alpha == target:
+            return
+
+        # Cancel any in-flight animation.
+        if self._alpha_cancel is not None:
+            self._alpha_cancel.set()
+
+        cancel = threading.Event()
+        self._alpha_cancel = cancel
+
+        start = self._current_alpha
+
+        def _animate() -> None:
+            # 200 ms total, ~10 ms per step → ~20 steps.
+            DURATION_MS = 200
+            STEP_MS = 10
+            steps = max(1, DURATION_MS // STEP_MS)
+            for i in range(1, steps + 1):
+                if cancel.is_set():
+                    return
+                alpha = round(start + (target - start) * i / steps)
+                self._current_alpha = alpha
+                _enable_real_transparency("JARVIS", alpha)
+                if i < steps:
+                    cancel.wait(STEP_MS / 1000)
+
+        threading.Thread(target=_animate, daemon=True).start()
 
     def hide(self) -> None:
         """Hide window without clearing chat (used internally for fade-hide)."""
