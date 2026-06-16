@@ -113,7 +113,6 @@ class Overlay:
             transparent=True,
             background_color="#0f0f0f",
             resizable=False,
-            hidden=True,
         )
         self.window.events.loaded += self._on_loaded
 
@@ -136,6 +135,11 @@ class Overlay:
                 "voice disabled (recorder=%s, stt=%s)",
                 self.recorder.available, self.transcriber.available,
             )
+        # pywebview only wires up real per-pixel transparency on EdgeChromium if
+        # the window is shown (not created with hidden=True) — see the "hack to
+        # make transparent window work" in its winforms backend. So we start
+        # visible and hide ourselves now that the page has finished loading.
+        self.window.hide()
 
     def _eval(self, fn_name: str, *args) -> None:
         """Call a JS function in the page with JSON-encoded args."""
