@@ -261,6 +261,53 @@ TOOLS = [
         },
     },
     {
+        "name": "update_todo",
+        "description": (
+            "Edit an existing Todoist task — rename it, reschedule it, change its "
+            "notes, or move it to a different category. Finds the task by matching "
+            "its current text; supply only the fields that should change. Use this "
+            "instead of create_todo whenever the user asks to edit, reschedule, or "
+            "recategorize an existing task."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "Text to search for among the user's open tasks.",
+                },
+                "due_hint": {
+                    "type": "string",
+                    "description": (
+                        "Due-date text to disambiguate when multiple tasks match, "
+                        "e.g. 'today' or 'June 20'."
+                    ),
+                },
+                "new_content": {
+                    "type": "string",
+                    "description": "New task text (omit to keep current).",
+                },
+                "new_due_string": {
+                    "type": "string",
+                    "description": (
+                        "New natural-language due date, e.g. 'June 25', 'tomorrow', "
+                        "'no date' (omit to keep current)."
+                    ),
+                },
+                "new_description": {
+                    "type": "string",
+                    "description": "New notes for the task (omit to keep current).",
+                },
+                "new_category": {
+                    "type": "string",
+                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "description": "New category/project (omit to keep current).",
+                },
+            },
+            "required": ["content"],
+        },
+    },
+    {
         "name": "load_knowledge_pool",
         "description": (
             "Load content from a named Google Docs knowledge pool to help answer the "
@@ -354,6 +401,16 @@ def _execute_tool(name: str, input_data: dict) -> str:
         return todoist.complete_task(
             content=input_data["content"],
             due_hint=input_data.get("due_hint"),
+        )
+    if name == "update_todo":
+        from integrations import todoist
+        return todoist.update_task(
+            content=input_data["content"],
+            due_hint=input_data.get("due_hint"),
+            new_content=input_data.get("new_content"),
+            new_due_string=input_data.get("new_due_string"),
+            new_description=input_data.get("new_description"),
+            new_category=input_data.get("new_category"),
         )
     if name == "load_knowledge_pool":
         import json

@@ -137,22 +137,19 @@ def create_task(
     return f"Task '{content}' added to '{matched_name}'{when}."
 
 
-def complete_task(content: str, due_hint: str | None = None) -> str:
-    """Find an active task by matching text and mark it complete. Never raises."""
-    if not CONFIG.todoist_enabled:
-        return "Todoist is not configured. Add TODOIST_API_KEY to your .env file."
+def _find_task(content: str, due_hint: str | None = None) -> tuple[dict | None, str | None]:
+    """Match an open task by text (and optional due-date hint).
 
-    try:
-        resp = requests.get(f"{BASE}/tasks", headers=_headers(), timeout=15)
-        resp.raise_for_status()
-        tasks = _results(resp)
-    except Exception as exc:  # noqa: BLE001
-        log.error("complete_task: could not list tasks: %s", exc)
-        return f"Error fetching Todoist tasks: {exc}"
+    Returns (task, None) on a single match, or (None, message) when the
+    caller should relay that message back to Claude (no match / ambiguous).
+    """
+    resp = requests.get(f"{BASE}/tasks", headers=_headers(), timeout=15)
+    resp.raise_for_status()
+    tasks = _results(resp)
 
     matches = [t for t in tasks if content.lower() in t.get("content", "").lower()]
     if not matches:
-        return f"Error: no open task matching '{content}' found."
+        return None, f"Error: no open task matching '{content}' found."
 
     if len(matches) > 1 and due_hint:
         hinted = [
@@ -167,12 +164,27 @@ def complete_task(content: str, due_hint: str | None = None) -> str:
             f"'{t['content']}' (due: {(t.get('due') or {}).get('string', 'no date')})"
             for t in matches[:5]
         )
-        return (
+        return None, (
             f"Found {len(matches)} tasks matching '{content}'. "
             f"Specify which one with a due_hint. Options: {options}"
         )
 
-    target = matches[0]
+    return matches[0], None
+
+
+def complete_task(content: str, due_hint: str | None = None) -> str:
+    """Find an active task by matching text and mark it complete. Never raises."""
+    if not CONFIG.todoist_enabled:
+        return "Todoist is not configured. Add TODOIST_API_KEY to your .env file."
+
+    try:
+        target, error = _find_task(content, due_hint)
+    except Exception as exc:  # noqa: BLE001
+        log.error("complete_task: could not list tasks: %s", exc)
+        return f"Error fetching Todoist tasks: {exc}"
+    if error:
+        return error
+
     try:
         resp = requests.post(
             f"{BASE}/tasks/{target['id']}/close", headers=_headers(), timeout=15
@@ -184,3 +196,69 @@ def complete_task(content: str, due_hint: str | None = None) -> str:
 
     log.info("completed task '%s' (id=%s)", target["content"], target["id"])
     return f"Task '{target['content']}' marked complete."
+
+
+def update_task(
+    content: str,
+    due_hint: str | None = None,
+    new_content: str | None = None,
+    new_due_string: str | None = None,
+    new_description: str | None = None,
+    new_category: str | None = None,
+) -> str:
+    """Find a task by text and patch only the supplied fields. Never raises.
+
+    Changing the category moves the task to a different project via the
+    dedicated /move endpoint — the regular task-update endpoint can't do it.
+    """
+    if not CONFIG.todoist_enabled:
+        return "Todoist is not configured. Add TODOIST_API_KEY to your .env file."
+
+    try:
+        target, error = _find_task(content, due_hint)
+    except Exception as exc:  # noqa: BLE001
+        log.error("update_task: could not list tasks: %s", exc)
+        return f"Error fetching Todoist tasks: {exc}"
+    if error:
+        return error
+
+    patch: dict = {}
+    if new_content is not None:
+        patch["content"] = new_content
+    if new_due_string is not None:
+        patch["due_string"] = new_due_string
+    if new_description is not None:
+        patch["description"] = new_description
+
+    if not patch and new_category is None:
+        return "Error: no fields to update were specified."
+
+    if patch:
+        try:
+            resp = requests.post(
+                f"{BASE}/tasks/{target['id']}", headers=_headers(), json=patch, timeout=15
+            )
+            resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            log.error("update_task failed (id=%s): %s", target["id"], exc)
+            return f"Error updating Todoist task: {exc}"
+
+    matched_category = None
+    if new_category is not None:
+        try:
+            project_id, matched_category = _resolve_project(new_category)
+            resp = requests.post(
+                f"{BASE}/tasks/{target['id']}/move",
+                headers=_headers(),
+                json={"project_id": project_id},
+                timeout=15,
+            )
+            resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            log.error("update_task: move to '%s' failed (id=%s): %s", new_category, target["id"], exc)
+            return f"Error moving Todoist task to '{new_category}': {exc}"
+
+    display_name = new_content or target["content"]
+    log.info("updated task '%s' (id=%s)", display_name, target["id"])
+    suffix = f" moved to '{matched_category}'." if matched_category else "."
+    return f"Task '{display_name}' updated{suffix}"

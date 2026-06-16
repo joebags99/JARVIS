@@ -13,7 +13,7 @@ On-demand via tools:
     * calendar events (get_calendar_events)
     * meeting notes  (get_recent_notes)
     * finances       (get_financial_summary)
-    * todos          (get_todos / create_todo / complete_todo)
+    * todos          (get_todos / create_todo / update_todo / complete_todo)
     * knowledge docs (load_knowledge_pool)
 """
 
