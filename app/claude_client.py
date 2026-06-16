@@ -838,6 +838,11 @@ class ClaudeClient:
             if self._meal_active or _looks_meal_related(user_message):
                 self._meal_active = True
                 base_kwargs["tools"] = TOOLS + [_WEB_SEARCH_TOOL]
+                # The API rejects disable_parallel_tool_use alongside this
+                # "programmatic" server tool ("tool_choice.disable_parallel_tool_use:
+                # true cannot be used with programmatic tool calling") — drop it
+                # for this turn rather than disabling web search.
+                base_kwargs["tool_choice"] = {"type": "auto"}
                 log.info("web search tool attached (meal-related conversation)")
 
             # ── Bounded tool-use loop: keep tools/mcp_servers attached on every
