@@ -309,6 +309,50 @@ body.has-messages #hud {
   to { transform: rotate(360deg); }
 }
 
+/* Thinking indicator — soft cyan dots that bounce in a wave while JARVIS
+   composes its reply (the reply itself is hidden until fully rendered). */
+.thinking-dots {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+.thinking-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 7px rgba(0, 229, 255, 0.6);
+  opacity: 0.35;
+  animation: think-bounce 1.2s ease-in-out infinite;
+}
+.thinking-dots i:nth-child(2) { animation-delay: 0.18s; }
+.thinking-dots i:nth-child(3) { animation-delay: 0.36s; }
+@keyframes think-bounce {
+  0%, 80%, 100% { transform: translateY(0) scale(0.8); opacity: 0.3; }
+  40% { transform: translateY(-4px) scale(1); opacity: 1; }
+}
+.msg-content.thinking .thinking-label {
+  animation: think-fade 1.7s ease-in-out infinite;
+}
+@keyframes think-fade {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.95; }
+}
+
+/* Answer reveal — once the full reply is rendered, each block rises and
+   un-blurs in sequence so the message fades in line by line, not all at once. */
+@keyframes msg-rise {
+  from { opacity: 0; transform: translateY(7px); filter: blur(2px); }
+  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+.msg-content > .reveal {
+  opacity: 0;
+  animation: msg-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg-content > .reveal { animation-duration: 0.01s; }
+}
+
 .md-line { margin: 2px 0; }
 .md-h1 { font-size: 17px; font-weight: 700; margin: 8px 0 4px; }
 .md-h2 { font-size: 15px; font-weight: 700; margin: 7px 0 3px; }

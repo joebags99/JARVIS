@@ -13,11 +13,10 @@ const header = document.getElementById("header");
 
 let userName = "User";
 let streamEl = null;
-let streamRaw = "";
 
 const THINKING_HTML = `
-    <span class="thinking-spinner"></span>
-    <span class="thinking-label">Thinking&hellip;</span>
+    <span class="thinking-dots"><i></i><i></i><i></i></span>
+    <span class="thinking-label">JARVIS is thinking&hellip;</span>
   `;
 
 // ── API bridge ────────────────────────────────────────────────────────────
@@ -191,43 +190,30 @@ function startAssistantMessage() {
 
   transcript.appendChild(wrap);
   streamEl = content;
-  streamRaw = "";
   scrollToBottom();
 }
 
-// Append a streamed chunk to the live bubble. The first chunk clears the
-// thinking spinner. Rendered as plain text while streaming (cheap, no flicker
-// from half-formed markdown); finishAssistantMessage swaps in full markdown.
-function appendAssistantDelta(text) {
-  if (!streamEl) return;
-  if (streamEl.classList.contains("thinking")) {
-    streamEl.classList.remove("thinking");
-    streamEl.textContent = "";
-    streamRaw = "";
-  }
-  streamRaw += text;
-  streamEl.textContent = streamRaw;
-  scrollToBottom();
-}
-
-// Roll the live bubble back to the thinking state — used when a round's
-// pre-tool text is discarded because the model decided to call a tool.
-function resetAssistantStream() {
-  if (!streamEl) return;
-  streamRaw = "";
-  streamEl.classList.add("thinking");
-  streamEl.innerHTML = THINKING_HTML;
-  scrollToBottom();
-}
-
+// Reveal the finished reply. Nothing is shown while JARVIS works (the thinking
+// dots stay up the whole time); when the full text arrives we render it, then
+// stagger each top-level block so the answer fades in line by line.
 function finishAssistantMessage(fullText) {
-  if (streamEl) {
-    streamEl.classList.remove("thinking");
-    streamEl.innerHTML = renderMarkdown(fullText);
-    streamEl = null;
-    streamRaw = "";
-  }
+  if (!streamEl) return;
+  const el = streamEl;
+  streamEl = null;
+
+  el.classList.remove("thinking");
+  el.innerHTML = renderMarkdown(fullText);
+
+  const blocks = Array.from(el.children);
+  blocks.forEach((block, i) => {
+    block.style.animationDelay = i * 60 + "ms";
+    block.classList.add("reveal");
+  });
+
+  // Keep the view pinned to the newest content as the lines settle in.
   scrollToBottom();
+  setTimeout(scrollToBottom, 140);
+  setTimeout(scrollToBottom, 400);
 }
 
 function clearTranscript() {

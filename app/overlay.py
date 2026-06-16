@@ -254,18 +254,23 @@ class Overlay:
         except Exception as exc:  # noqa: BLE001
             log.error("scheduled callback failed: %s", exc)
 
-    def _clear_chat(self) -> None:
-        """↺ button: save summary if warranted, clear chat, stay open."""
+    def _maybe_save_summary(self) -> None:
+        """Spawn a background session-summary save if the chat was substantial."""
         user_turns = sum(
             1 for m in self.claude.history if m.get("role") == "user"
         )
-        if user_turns >= MIN_TURNS_FOR_SUMMARY:
-            history_snapshot = list(self.claude.history)
-            threading.Thread(
-                target=self._save_session_summary,
-                args=(history_snapshot,),
-                daemon=True,
-            ).start()
+        if user_turns < MIN_TURNS_FOR_SUMMARY:
+            return
+        history_snapshot = list(self.claude.history)
+        threading.Thread(
+            target=self._save_session_summary,
+            args=(history_snapshot,),
+            daemon=True,
+        ).start()
+
+    def _clear_chat(self) -> None:
+        """↺ button: save summary if warranted, clear chat, stay open."""
+        self._maybe_save_summary()
         self.claude.reset_session()
         self._eval("clearTranscript")
         self._eval("resetEntry")
@@ -277,17 +282,7 @@ class Overlay:
         if self._recording:
             self._stop_recording()
 
-        user_turns = sum(
-            1 for m in self.claude.history if m.get("role") == "user"
-        )
-        if user_turns >= MIN_TURNS_FOR_SUMMARY:
-            history_snapshot = list(self.claude.history)
-            threading.Thread(
-                target=self._save_session_summary,
-                args=(history_snapshot,),
-                daemon=True,
-            ).start()
-
+        self._maybe_save_summary()
         self.claude.reset_session()
         self._eval("clearTranscript")
         self._eval("resetEntry")
@@ -335,17 +330,12 @@ class Overlay:
         self._eval("setInputsEnabled", False)
 
         def worker() -> None:
-            # Stream the reply token by token into the live message bubble. If a
-            # round's pre-tool text is discarded (model spoke, then called a
-            # tool), on_reset rolls the bubble back to the thinking indicator so
-            # the soon-to-be-replaced text doesn't linger.
-            def on_delta(chunk: str) -> None:
-                self._eval("appendAssistantDelta", chunk)
-
-            def on_reset() -> None:
-                self._eval("resetAssistantStream")
-
-            reply = self.claude.send(text, on_delta=on_delta, on_reset=on_reset)
+            # Deliberately no live streaming: the thinking animation stays up
+            # the whole time JARVIS composes, then finishAssistantMessage reveals
+            # the complete reply with a smooth line-by-line fade-in. Showing a
+            # half-formed answer fill in token by token is exactly what we don't
+            # want here.
+            reply = self.claude.send(text)
             self._eval("finishAssistantMessage", reply)
             self.set_status(STATUS_DONE)
             self._set_state("idle")

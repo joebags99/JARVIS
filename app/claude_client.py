@@ -64,6 +64,10 @@ _WEB_SEARCH_TOOL = {
 # turns, older turns are summarized away to bound per-request token cost.
 HISTORY_MAX_TURNS = 8
 HISTORY_KEEP_TURNS = 3
+# When compacting, fat tool_result payloads (calendar dumps, note bodies, email
+# lists) from older turns are truncated to this many chars — the model already
+# acted on them, so the full text no longer needs to ride along every request.
+TOOL_RESULT_KEEP_CHARS = 600
 
 
 def _looks_financial(message: str) -> bool:
@@ -1017,7 +1021,38 @@ class ClaudeClient:
             {"role": "user", "content": f"[Earlier in this session:]\n{summary}"},
             {"role": "assistant", "content": "Got it, I'll keep that in mind."},
         ] + recent
+        self._trim_old_tool_results()
         log.info("compacted %d older turn(s) into a summary", len(boundaries) - HISTORY_KEEP_TURNS)
+
+    def _trim_old_tool_results(self) -> None:
+        """Truncate large tool_result payloads from all but the most recent turn.
+
+        Only touches the ``tool_result`` blocks JARVIS itself appends (plain
+        string content in user-role messages) and leaves the latest turn's
+        results full, so the current working context is untouched while stale
+        calendar/notes/email dumps stop riding along on every request.
+        """
+        boundaries = [
+            i for i, m in enumerate(self.history)
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+        ]
+        cutoff = boundaries[-1] if boundaries else len(self.history)
+        trimmed = 0
+        for m in self.history[:cutoff]:
+            if m.get("role") != "user" or not isinstance(m.get("content"), list):
+                continue
+            for block in m["content"]:
+                if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                    continue
+                content = block.get("content")
+                if isinstance(content, str) and len(content) > TOOL_RESULT_KEEP_CHARS:
+                    block["content"] = (
+                        content[:TOOL_RESULT_KEEP_CHARS].rstrip()
+                        + "\n…(older tool output trimmed to save context)"
+                    )
+                    trimmed += 1
+        if trimmed:
+            log.info("trimmed %d older tool-result block(s) during compaction", trimmed)
 
     def send(
         self,

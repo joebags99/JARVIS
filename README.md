@@ -28,7 +28,8 @@ calendars, and meeting notes.
   you to review. JARVIS never sends mail on its own; it only saves drafts.
 - **Cross-session memory** — when you close a longer chat, JARVIS saves a short
   recap and can recall it later ("pick up where we left off").
-- **Streaming replies** that fill in token by token.
+- **Smooth replies** — an animated "thinking" indicator while JARVIS composes,
+  then the answer fades in line by line (no half-formed text filling in).
 - **Graceful degradation** — missing mic, missing calendar creds, or a missing
   API key are handled with clear messages, never a crash.
 
