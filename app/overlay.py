@@ -34,10 +34,9 @@ WINDOW_H = 640
 MARGIN = 16
 MIN_TURNS_FOR_SUMMARY = 5  # user messages required before auto-saving a summary
 
-# 0 = fully invisible, 255 = fully opaque. ~58% opaque tints the desktop
-# through the whole window without going translucent enough to hurt
-# legibility.
-WINDOW_ALPHA = 150
+# 0 = fully invisible, 255 = fully opaque.
+WINDOW_ALPHA_IDLE = 150  # ~58% opaque — tints the desktop through when unfocused
+WINDOW_ALPHA_FOCUSED = 255  # fully opaque while focused/hovered/interacting
 
 STATUS_IDLE = "Idle"
 STATUS_LISTENING = "Listening…"
@@ -116,6 +115,9 @@ class _JSApi:
     def move_window(self, dx: float, dy: float) -> None:
         self._overlay._drag_move(dx, dy)
 
+    def set_focused(self, is_focused: bool) -> None:
+        self._overlay._set_focused(is_focused)
+
 
 class Overlay:
     def __init__(
@@ -178,7 +180,7 @@ class Overlay:
         # the window is shown (not created with hidden=True) — see the "hack to
         # make transparent window work" in its winforms backend. So we start
         # visible and hide ourselves now that the page has finished loading.
-        _enable_real_transparency("JARVIS", WINDOW_ALPHA)
+        _enable_real_transparency("JARVIS", WINDOW_ALPHA_IDLE)
         self.window.hide()
 
     def _eval(self, fn_name: str, *args) -> None:
@@ -194,10 +196,15 @@ class Overlay:
     def show(self) -> None:
         """Show (or un-fade) the overlay. Chat history is preserved."""
         self.window.show()
-        self._eval("clearFade")
+        self._set_focused(True)
         self._visible = True
         self.set_status(STATUS_IDLE)
         log.info("overlay shown")
+
+    def _set_focused(self, is_focused: bool) -> None:
+        """Go fully opaque while focused/hovered; see-through otherwise."""
+        alpha = WINDOW_ALPHA_FOCUSED if is_focused else WINDOW_ALPHA_IDLE
+        _enable_real_transparency("JARVIS", alpha)
 
     def hide(self) -> None:
         """Hide window without clearing chat (used internally for fade-hide)."""

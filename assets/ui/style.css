@@ -40,10 +40,6 @@ html, body {
   transition: opacity 0.25s ease;
 }
 
-body.faded #app {
-  opacity: 0.22;
-}
-
 #particles {
   position: absolute;
   inset: 0;
