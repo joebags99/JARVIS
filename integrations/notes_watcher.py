@@ -8,6 +8,8 @@ really just for logging/awareness — the source of truth is ``read_recent_notes
 
 from __future__ import annotations
 
+import datetime as dt
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +56,43 @@ def read_recent_notes(limit: int = 5, max_chars: int = 2000) -> list[Note]:
 
     log.info("loaded %d recent note(s)", len(notes))
     return notes
+
+
+def _slugify(title: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
+    return slug or "note"
+
+
+def create_note(content: str, title: str | None = None, date: str | None = None) -> str:
+    """Write a new note file to notes/, following the YYYY-MM-DD_topic.md convention.
+
+    Never raises — returns a human-readable status string for Claude. If the
+    generated filename already exists (e.g. a second note the same day with
+    the same title), a numeric suffix is appended rather than overwriting.
+    """
+    note_date = date or dt.date.today().isoformat()
+    try:
+        dt.date.fromisoformat(note_date)
+    except ValueError:
+        return f"Error: '{date}' is not a valid YYYY-MM-DD date."
+
+    slug = _slugify(title or "note")
+    base_name = f"{note_date}_{slug}"
+    path = NOTES_DIR / f"{base_name}.md"
+    suffix = 2
+    while path.exists():
+        path = NOTES_DIR / f"{base_name}_{suffix}.md"
+        suffix += 1
+
+    body = f"# {title}\n\n{content}\n" if title else f"{content}\n"
+    try:
+        path.write_text(body, encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        log.error("could not write note %s: %s", path.name, exc)
+        return f"Error saving note: {exc}"
+
+    log.info("created note %s", path.name)
+    return f"Note saved as notes/{path.name}."
 
 
 class NotesWatcher:

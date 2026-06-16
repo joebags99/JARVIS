@@ -114,6 +114,35 @@ TOOLS = [
         },
     },
     {
+        "name": "create_note",
+        "description": (
+            "Save a new meeting/conversation note to the user's notes folder. Use "
+            "this when the user asks you to log, save, or write down a note about "
+            "something (e.g. 'make a note about my meeting with Sam on the 16th') "
+            "instead of just summarizing in chat — capture what they actually told "
+            "you about it (who, what was discussed, decisions, action items) rather "
+            "than inventing detail they didn't give you."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The note body — what was discussed, decided, follow-ups, etc.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short topic/title, e.g. 'Meeting with Sam'. Used in the filename and as a heading.",
+                },
+                "date": {
+                    "type": "string",
+                    "description": "YYYY-MM-DD the note is about. Defaults to today if omitted.",
+                },
+            },
+            "required": ["content"],
+        },
+    },
+    {
         "name": "update_calendar_event",
         "description": (
             "Update (edit) an existing Google Calendar event. "
@@ -570,6 +599,13 @@ def _execute_tool(name: str, input_data: dict) -> str:
             modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d")
             blocks.append(f"### {note.path.name} (modified {modified})\n{note.content}")
         return "\n\n".join(blocks)
+    if name == "create_note":
+        from integrations import notes_watcher
+        return notes_watcher.create_note(
+            content=input_data["content"],
+            title=input_data.get("title"),
+            date=input_data.get("date"),
+        )
     if name == "create_calendar_event":
         from integrations.google_calendar import create_event
         return create_event(
