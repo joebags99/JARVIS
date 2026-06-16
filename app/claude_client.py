@@ -231,9 +231,6 @@ def _execute_tool(name: str, input_data: dict) -> str:
             modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d")
             blocks.append(f"### {note.path.name} (modified {modified})\n{note.content}")
         return "\n\n".join(blocks)
-    if name == "get_financial_summary":
-        from integrations.monarch_money import get_financial_summary
-        return get_financial_summary()
     if name == "create_calendar_event":
         from integrations.google_calendar import create_event
         return create_event(
@@ -298,7 +295,10 @@ def _block_to_dict(block) -> dict:
             "name": block.name,
             "input": block.input,
         }
-    return {"type": block.type}
+    # MCP-related block types (mcp_tool_use, mcp_tool_result, server_tool_use, ...)
+    # carry fields we don't model explicitly — keep them intact so replaying this
+    # history back to the API doesn't drop data the API itself put there.
+    return block.model_dump()
 
 
 # ── Client ────────────────────────────────────────────────────────────────────
@@ -428,8 +428,9 @@ class ClaudeClient:
                     }]
                     stream_kwargs["betas"] = [_MCP_BETA]
                     _stream_fn = self._client.beta.messages.stream
+                    log.debug("using beta endpoint with monarch mcp_servers attached")
                 except Exception as exc:
-                    log.error("Monarch token error: %s", exc)
+                    log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
                     _stream_fn = self._client.messages.stream
             else:
                 _stream_fn = self._client.messages.stream
@@ -442,6 +443,10 @@ class ClaudeClient:
                         on_delta(text)
                 final_msg = stream.get_final_message()
 
+            log.debug(
+                "first pass content block types: %s",
+                [b.type for b in final_msg.content],
+            )
             tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
 
             if tool_uses:
@@ -468,13 +473,23 @@ class ClaudeClient:
                 self.history.append({"role": "user", "content": results})
 
                 # ── Second pass: stream Claude's follow-up confirmation ────────
-                followup = ""
-                with self._client.messages.stream(
+                # Reuse whichever endpoint/betas the first pass used — the history
+                # may now contain MCP-specific block types that only the matching
+                # endpoint can correctly interpret.
+                followup_kwargs: dict = dict(
                     model=CONFIG.anthropic_model,
                     max_tokens=MAX_TOKENS,
                     system=system_prompt,
                     messages=self.history,
-                ) as stream:
+                )
+                if "betas" in stream_kwargs:
+                    followup_kwargs["betas"] = stream_kwargs["betas"]
+                    followup_stream_fn = self._client.beta.messages.stream
+                else:
+                    followup_stream_fn = self._client.messages.stream
+
+                followup = ""
+                with followup_stream_fn(**followup_kwargs) as stream:
                     for text in stream.text_stream:
                         followup += text
                         full_text += text
