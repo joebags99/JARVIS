@@ -4,10 +4,12 @@
     "doc": "Open any Google Doc → the URL is docs.google.com/document/d/THIS_IS_THE_ID/edit",
     "folder": "Open any Drive folder → the URL is drive.google.com/drive/folders/THIS_IS_THE_ID"
   },
+  "_account_note": "Top-level 'account' is the default Google account for all pools. Add an 'account' key inside a specific pool to override it (e.g. a separate work account) — see 'work' below.",
   "account": "personal",
   "pools": {
     "work": {
       "description": "Work projects, tasks, and professional notes",
+      "account": "work",
       "max_chars": 4000,
       "sources": [
         {

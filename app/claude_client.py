@@ -459,7 +459,10 @@ def _execute_tool(name: str, input_data: dict) -> str:
             return (
                 f"Pool '{pool_name}' not found. Available pools: {available}"
             )
-        account = data.get("account", CONFIG.google_accounts[0])
+        # Per-pool "account" overrides the top-level default — lets a pool
+        # (e.g. a work account's docs) pull from a different Google account
+        # than the rest of the user's knowledge pools.
+        account = pool.get("account") or data.get("account", CONFIG.google_accounts[0])
         from integrations.google_docs import load_pool
         content = load_pool(pool, account)
         header = f"## Knowledge Pool: {pool_name}\n_{pool.get('description', '')}_"
