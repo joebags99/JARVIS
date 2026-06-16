@@ -21,6 +21,7 @@ import json
 import secrets
 import threading
 import time
+import urllib.error
 import webbrowser
 from urllib.parse import parse_qs, urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -31,6 +32,8 @@ from app.logging_setup import get_logger
 log = get_logger("monarch_oauth")
 
 _OAUTH_BASE = "https://api.monarch.com"
+_MCP_RESOURCE = f"{_OAUTH_BASE}/mcp"
+_MCP_SCOPE = "mcp:read mcp:write"
 _DISCOVERY_URLS = [
     f"{_OAUTH_BASE}/mcp/.well-known/oauth-authorization-server",
     f"{_OAUTH_BASE}/.well-known/oauth-authorization-server",
@@ -42,6 +45,13 @@ _EXPIRY_BUFFER = 300  # refresh 5 minutes before actual expiry
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
+
+def _read_http_error(exc: urllib.error.HTTPError) -> str:
+    try:
+        return exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        return str(exc)
+
 
 def _get_json(url: str, timeout: int = 10) -> dict:
     req = Request(url, headers={"Accept": "application/json"})
@@ -56,8 +66,13 @@ def _post_form(url: str, data: dict, timeout: int = 15) -> dict:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+    try:
+        with urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as exc:
+        body_text = _read_http_error(exc)
+        log.error("POST %s failed (%s): %s", url, exc.code, body_text)
+        raise RuntimeError(f"Monarch request to {url} failed ({exc.code}): {body_text}") from exc
 
 
 def _post_json(url: str, data: dict, timeout: int = 10) -> dict:
@@ -67,8 +82,13 @@ def _post_json(url: str, data: dict, timeout: int = 10) -> dict:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read())
+    try:
+        with urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as exc:
+        body_text = _read_http_error(exc)
+        log.error("POST %s failed (%s): %s", url, exc.code, body_text)
+        raise RuntimeError(f"Monarch request to {url} failed ({exc.code}): {body_text}") from exc
 
 
 # ── OAuth helpers ─────────────────────────────────────────────────────────────
@@ -98,13 +118,16 @@ def _dynamic_register(registration_endpoint: str) -> str | None:
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
             "token_endpoint_auth_method": "none",
+            "scope": _MCP_SCOPE,
         })
         cid = resp.get("client_id")
         if cid:
             log.info("dynamic registration OK: client_id=%s", cid)
+        else:
+            log.error("dynamic registration returned no client_id: %s", resp)
         return cid
     except Exception as exc:
-        log.debug("dynamic registration failed: %s", exc)
+        log.error("dynamic registration at %s failed: %s", registration_endpoint, exc)
         return None
 
 
@@ -213,14 +236,24 @@ def get_monarch_token() -> str:
     auth_ep = meta.get("authorization_endpoint", f"{_OAUTH_BASE}/oauth/authorize")
     token_ep = meta.get("token_endpoint", f"{_OAUTH_BASE}/oauth/token")
 
-    # Resolve client_id: cached → dynamic registration → fallback
+    # Resolve client_id: cached → dynamic registration (required — Monarch
+    # rejects unregistered/guessed client_ids with a 400 on the consent page).
     client_id: str = cache.get("client_id") or ""
     if not client_id:
         reg_ep = meta.get("registration_endpoint", "")
-        if reg_ep:
-            client_id = _dynamic_register(reg_ep) or ""
+        if not reg_ep:
+            raise RuntimeError(
+                "Monarch OAuth discovery did not return a registration_endpoint "
+                "— cannot register JARVIS as a client. Discovery metadata: "
+                f"{meta}"
+            )
+        client_id = _dynamic_register(reg_ep) or ""
         if not client_id:
-            client_id = "jarvis"
+            raise RuntimeError(
+                "Monarch dynamic client registration failed — see the log above "
+                "for the server's error response. Cannot proceed without a "
+                "valid client_id."
+            )
 
     # Try silent refresh before full re-auth
     if cache.get("refresh_token"):
@@ -229,6 +262,7 @@ def get_monarch_token() -> str:
                 "grant_type": "refresh_token",
                 "refresh_token": cache["refresh_token"],
                 "client_id": client_id,
+                "resource": _MCP_RESOURCE,
             })
             _save({
                 **cache,
@@ -255,6 +289,8 @@ def get_monarch_token() -> str:
         "code_challenge": challenge,
         "code_challenge_method": "S256",
         "state": state,
+        "scope": _MCP_SCOPE,
+        "resource": _MCP_RESOURCE,
     })
 
     print(
@@ -272,6 +308,7 @@ def get_monarch_token() -> str:
         "redirect_uri": _REDIRECT_URI,
         "client_id": client_id,
         "code_verifier": verifier,
+        "resource": _MCP_RESOURCE,
     })
 
     _save({
