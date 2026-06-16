@@ -1,8 +1,8 @@
 """Todoist integration.
 
-Uses Todoist's REST API (v2) with a personal API token — no OAuth, no browser
-flow. Set ``TODOIST_API_KEY`` in ``.env`` (Todoist Settings → Integrations →
-Developer → "API token").
+Uses Todoist's unified API v1 (the old REST v2 was sunset Feb 2026) with a
+personal API token — no OAuth, no browser flow. Set ``TODOIST_API_KEY`` in
+``.env`` (Todoist Settings → Integrations → Developer → "API token").
 
 Categories map 1:1 to Todoist projects (e.g. "Daedabyte", "General",
 "Brightpoint"). Resolving a category looks up an existing project by name
@@ -19,7 +19,7 @@ from app.logging_setup import get_logger
 
 log = get_logger("todoist")
 
-BASE = "https://api.todoist.com/rest/v2"
+BASE = "https://api.todoist.com/api/v1"
 DEFAULT_FILTER = "overdue | today"
 
 
@@ -27,10 +27,15 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {CONFIG.todoist_api_key}"}
 
 
+def _results(resp: requests.Response) -> list[dict]:
+    """List endpoints on API v1 return {"results": [...], "next_cursor": ...}."""
+    return resp.json().get("results", [])
+
+
 def _get_projects() -> list[dict]:
     resp = requests.get(f"{BASE}/projects", headers=_headers(), timeout=15)
     resp.raise_for_status()
-    return resp.json()
+    return _results(resp)
 
 
 def _resolve_project(category: str) -> tuple[str, str]:
@@ -78,7 +83,7 @@ def list_tasks(filter_str: str | None = None) -> str:
             f"{BASE}/tasks", headers=_headers(), params={"filter": query}, timeout=15
         )
         resp.raise_for_status()
-        tasks = resp.json()
+        tasks = _results(resp)
     except Exception as exc:  # noqa: BLE001
         log.error("list_tasks failed (filter=%r): %s", query, exc)
         return f"Error fetching Todoist tasks: {exc}"
@@ -140,7 +145,7 @@ def complete_task(content: str, due_hint: str | None = None) -> str:
     try:
         resp = requests.get(f"{BASE}/tasks", headers=_headers(), timeout=15)
         resp.raise_for_status()
-        tasks = resp.json()
+        tasks = _results(resp)
     except Exception as exc:  # noqa: BLE001
         log.error("complete_task: could not list tasks: %s", exc)
         return f"Error fetching Todoist tasks: {exc}"
