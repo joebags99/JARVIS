@@ -41,7 +41,7 @@ html, body {
 }
 
 body.faded #app {
-  opacity: 0.32;
+  opacity: 0.22;
 }
 
 #particles {
@@ -141,6 +141,122 @@ body[data-state="listening"] #core {
   font-size: 13px;
   line-height: 1.5;
   user-select: text;
+}
+
+/* ── Idle HUD — a big JARVIS-style ring that greets you before the first
+   message, then dissolves once the conversation starts. ────────────────── */
+#hud {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 220px;
+  height: 220px;
+  transform: translate(-50%, -50%) scale(1);
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.7s ease, transform 0.7s ease;
+}
+
+body.has-messages #hud {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.8);
+}
+
+.hud-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+}
+
+.hud-ring-outer {
+  background: repeating-conic-gradient(
+    rgba(0, 229, 255, 0.6) 0deg 5deg,
+    transparent 5deg 13deg
+  );
+  -webkit-mask: radial-gradient(
+    closest-side,
+    transparent calc(50% - 10px),
+    #fff calc(50% - 9px),
+    #fff 50%,
+    transparent calc(50% + 1px)
+  );
+  mask: radial-gradient(
+    closest-side,
+    transparent calc(50% - 10px),
+    #fff calc(50% - 9px),
+    #fff 50%,
+    transparent calc(50% + 1px)
+  );
+  filter: drop-shadow(0 0 6px rgba(0, 229, 255, 0.45));
+  animation: hud-spin 22s linear infinite;
+}
+
+.hud-ring-mid {
+  inset: 28px;
+  background: repeating-conic-gradient(
+    rgba(0, 188, 212, 0.55) 0deg 3deg,
+    transparent 3deg 8deg
+  );
+  -webkit-mask: radial-gradient(
+    closest-side,
+    transparent calc(50% - 8px),
+    #fff calc(50% - 7px),
+    #fff 50%,
+    transparent calc(50% + 1px)
+  );
+  mask: radial-gradient(
+    closest-side,
+    transparent calc(50% - 8px),
+    #fff calc(50% - 7px),
+    #fff 50%,
+    transparent calc(50% + 1px)
+  );
+  animation: hud-spin-reverse 16s linear infinite;
+}
+
+.hud-ring-inner {
+  inset: 56px;
+  border: 1px solid rgba(0, 229, 255, 0.4);
+  box-shadow: 0 0 16px rgba(0, 229, 255, 0.22) inset, 0 0 10px rgba(0, 229, 255, 0.18);
+  animation: hud-pulse-ring 3.2s ease-in-out infinite;
+}
+
+.hud-core {
+  position: absolute;
+  inset: 80px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(0, 229, 255, 0.16), rgba(0, 229, 255, 0.02) 70%, transparent 100%);
+  animation: hud-pulse-core 2.6s ease-in-out infinite;
+}
+
+.hud-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--accent);
+  text-shadow: 0 0 10px rgba(0, 229, 255, 0.7);
+}
+
+@keyframes hud-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes hud-spin-reverse {
+  from { transform: rotate(360deg); }
+  to { transform: rotate(0deg); }
+}
+@keyframes hud-pulse-ring {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+@keyframes hud-pulse-core {
+  0%, 100% { opacity: 0.45; transform: scale(0.95); }
+  50% { opacity: 0.85; transform: scale(1.03); }
 }
 
 #transcript::-webkit-scrollbar {

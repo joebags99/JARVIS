@@ -144,6 +144,8 @@ function setUserName(name) {
 }
 
 function addMessage(role, label, text) {
+  document.body.classList.add("has-messages");
+
   const wrap = document.createElement("div");
   wrap.className = `msg msg-${role}`;
 
@@ -166,6 +168,8 @@ function addMessage(role, label, text) {
 }
 
 function startAssistantMessage() {
+  document.body.classList.add("has-messages");
+
   const wrap = document.createElement("div");
   wrap.className = "msg msg-assistant";
 
@@ -199,7 +203,8 @@ function finishAssistantMessage(fullText) {
 }
 
 function clearTranscript() {
-  transcript.innerHTML = "";
+  transcript.querySelectorAll(".msg").forEach((el) => el.remove());
+  document.body.classList.remove("has-messages");
 }
 
 function resetEntry() {
