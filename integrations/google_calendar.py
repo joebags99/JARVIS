@@ -233,7 +233,10 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
 
 
 def _build_rrule(
-    recurrence_freq: str, recurrence_count: int | None, recurrence_until: str | None
+    recurrence_freq: str,
+    recurrence_count: int | None,
+    recurrence_until: str | None,
+    recurrence_interval: int | None = None,
 ) -> str:
     """Build an RFC 5545 RRULE from structured fields. Raises ValueError if invalid.
 
@@ -246,10 +249,13 @@ def _build_rrule(
             "exactly one of recurrence_count or recurrence_until is required "
             "when recurrence_freq is set"
         )
+    rrule = f"RRULE:FREQ={recurrence_freq}"
+    if recurrence_interval and recurrence_interval > 1:
+        rrule += f";INTERVAL={recurrence_interval}"
     if recurrence_count:
-        return f"RRULE:FREQ={recurrence_freq};COUNT={recurrence_count}"
+        return f"{rrule};COUNT={recurrence_count}"
     until = dt.date.fromisoformat(recurrence_until).strftime("%Y%m%dT000000Z")
-    return f"RRULE:FREQ={recurrence_freq};UNTIL={until}"
+    return f"{rrule};UNTIL={until}"
 
 
 def create_event(
@@ -263,6 +269,7 @@ def create_event(
     recurrence_freq: str | None = None,
     recurrence_count: int | None = None,
     recurrence_until: str | None = None,
+    recurrence_interval: int | None = None,
 ) -> str:
     """Create a calendar event. Returns a human-readable status string for Claude."""
     try:
@@ -273,7 +280,9 @@ def create_event(
     rrule: str | None = None
     if recurrence_freq:
         try:
-            rrule = _build_rrule(recurrence_freq, recurrence_count, recurrence_until)
+            rrule = _build_rrule(
+                recurrence_freq, recurrence_count, recurrence_until, recurrence_interval
+            )
         except ValueError as exc:
             return f"Error: {exc}"
 
@@ -320,10 +329,19 @@ def create_event(
 
         created = service.events().insert(calendarId=cal_id, body=body).execute()
         recur_note = ""
-        if recurrence_count:
-            recur_note = f" repeating {recurrence_freq}, {recurrence_count} times"
-        elif recurrence_until:
-            recur_note = f" repeating {recurrence_freq} until {recurrence_until}"
+        if rrule:
+            unit = {"DAILY": "day", "WEEKLY": "week", "MONTHLY": "month", "YEARLY": "year"}.get(
+                recurrence_freq, recurrence_freq.lower()
+            )
+            freq_note = (
+                f"every {recurrence_interval} {unit}s"
+                if recurrence_interval and recurrence_interval > 1
+                else recurrence_freq
+            )
+            if recurrence_count:
+                recur_note = f" repeating {freq_note}, {recurrence_count} times"
+            elif recurrence_until:
+                recur_note = f" repeating {freq_note} until {recurrence_until}"
         log.info(
             "[%s/%s] created event '%s' at %s%s (id=%s)",
             account_name, matched_name, summary, start_iso, recur_note, created.get("id"),

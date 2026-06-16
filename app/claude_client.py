@@ -203,15 +203,26 @@ TOOLS = [
                     "enum": ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"],
                     "description": (
                         "Set only if the user wants this event to repeat, e.g. "
-                        "'every week' -> WEEKLY. Omit entirely for a one-time event. "
+                        "'every week' -> WEEKLY, 'every other week'/'biweekly' -> WEEKLY "
+                        "with recurrence_interval=2. Omit entirely for a one-time event. "
                         "If set, you MUST also set exactly one of recurrence_count or "
                         "recurrence_until — never create an open-ended recurring event."
+                    ),
+                },
+                "recurrence_interval": {
+                    "type": "integer",
+                    "description": (
+                        "Number of recurrence_freq units between occurrences. Omit or "
+                        "use 1 for 'every week'/'every day'. Use 2 for 'every other "
+                        "week'/'biweekly'/'fortnightly', 3 for 'every 3 months', etc."
                     ),
                 },
                 "recurrence_count": {
                     "type": "integer",
                     "description": (
-                        "Total occurrences including the first, e.g. 'for 5 weeks' -> 5. "
+                        "Total occurrences including the first, e.g. 'for 5 weeks' -> 5, "
+                        "'5 biweekly sessions' -> 5 (count occurrences, not calendar "
+                        "weeks — recurrence_interval already covers the spacing). "
                         "Use this OR recurrence_until, not both."
                     ),
                 },
@@ -431,6 +442,7 @@ def _execute_tool(name: str, input_data: dict) -> str:
             recurrence_freq=input_data.get("recurrence_freq"),
             recurrence_count=input_data.get("recurrence_count"),
             recurrence_until=input_data.get("recurrence_until"),
+            recurrence_interval=input_data.get("recurrence_interval"),
         )
     if name == "update_calendar_event":
         from integrations.google_calendar import update_event
