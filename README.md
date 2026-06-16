@@ -105,6 +105,10 @@ above if you ever get access to both.
 3. Categories (e.g. "Daedabyte", "General", "Brightpoint", "DnD") map to
    Todoist projects — JARVIS creates the project automatically the first time
    it files a task under a category that doesn't exist yet.
+4. Multi-step tasks — ask for something like "make a task to plan the team
+   offsite with steps to book a venue, send invites, and order catering" and
+   JARVIS nests each step as a Todoist subtask under the parent task, shown
+   indented when you ask for your task list.
 
 ### 7b. (Optional) Meal prep
 Reuses the Google Calendar and Todoist setup above — no extra config. Just

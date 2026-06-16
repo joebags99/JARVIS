@@ -340,7 +340,12 @@ TOOLS = [
         "description": (
             "Add a new task to the user's Todoist. Always classify the task into "
             "one of the user's categories — ask the user if it's genuinely unclear "
-            "which one fits."
+            "which one fits. If the task is really a multi-step goal or a nested "
+            "set of objectives (e.g. 'plan the team offsite' with steps like "
+            "booking a venue, sending invites, ordering catering), pass each step "
+            "as a string in subtasks instead of creating separate flat tasks or "
+            "cramming them into one task's text — Todoist will nest them under "
+            "the parent task as a checklist."
         ),
         "input_schema": {
             "type": "object",
@@ -367,6 +372,16 @@ TOOLS = [
                 "description": {
                     "type": "string",
                     "description": "Optional extra notes for the task.",
+                },
+                "subtasks": {
+                    "type": "array",
+                    "description": (
+                        "Optional ordered list of step/objective strings to nest "
+                        "under this task as Todoist subtasks, e.g. ['Book venue', "
+                        "'Send invites', 'Order catering']. Omit for a plain "
+                        "single-step task."
+                    ),
+                    "items": {"type": "string"},
                 },
             },
             "required": ["content", "category"],
@@ -666,6 +681,7 @@ def _execute_tool(name: str, input_data: dict) -> str:
             category=input_data["category"],
             due_string=input_data.get("due_string"),
             description=input_data.get("description"),
+            subtasks=input_data.get("subtasks"),
         )
     if name == "complete_todo":
         from integrations import todoist
