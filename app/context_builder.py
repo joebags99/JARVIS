@@ -14,6 +14,7 @@ On-demand via tools:
     * meeting notes  (get_recent_notes)
     * finances       (get_financial_summary)
     * todos          (get_todos / create_todo / update_todo / complete_todo)
+    * meal plans     (get_meal_history / create_meal_plan)
     * knowledge docs (load_knowledge_pool)
 """
 

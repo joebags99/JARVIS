@@ -21,6 +21,9 @@ calendars, and meeting notes.
   ever leaves your machine; transcription is free and offline).
 - **Context-aware** — assembles a system prompt from your `context/*.md` files,
   Google + Outlook calendars (next 7 days), recent `notes/`, and the date/time.
+- **Meal prep** — plan dinners two weeks at a time in conversation (with real
+  web search for recipe ideas), then push the plan to your Google Calendar and
+  a Todoist shopping list in one go.
 - **Streaming replies** that fill in token by token.
 - **Graceful degradation** — missing mic, missing calendar creds, or a missing
   API key are handled with clear messages, never a crash.
@@ -103,6 +106,13 @@ above if you ever get access to both.
    projects — JARVIS creates the project automatically the first time it
    files a task under a category that doesn't exist yet.
 
+### 7b. (Optional) Meal prep
+Reuses the Google Calendar and Todoist setup above — no extra config. Just
+ask JARVIS to plan your dinners for the next two weeks; it searches the web
+for ideas, proposes a plan for you to approve, then creates the calendar
+events and a "Groceries" Todoist project. Plans are recorded in
+`meal_plans.json` (gitignored) so future cycles avoid recent repeats.
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
@@ -159,6 +169,7 @@ This repo is built so your personal data **never** reaches GitHub. The
 - `token.json`, `credentials.json`, `.msal_cache.bin` (auth tokens)
 - `context/*` **except** the `*.example.md` templates (your profile/notes)
 - `notes/*` (your meeting notes)
+- `meal_plans.json` (your dinner plans/shopping lists)
 - `logs/*` (may contain calendar/notes content)
 - recorded `*.wav` audio and downloaded model caches
 
@@ -206,6 +217,7 @@ jarvis/
 │   ├── google_calendar.py
 │   ├── outlook_calendar.py
 │   ├── todoist.py
+│   ├── meal_prep.py
 │   └── notes_watcher.py
 ├── context/                # Your *.md context (gitignored; .example tracked)
 ├── notes/                  # Drop meeting notes here (gitignored)

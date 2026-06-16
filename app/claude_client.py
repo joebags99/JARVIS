@@ -39,6 +39,23 @@ _FINANCIAL_KEYWORDS = (
     "subscription", "paycheck", "afford", "owe", "debt",
 )
 
+# Meal-related keywords used to decide whether to attach the native web
+# search tool — same reasoning as _FINANCIAL_KEYWORDS: only pay for it when
+# the conversation is actually about food.
+_MEAL_KEYWORDS = (
+    "meal", "dinner", "recipe", "cook", "cooking", "groceries", "grocery",
+    "meal prep", "meal plan", "what's for dinner", "leftovers",
+)
+
+# Native server-side web search tool (no separate API key — billed through
+# the Anthropic account). Dated tool versions follow the same convention as
+# other Claude tool types; bump this if Anthropic ships a newer one.
+_WEB_SEARCH_TOOL = {
+    "type": "web_search_20260209",
+    "name": "web_search",
+    "max_uses": 5,
+}
+
 # History compaction: once a session accumulates more than this many user
 # turns, older turns are summarized away to bound per-request token cost.
 HISTORY_MAX_TURNS = 8
@@ -48,6 +65,11 @@ HISTORY_KEEP_TURNS = 3
 def _looks_financial(message: str) -> bool:
     lowered = message.lower()
     return any(kw in lowered for kw in _FINANCIAL_KEYWORDS)
+
+
+def _looks_meal_related(message: str) -> bool:
+    lowered = message.lower()
+    return any(kw in lowered for kw in _MEAL_KEYWORDS)
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -372,6 +394,76 @@ TOOLS = [
         },
     },
     {
+        "name": "get_meal_history",
+        "description": (
+            "Look up recent 2-week dinner-plan cycles, including the active one if "
+            "any. Call this before proposing a new meal plan so you can avoid "
+            "repeating recent dinners, and whenever the user asks what's for "
+            "dinner or what they ate recently."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "cycles_back": {
+                    "type": "integer",
+                    "description": "How many past cycles to include. Default 3.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "create_meal_plan",
+        "description": (
+            "Save an approved 2-week dinner plan: creates one calendar event per "
+            "dinner and one Todoist Groceries task per shopping-list item, then "
+            "records the cycle. Only call this after the user has reviewed and "
+            "approved the specific dinners and shopping list — never invent and "
+            "save a plan without confirmation. Call get_calendar_events first to "
+            "confirm the right account_name and calendar_name."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "account_name": {
+                    "type": "string",
+                    "description": "Google account name from the source tags, e.g. 'personal'.",
+                },
+                "calendar_name": {
+                    "type": "string",
+                    "description": "Calendar name from the source tags, e.g. 'Family'.",
+                },
+                "start_date": {
+                    "type": "string",
+                    "description": "First day of the 2-week stretch, YYYY-MM-DD.",
+                },
+                "dinner_time": {
+                    "type": "string",
+                    "description": "24-hour HH:MM start time for each dinner event. Default '18:00'.",
+                },
+                "meals": {
+                    "type": "array",
+                    "description": "Exactly one entry per dinner date in the cycle.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "date": {"type": "string", "description": "YYYY-MM-DD."},
+                            "dish": {"type": "string", "description": "Dinner name, e.g. 'Sheet-pan chicken fajitas'."},
+                            "notes": {"type": "string", "description": "Optional recipe link or notes."},
+                        },
+                        "required": ["date", "dish"],
+                    },
+                },
+                "shopping_list": {
+                    "type": "array",
+                    "description": "Consolidated grocery items for the whole cycle.",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["account_name", "calendar_name", "start_date", "meals", "shopping_list"],
+        },
+    },
+    {
         "name": "load_knowledge_pool",
         "description": (
             "Load content from a named Google Docs knowledge pool to help answer the "
@@ -484,6 +576,19 @@ def _execute_tool(name: str, input_data: dict) -> str:
             new_description=input_data.get("new_description"),
             new_category=input_data.get("new_category"),
         )
+    if name == "get_meal_history":
+        from integrations import meal_prep
+        return meal_prep.get_history(int(input_data.get("cycles_back") or 3))
+    if name == "create_meal_plan":
+        from integrations import meal_prep
+        return meal_prep.create_cycle(
+            start_date=input_data["start_date"],
+            account_name=input_data["account_name"],
+            calendar_name=input_data["calendar_name"],
+            meals=input_data["meals"],
+            shopping_list=input_data["shopping_list"],
+            dinner_time=input_data.get("dinner_time") or "18:00",
+        )
     if name == "load_knowledge_pool":
         import json
         from .config import ROOT_DIR
@@ -548,6 +653,8 @@ class ClaudeClient:
         # attached for follow-ups (e.g. "what about last month?") even if
         # they don't repeat a financial keyword.
         self._monarch_active = False
+        # Same stickiness for meal-prep conversations and the web search tool.
+        self._meal_active = False
         self._init_client()
 
     def _init_client(self) -> None:
@@ -581,6 +688,7 @@ class ClaudeClient:
         """Clear conversation history (called when overlay reopens)."""
         self.history.clear()
         self._monarch_active = False
+        self._meal_active = False
         log.info("session history cleared")
 
     def reload_context(self) -> None:
@@ -707,6 +815,13 @@ class ClaudeClient:
                     log.info("using beta endpoint with monarch mcp_servers attached")
                 except Exception as exc:
                     log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
+
+            # Native web search — only attached for meal/recipe conversations
+            # (sticky for the session) so it isn't billed on every message.
+            if self._meal_active or _looks_meal_related(user_message):
+                self._meal_active = True
+                base_kwargs["tools"] = TOOLS + [_WEB_SEARCH_TOOL]
+                log.info("web search tool attached (meal-related conversation)")
 
             # ── Bounded tool-use loop: keep tools/mcp_servers attached on every
             # round so local tools (e.g. load_knowledge_pool) and the Monarch

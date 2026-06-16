@@ -1,5 +1,6 @@
 # ── Core ─────────────────────────────────────────────────────
-anthropic>=0.40.0
+# >=0.60.0 needed for the native web_search tool type used by meal prep.
+anthropic>=0.60.0
 python-dotenv>=1.0.0
 
 # ── UI / tray ────────────────────────────────────────────────
