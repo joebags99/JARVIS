@@ -114,6 +114,9 @@ class Config:
         default_factory=lambda: _get("MONARCH_ENABLED").lower() in ("true", "1", "yes")
     )
 
+    # Todoist — personal API token, no OAuth.
+    todoist_api_key: str = field(default_factory=lambda: _get("TODOIST_API_KEY"))
+
     # Outlook / Microsoft Graph
     outlook_client_id: str = field(default_factory=lambda: _get("OUTLOOK_CLIENT_ID"))
     outlook_tenant_id: str = field(
@@ -139,6 +142,10 @@ class Config:
     @property
     def outlook_enabled(self) -> bool:
         return bool(self.outlook_client_id)
+
+    @property
+    def todoist_enabled(self) -> bool:
+        return bool(self.todoist_api_key)
 
 
 # Singleton-ish config used across the app.

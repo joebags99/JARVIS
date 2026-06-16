@@ -181,6 +181,86 @@ TOOLS = [
         },
     },
     {
+        "name": "get_todos",
+        "description": (
+            "Fetch the user's Todoist tasks. Call this whenever the user asks "
+            "what's on their to-do list, what they need to do today, or about "
+            "tasks in a specific category or date range."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "string",
+                    "description": (
+                        "Todoist filter query, e.g. 'today', 'overdue | today', "
+                        "'tomorrow', a specific date like 'June 20', or a category "
+                        "like '#Daedabyte'. Defaults to overdue + today's tasks."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "create_todo",
+        "description": (
+            "Add a new task to the user's Todoist. Always classify the task into "
+            "one of the user's categories — ask the user if it's genuinely unclear "
+            "which one fits."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The task text, e.g. 'Renew car registration'.",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "description": "Which category/project this task belongs to.",
+                },
+                "due_string": {
+                    "type": "string",
+                    "description": (
+                        "Natural-language due date, e.g. 'June 20', 'tomorrow', "
+                        "'every Monday'. Omit for no due date."
+                    ),
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional extra notes for the task.",
+                },
+            },
+            "required": ["content", "category"],
+        },
+    },
+    {
+        "name": "complete_todo",
+        "description": (
+            "Mark an existing Todoist task as done. Finds the task by matching its "
+            "text, so you don't need its exact ID."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "Text to search for among the user's open tasks.",
+                },
+                "due_hint": {
+                    "type": "string",
+                    "description": (
+                        "Due-date text to disambiguate when multiple tasks match, "
+                        "e.g. 'today' or 'June 20'."
+                    ),
+                },
+            },
+            "required": ["content"],
+        },
+    },
+    {
         "name": "load_knowledge_pool",
         "description": (
             "Load content from a named Google Docs knowledge pool to help answer the "
@@ -257,6 +337,23 @@ def _execute_tool(name: str, input_data: dict) -> str:
             new_end_iso=input_data.get("new_end"),
             new_description=input_data.get("new_description"),
             new_location=input_data.get("new_location"),
+        )
+    if name == "get_todos":
+        from integrations import todoist
+        return todoist.list_tasks(input_data.get("filter"))
+    if name == "create_todo":
+        from integrations import todoist
+        return todoist.create_task(
+            content=input_data["content"],
+            category=input_data["category"],
+            due_string=input_data.get("due_string"),
+            description=input_data.get("description"),
+        )
+    if name == "complete_todo":
+        from integrations import todoist
+        return todoist.complete_task(
+            content=input_data["content"],
+            due_hint=input_data.get("due_hint"),
         )
     if name == "load_knowledge_pool":
         import json

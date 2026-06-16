@@ -77,7 +77,15 @@ is optional.
    `.env` (`OUTLOOK_CLIENT_ID`, `OUTLOOK_TENANT_ID`).
 5. On first run, follow the device-code prompt printed to the console/log.
 
-### 7. Add your personal context
+### 7. (Optional) Todoist
+1. In Todoist, go to **Settings → Integrations → Developer** and copy your
+   personal **API token**.
+2. Paste it into `.env` as `TODOIST_API_KEY=...`.
+3. Categories (e.g. "Daedabyte", "General", "Brightpoint") map to Todoist
+   projects — JARVIS creates the project automatically the first time it
+   files a task under a category that doesn't exist yet.
+
+### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
 ```
@@ -85,7 +93,7 @@ Edit `context/profile.md` with your roles, jobs, and preferences. Add any other
 `.md` files to `context/` and they're automatically included. (All real
 `context/*.md` files are gitignored.)
 
-### 8. Run it
+### 9. Run it
 ```bash
 python main.py
 ```
@@ -118,6 +126,7 @@ To keep prompts lean, each note is truncated to ~2000 characters in context.
 | `WHISPER_MODEL` | `tiny` / `base` / `small` / `medium`. |
 | `GOOGLE_CREDENTIALS_PATH` | Path to Google OAuth `credentials.json`. |
 | `OUTLOOK_CLIENT_ID` / `_TENANT_ID` / `_CLIENT_SECRET` | Azure app registration. |
+| `TODOIST_API_KEY` | Personal API token from Todoist's Developer settings. |
 
 ---
 
@@ -176,6 +185,7 @@ jarvis/
 ├── integrations/
 │   ├── google_calendar.py
 │   ├── outlook_calendar.py
+│   ├── todoist.py
 │   └── notes_watcher.py
 ├── context/                # Your *.md context (gitignored; .example tracked)
 ├── notes/                  # Drop meeting notes here (gitignored)
