@@ -13,6 +13,12 @@ const header = document.getElementById("header");
 
 let userName = "User";
 let streamEl = null;
+let streamRaw = "";
+
+const THINKING_HTML = `
+    <span class="thinking-spinner"></span>
+    <span class="thinking-label">Thinking&hellip;</span>
+  `;
 
 // ── API bridge ────────────────────────────────────────────────────────────
 
@@ -180,14 +186,37 @@ function startAssistantMessage() {
 
   const content = document.createElement("div");
   content.className = "msg-content thinking";
-  content.innerHTML = `
-    <span class="thinking-spinner"></span>
-    <span class="thinking-label">Thinking&hellip;</span>
-  `;
+  content.innerHTML = THINKING_HTML;
   wrap.appendChild(content);
 
   transcript.appendChild(wrap);
   streamEl = content;
+  streamRaw = "";
+  scrollToBottom();
+}
+
+// Append a streamed chunk to the live bubble. The first chunk clears the
+// thinking spinner. Rendered as plain text while streaming (cheap, no flicker
+// from half-formed markdown); finishAssistantMessage swaps in full markdown.
+function appendAssistantDelta(text) {
+  if (!streamEl) return;
+  if (streamEl.classList.contains("thinking")) {
+    streamEl.classList.remove("thinking");
+    streamEl.textContent = "";
+    streamRaw = "";
+  }
+  streamRaw += text;
+  streamEl.textContent = streamRaw;
+  scrollToBottom();
+}
+
+// Roll the live bubble back to the thinking state — used when a round's
+// pre-tool text is discarded because the model decided to call a tool.
+function resetAssistantStream() {
+  if (!streamEl) return;
+  streamRaw = "";
+  streamEl.classList.add("thinking");
+  streamEl.innerHTML = THINKING_HTML;
   scrollToBottom();
 }
 
@@ -196,6 +225,7 @@ function finishAssistantMessage(fullText) {
     streamEl.classList.remove("thinking");
     streamEl.innerHTML = renderMarkdown(fullText);
     streamEl = null;
+    streamRaw = "";
   }
   scrollToBottom();
 }

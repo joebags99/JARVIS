@@ -80,6 +80,12 @@ class Config:
     anthropic_model: str = field(
         default_factory=lambda: _get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
     )
+    # Cheap model used only for throwaway summarization (session summaries +
+    # history compaction). Defaults to Haiku — those calls don't need the main
+    # model's quality and run far cheaper here.
+    summary_model: str = field(
+        default_factory=lambda: _get("ANTHROPIC_SUMMARY_MODEL", "claude-haiku-4-5")
+    )
 
     # App
     user_name: str = field(default_factory=lambda: _get("JARVIS_USER_NAME", "User"))
@@ -127,6 +133,13 @@ class Config:
     # Todoist — personal API token, no OAuth.
     todoist_api_key: str = field(default_factory=lambda: _get("TODOIST_API_KEY"))
 
+    # Gmail — reuses the Google OAuth credentials.json but needs its own consent
+    # (mail scopes), so it's opt-in. Set GMAIL_ENABLED=true to surface the email
+    # read/draft tools; first use opens a browser to authorize the mail scopes.
+    gmail_enabled: bool = field(
+        default_factory=lambda: _get("GMAIL_ENABLED").lower() in ("true", "1", "yes")
+    )
+
     # Outlook / Microsoft Graph
     outlook_client_id: str = field(default_factory=lambda: _get("OUTLOOK_CLIENT_ID"))
     outlook_tenant_id: str = field(
@@ -164,6 +177,11 @@ class Config:
     @property
     def todoist_enabled(self) -> bool:
         return bool(self.todoist_api_key)
+
+    @property
+    def gmail_available(self) -> bool:
+        """Gmail is usable only if opted in AND Google credentials exist on disk."""
+        return self.gmail_enabled and self.google_enabled
 
 
 # Singleton-ish config used across the app.

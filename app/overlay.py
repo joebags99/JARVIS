@@ -335,10 +335,17 @@ class Overlay:
         self._eval("setInputsEnabled", False)
 
         def worker() -> None:
-            # No on_delta callback: the UI shows a thinking indicator while this
-            # runs, then renders the complete reply in one shot rather than
-            # piecing it together token by token.
-            reply = self.claude.send(text)
+            # Stream the reply token by token into the live message bubble. If a
+            # round's pre-tool text is discarded (model spoke, then called a
+            # tool), on_reset rolls the bubble back to the thinking indicator so
+            # the soon-to-be-replaced text doesn't linger.
+            def on_delta(chunk: str) -> None:
+                self._eval("appendAssistantDelta", chunk)
+
+            def on_reset() -> None:
+                self._eval("resetAssistantStream")
+
+            reply = self.claude.send(text, on_delta=on_delta, on_reset=on_reset)
             self._eval("finishAssistantMessage", reply)
             self.set_status(STATUS_DONE)
             self._set_state("idle")

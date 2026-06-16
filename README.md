@@ -24,6 +24,10 @@ calendars, and meeting notes.
 - **Meal prep** — plan dinners two weeks at a time in conversation (with real
   web search for recipe ideas), then push the plan to your Google Calendar and
   a Todoist shopping list in one go.
+- **Email** (optional) — read and summarize recent Gmail, and draft replies for
+  you to review. JARVIS never sends mail on its own; it only saves drafts.
+- **Cross-session memory** — when you close a longer chat, JARVIS saves a short
+  recap and can recall it later ("pick up where we left off").
 - **Streaming replies** that fill in token by token.
 - **Graceful degradation** — missing mic, missing calendar creds, or a missing
   API key are handled with clear messages, never a crash.
@@ -117,6 +121,19 @@ for ideas, proposes a plan for you to approve, then creates the calendar
 events and a "Groceries" Todoist project. Plans are recorded in
 `meal_plans.json` (gitignored) so future cycles avoid recent repeats.
 
+### 7c. (Optional) Gmail
+Reuses the Google `credentials.json` from step 5 but needs its own consent for
+mail scopes (read + draft), so it's opt-in:
+1. In the [Google Cloud Console](https://console.cloud.google.com/), enable the
+   **Gmail API** on the same project.
+2. Set `GMAIL_ENABLED=true` in `.env`.
+3. On first email request, a browser opens to authorize the mail scopes; the
+   token is cached under `tokens/google_mail/` (gitignored).
+
+JARVIS reads recent mail and **drafts** replies for you to review — it never
+sends mail on its own, since sending is hard to undo. Ask things like "any
+unread email from Sam this week?" or "draft a reply to the invoice thread."
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
@@ -163,6 +180,7 @@ notes from the 16th and add any action items to Todoist."
 |---|---|
 | `ANTHROPIC_API_KEY` | **Required.** Your Claude API key. |
 | `ANTHROPIC_MODEL` | Model id (default `claude-sonnet-4-6`). |
+| `ANTHROPIC_SUMMARY_MODEL` | Cheap model for session/compaction summaries (default `claude-haiku-4-5`). |
 | `JARVIS_USER_NAME` | Your name, used in the prompt + UI. |
 | `JARVIS_WINDOW_POSITION` | `top-right` / `top-left` / `bottom-right` / `bottom-left`. |
 | `JARVIS_HOTKEY` | Global toggle hotkey, e.g. `ctrl+space` (blank = off). |
@@ -173,6 +191,7 @@ notes from the 16th and add any action items to Todoist."
 | `OUTLOOK_CLIENT_ID` / `_TENANT_ID` / `_CLIENT_SECRET` | Azure app registration. |
 | `OUTLOOK_ICS_URL` | Published calendar ICS link — no-Azure fallback, busy/free only. |
 | `TODOIST_API_KEY` | Personal API token from Todoist's Developer settings. |
+| `GMAIL_ENABLED` | `true` to enable Gmail read/draft tools (reuses Google `credentials.json`). |
 
 ---
 
