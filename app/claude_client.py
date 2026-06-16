@@ -24,6 +24,10 @@ from .logging_setup import get_logger
 log = get_logger("claude")
 
 MAX_TOKENS = 1024
+# Meal-plan tool calls carry 14 dinners with recipe text plus a shopping
+# list — easily several times MAX_TOKENS — so they get a bigger budget for
+# that turn instead of risking a truncated, invalid tool_use JSON payload.
+_MEAL_MAX_TOKENS = 4096
 MAX_TOOL_ROUNDS = 8  # safety cap on local tool_use <-> tool_result round trips
 
 _MONARCH_MCP_URL = "https://api.monarch.com/mcp"
@@ -794,6 +798,7 @@ class ClaudeClient:
             return self._init_error or "Claude client is not available."
 
         self._compact_history()
+        history_snapshot = len(self.history)
         self.history.append({"role": "user", "content": user_message})
         system_prompt = self.context.build_system_prompt()
 
@@ -843,6 +848,7 @@ class ClaudeClient:
                 # true cannot be used with programmatic tool calling") — drop it
                 # for this turn rather than disabling web search.
                 base_kwargs["tool_choice"] = {"type": "auto"}
+                base_kwargs["max_tokens"] = _MEAL_MAX_TOKENS
                 log.info("web search tool attached (meal-related conversation)")
 
             # ── Bounded tool-use loop: keep tools/mcp_servers attached on every
@@ -876,7 +882,19 @@ class ClaudeClient:
 
                 results = []
                 for tu in tool_uses:
-                    outcome = _execute_tool(tu.name, tu.input)
+                    try:
+                        outcome = _execute_tool(tu.name, tu.input)
+                    except Exception as exc:  # noqa: BLE001
+                        # A tool_use block always needs a paired tool_result —
+                        # if execution raises (e.g. a required field was missing
+                        # from a truncated/malformed call), report it as the
+                        # result instead of letting it escape and leave a
+                        # dangling tool_use in history for the next request.
+                        log.error("tool %s raised: %s", tu.name, exc)
+                        outcome = (
+                            f"Error: tool '{tu.name}' failed ({exc}). "
+                            "Check that all required fields were provided and try again."
+                        )
                     log.info("tool %s -> %r", tu.name, outcome[:120])
                     results.append({
                         "type": "tool_result",
@@ -910,7 +928,10 @@ class ClaudeClient:
 
         except Exception as exc:  # noqa: BLE001
             log.error("Claude API call failed: %s", exc)
-            # Roll back to keep history consistent — remove any partial turns.
-            while self.history and self.history[-1]["role"] == "user":
-                self.history.pop()
+            # Roll back the entire failed turn (the user message plus any
+            # partial assistant/tool_result exchanges already appended this
+            # round) so a dangling tool_use can never linger into the next
+            # request — truncating to the pre-turn length handles that
+            # regardless of which round the failure happened in.
+            del self.history[history_snapshot:]
             return f"⚠️ Error contacting Claude: {exc}"
