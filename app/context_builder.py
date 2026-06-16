@@ -102,9 +102,20 @@ class ContextBuilder:
             return ""
 
     # ── Assembly ──────────────────────────────────────────────────────────────
-    def build_system_prompt(self) -> str:
+    def build_system_prompt(self) -> list[dict]:
+        """Build the system prompt as cache-friendly content blocks.
+
+        Returns a list of two blocks: a large *stable* block (profile, knowledge
+        pools, extra context, instructions) carrying a ``cache_control``
+        breakpoint, followed by a tiny *volatile* block holding the current
+        date/time. Prompt caching is a prefix match across ``tools → system →
+        messages``, so keeping the minute-level timestamp out of the cached
+        prefix lets the (large) TOOLS array and profile be served from cache on
+        every follow-up round and turn — instead of being re-billed in full on
+        each of the up-to-8 API calls a single message can trigger.
+        """
         name = CONFIG.user_name
-        sections = [
+        stable_sections = [
             (
                 f"You are JARVIS, a personal AI assistant for {name}. You are smart, "
                 "concise, and proactive. You have full awareness of the user's "
@@ -113,27 +124,39 @@ class ContextBuilder:
                 "the question actually needs that data."
             ),
             f"## Who You Are Assisting\n{self._profile_section()}",
-            f"## Today's Date & Time\n{self._datetime_section()}",
         ]
 
         pools = self._knowledge_pools_section()
         if pools:
-            sections.append(f"## Available Knowledge Pools\n{pools}")
+            stable_sections.append(f"## Available Knowledge Pools\n{pools}")
 
         other = self._other_context_section()
         if other:
-            sections.append(f"## Additional Context\n{other}")
+            stable_sections.append(f"## Additional Context\n{other}")
 
-        sections.append(
+        stable_sections.append(
             "Keep responses focused and actionable. Format for readability in a "
             "small overlay window — use short paragraphs or bullet points where "
             "helpful. Never be verbose when concise serves better."
         )
 
-        prompt = "\n\n".join(sections)
-        prompt = self._truncate(prompt)
-        log.info("assembled system prompt (%d chars)", len(prompt))
-        return prompt
+        stable_text = self._truncate("\n\n".join(stable_sections))
+        # Volatile: date/time changes every minute, so it must sit *after* the
+        # cache breakpoint or it would invalidate the cached prefix each minute.
+        datetime_text = f"## Today's Date & Time\n{self._datetime_section()}"
+
+        log.info(
+            "assembled system prompt (%d stable + %d volatile chars)",
+            len(stable_text), len(datetime_text),
+        )
+        return [
+            {
+                "type": "text",
+                "text": stable_text,
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"type": "text", "text": datetime_text},
+        ]
 
     def _truncate(self, prompt: str) -> str:
         """Hard cap on prompt size; truncates the tail (oldest notes / extras)."""
