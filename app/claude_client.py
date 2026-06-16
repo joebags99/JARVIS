@@ -419,9 +419,12 @@ TOOLS = [
     {
         "name": "create_meal_plan",
         "description": (
-            "Save an approved 2-week dinner plan: creates one calendar event per "
-            "dinner and one Todoist Groceries task per shopping-list item, then "
-            "records the cycle. Before calling this tool: "
+            "Save an approved 2-week meal plan: creates one calendar event per "
+            "meal and one Todoist Groceries task per shopping-list item, then "
+            "records the cycle. Dinners default to 5:30 PM Eastern Time and "
+            "lunches (only if the user wants lunches planned too) default to "
+            "12:30 PM Eastern — don't change these unless the user asks for a "
+            "different time. Before calling this tool: "
             "(1) ask the user what meat and produce they currently have on hand "
             "and roughly how long each item has been stored, and schedule the "
             "most perishable items earliest in the 14 days; "
@@ -452,16 +455,32 @@ TOOLS = [
                 },
                 "dinner_time": {
                     "type": "string",
-                    "description": "24-hour HH:MM start time for each dinner event. Default '18:00'.",
+                    "description": (
+                        "24-hour HH:MM Eastern Time start for each dinner event. "
+                        "Default '17:30' (5:30 PM ET) — only override if the user "
+                        "asks for a different dinner time."
+                    ),
+                },
+                "lunch_time": {
+                    "type": "string",
+                    "description": (
+                        "24-hour HH:MM Eastern Time start for each lunch event "
+                        "(meals with meal_type='lunch'). Default '12:30' (12:30 PM ET)."
+                    ),
                 },
                 "meals": {
                     "type": "array",
-                    "description": "Exactly one entry per dinner date in the cycle.",
+                    "description": "One entry per meal date in the cycle (dinners, plus lunches if the user wants those too).",
                     "items": {
                         "type": "object",
                         "properties": {
                             "date": {"type": "string", "description": "YYYY-MM-DD."},
-                            "dish": {"type": "string", "description": "Dinner name, e.g. 'Sheet-pan chicken fajitas'."},
+                            "dish": {"type": "string", "description": "Meal name, e.g. 'Sheet-pan chicken fajitas'."},
+                            "meal_type": {
+                                "type": "string",
+                                "enum": ["dinner", "lunch"],
+                                "description": "Defaults to 'dinner' if omitted. Use 'lunch' for a midday meal.",
+                            },
                             "notes": {
                                 "type": "string",
                                 "description": (
@@ -608,7 +627,8 @@ def _execute_tool(name: str, input_data: dict) -> str:
             calendar_name=input_data["calendar_name"],
             meals=input_data["meals"],
             shopping_list=input_data["shopping_list"],
-            dinner_time=input_data.get("dinner_time") or "18:00",
+            dinner_time=input_data.get("dinner_time") or meal_prep.DEFAULT_DINNER_TIME,
+            lunch_time=input_data.get("lunch_time") or meal_prep.DEFAULT_LUNCH_TIME,
         )
     if name == "load_knowledge_pool":
         import json
