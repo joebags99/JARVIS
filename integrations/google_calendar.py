@@ -26,6 +26,49 @@ log = get_logger("google_cal")
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TOKEN_DIR = ROOT_DIR / "tokens" / "google"
 
+_cached_timezone: str | None = None
+
+
+def _default_timezone() -> str:
+    """Best-effort IANA zone name to attach when Claude omits a UTC offset.
+
+    Never raises — falls back to UTC so a missing/failed tz lookup can't
+    block event creation. Resolution order: explicit override ->
+    auto-detected system zone -> "UTC".
+    """
+    global _cached_timezone
+    if _cached_timezone is not None:
+        return _cached_timezone
+    if CONFIG.jarvis_timezone:
+        _cached_timezone = CONFIG.jarvis_timezone
+        return _cached_timezone
+    try:
+        from tzlocal import get_localzone_name
+        _cached_timezone = get_localzone_name()
+    except Exception:  # noqa: BLE001
+        _cached_timezone = "UTC"
+    return _cached_timezone
+
+
+def _start_end(iso: str, force_timezone: bool = False) -> dict:
+    """Build a start/end dict for the Calendar API from an ISO date/datetime.
+
+    Claude's tool schema asks it to always include a UTC offset, but it
+    doesn't reliably comply — a naive dateTime makes Google reject the
+    request with "Missing time zone definition". Attach a timeZone field
+    deterministically rather than trusting the LLM to format it correctly.
+
+    Google also requires timeZone unconditionally on recurring events,
+    even when dateTime already carries a UTC offset — pass
+    force_timezone=True for those (see create_event's rrule handling).
+    """
+    if len(iso) == 10:
+        return {"date": iso}
+    parsed = dt.datetime.fromisoformat(iso)
+    if force_timezone or parsed.tzinfo is None:
+        return {"dateTime": iso, "timeZone": _default_timezone()}
+    return {"dateTime": iso}
+
 
 @dataclass
 class CalEvent:
@@ -189,6 +232,32 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
     return all_events[:max_events]
 
 
+def _build_rrule(
+    recurrence_freq: str,
+    recurrence_count: int | None,
+    recurrence_until: str | None,
+    recurrence_interval: int | None = None,
+) -> str:
+    """Build an RFC 5545 RRULE from structured fields. Raises ValueError if invalid.
+
+    Built deterministically in Python rather than asked of Claude — same
+    reasoning as the Todoist due-date handling: date/recurrence math should
+    never depend on LLM arithmetic.
+    """
+    if bool(recurrence_count) == bool(recurrence_until):
+        raise ValueError(
+            "exactly one of recurrence_count or recurrence_until is required "
+            "when recurrence_freq is set"
+        )
+    rrule = f"RRULE:FREQ={recurrence_freq}"
+    if recurrence_interval and recurrence_interval > 1:
+        rrule += f";INTERVAL={recurrence_interval}"
+    if recurrence_count:
+        return f"{rrule};COUNT={recurrence_count}"
+    until = dt.date.fromisoformat(recurrence_until).strftime("%Y%m%dT000000Z")
+    return f"{rrule};UNTIL={until}"
+
+
 def create_event(
     account_name: str,
     calendar_name: str,
@@ -197,12 +266,25 @@ def create_event(
     end_iso: str,
     description: str | None = None,
     location: str | None = None,
+    recurrence_freq: str | None = None,
+    recurrence_count: int | None = None,
+    recurrence_until: str | None = None,
+    recurrence_interval: int | None = None,
 ) -> str:
     """Create a calendar event. Returns a human-readable status string for Claude."""
     try:
         from googleapiclient.discovery import build
     except ImportError:
         return "Error: Google API libraries not installed."
+
+    rrule: str | None = None
+    if recurrence_freq:
+        try:
+            rrule = _build_rrule(
+                recurrence_freq, recurrence_count, recurrence_until, recurrence_interval
+            )
+        except ValueError as exc:
+            return f"Error: {exc}"
 
     creds = _load_credentials(account_name)
     if creds is None:
@@ -233,28 +315,40 @@ def create_event(
                 f"Available calendars: {', '.join(available)}"
             )
 
-        # All-day events use date strings ("YYYY-MM-DD"); timed events use dateTime.
-        def _start_end(iso: str) -> dict:
-            return {"date": iso} if len(iso) == 10 else {"dateTime": iso}
-
         body: dict = {
             "summary": summary,
-            "start": _start_end(start_iso),
-            "end": _start_end(end_iso),
+            "start": _start_end(start_iso, force_timezone=bool(rrule)),
+            "end": _start_end(end_iso, force_timezone=bool(rrule)),
         }
         if description:
             body["description"] = description
         if location:
             body["location"] = location
+        if rrule:
+            body["recurrence"] = [rrule]
 
         created = service.events().insert(calendarId=cal_id, body=body).execute()
+        recur_note = ""
+        if rrule:
+            unit = {"DAILY": "day", "WEEKLY": "week", "MONTHLY": "month", "YEARLY": "year"}.get(
+                recurrence_freq, recurrence_freq.lower()
+            )
+            freq_note = (
+                f"every {recurrence_interval} {unit}s"
+                if recurrence_interval and recurrence_interval > 1
+                else recurrence_freq
+            )
+            if recurrence_count:
+                recur_note = f" repeating {freq_note}, {recurrence_count} times"
+            elif recurrence_until:
+                recur_note = f" repeating {freq_note} until {recurrence_until}"
         log.info(
-            "[%s/%s] created event '%s' at %s (id=%s)",
-            account_name, matched_name, summary, start_iso, created.get("id"),
+            "[%s/%s] created event '%s' at %s%s (id=%s)",
+            account_name, matched_name, summary, start_iso, recur_note, created.get("id"),
         )
         return (
             f"Event '{summary}' created on the '{matched_name}' calendar "
-            f"starting {start_iso}."
+            f"starting {start_iso}{recur_note}."
         )
     except Exception as exc:  # noqa: BLE001
         log.error("[%s] create_event failed: %s", account_name, exc)
@@ -276,6 +370,11 @@ def update_event(
 
     Returns a human-readable status string for Claude. Uses Google's PATCH
     so unmentioned fields are left untouched.
+
+    Known limitation: no concept of editing a recurring series (single
+    instance vs. "this and following" vs. "all") — that needs
+    recurringEventId/originalStartTime handling on instances, which isn't
+    implemented here.
     """
     try:
         from googleapiclient.discovery import build
@@ -360,9 +459,6 @@ def update_event(
             patch["description"] = new_description
         if new_location is not None:
             patch["location"] = new_location
-
-        def _start_end(iso: str) -> dict:
-            return {"date": iso} if len(iso) == 10 else {"dateTime": iso}
 
         if new_start_iso is not None:
             patch["start"] = _start_end(new_start_iso)

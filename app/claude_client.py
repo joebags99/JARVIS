@@ -24,10 +24,30 @@ from .logging_setup import get_logger
 log = get_logger("claude")
 
 MAX_TOKENS = 1024
-MAX_TOOL_ROUNDS = 5  # safety cap on local tool_use <-> tool_result round trips
+MAX_TOOL_ROUNDS = 8  # safety cap on local tool_use <-> tool_result round trips
 
 _MONARCH_MCP_URL = "https://api.monarch.com/mcp"
 _MCP_BETA = "mcp-client-2025-04-04"
+
+# Finance-related keywords used to decide whether a message warrants attaching
+# the remote Monarch MCP server. Attaching it on every request — regardless of
+# topic — burns tokens on tool definitions the model never uses.
+_FINANCIAL_KEYWORDS = (
+    "spend", "spent", "spending", "budget", "transaction", "expense",
+    "balance", "money", "financ", "income", "invest", "bill", "savings",
+    "credit", "debit", "bank", "monarch", "net worth", "cash flow",
+    "subscription", "paycheck", "afford", "owe", "debt",
+)
+
+# History compaction: once a session accumulates more than this many user
+# turns, older turns are summarized away to bound per-request token cost.
+HISTORY_MAX_TURNS = 8
+HISTORY_KEEP_TURNS = 3
+
+
+def _looks_financial(message: str) -> bool:
+    lowered = message.lower()
+    return any(kw in lowered for kw in _FINANCIAL_KEYWORDS)
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -39,7 +59,9 @@ TOOLS = [
             "asks about their schedule, appointments, meetings, what they have coming "
             "up, or what they're doing on a specific day. Also call it before "
             "creating or editing an event so you know the correct account_name and "
-            "calendar_name to use."
+            "calendar_name to use. Entries tagged [Outlook-ICS] are free/busy only — "
+            "no title or location data exists for them, so treat their 'Busy' summary "
+            "as opaque and never invent a real title or location for one."
         ),
         "input_schema": {
             "type": "object",
@@ -176,8 +198,177 @@ TOOLS = [
                     "type": "string",
                     "description": "Optional location.",
                 },
+                "recurrence_freq": {
+                    "type": "string",
+                    "enum": ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"],
+                    "description": (
+                        "Set only if the user wants this event to repeat, e.g. "
+                        "'every week' -> WEEKLY, 'every other week'/'biweekly' -> WEEKLY "
+                        "with recurrence_interval=2. Omit entirely for a one-time event. "
+                        "If set, you MUST also set exactly one of recurrence_count or "
+                        "recurrence_until — never create an open-ended recurring event."
+                    ),
+                },
+                "recurrence_interval": {
+                    "type": "integer",
+                    "description": (
+                        "Number of recurrence_freq units between occurrences. Omit or "
+                        "use 1 for 'every week'/'every day'. Use 2 for 'every other "
+                        "week'/'biweekly'/'fortnightly', 3 for 'every 3 months', etc."
+                    ),
+                },
+                "recurrence_count": {
+                    "type": "integer",
+                    "description": (
+                        "Total occurrences including the first, e.g. 'for 5 weeks' -> 5, "
+                        "'5 biweekly sessions' -> 5 (count occurrences, not calendar "
+                        "weeks — recurrence_interval already covers the spacing). "
+                        "Use this OR recurrence_until, not both."
+                    ),
+                },
+                "recurrence_until": {
+                    "type": "string",
+                    "description": (
+                        "Last possible date (YYYY-MM-DD, inclusive) the recurrence may "
+                        "extend to, e.g. 'every Monday until August 1st' -> '2026-08-01'. "
+                        "Use this OR recurrence_count, not both."
+                    ),
+                },
             },
             "required": ["account_name", "calendar_name", "summary", "start", "end"],
+        },
+    },
+    {
+        "name": "get_todos",
+        "description": (
+            "Fetch the user's Todoist tasks. Call this whenever the user asks "
+            "what's on their to-do list, what they need to do today, or about "
+            "tasks in a specific category or date range."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "string",
+                    "description": (
+                        "Todoist filter query, e.g. 'today', 'overdue | today', "
+                        "'tomorrow', a specific date like 'June 20', or a category "
+                        "like '#Daedabyte'. Defaults to overdue + today's tasks."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "create_todo",
+        "description": (
+            "Add a new task to the user's Todoist. Always classify the task into "
+            "one of the user's categories — ask the user if it's genuinely unclear "
+            "which one fits."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "The task text, e.g. 'Renew car registration'.",
+                },
+                "category": {
+                    "type": "string",
+                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "description": "Which category/project this task belongs to.",
+                },
+                "due_string": {
+                    "type": "string",
+                    "description": (
+                        "The due date AS THE USER SAID IT, e.g. 'June 20', 'tomorrow', "
+                        "'next Friday', 'every Monday'. Pass their words through "
+                        "unmodified — do NOT compute or convert this to a specific "
+                        "date yourself; JARVIS resolves it locally against the real "
+                        "current date. Omit for no due date."
+                    ),
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional extra notes for the task.",
+                },
+            },
+            "required": ["content", "category"],
+        },
+    },
+    {
+        "name": "complete_todo",
+        "description": (
+            "Mark an existing Todoist task as done. Finds the task by matching its "
+            "text, so you don't need its exact ID."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "Text to search for among the user's open tasks.",
+                },
+                "due_hint": {
+                    "type": "string",
+                    "description": (
+                        "Due-date text to disambiguate when multiple tasks match, "
+                        "e.g. 'today' or 'June 20'."
+                    ),
+                },
+            },
+            "required": ["content"],
+        },
+    },
+    {
+        "name": "update_todo",
+        "description": (
+            "Edit an existing Todoist task — rename it, reschedule it, change its "
+            "notes, or move it to a different category. Finds the task by matching "
+            "its current text; supply only the fields that should change. Use this "
+            "instead of create_todo whenever the user asks to edit, reschedule, or "
+            "recategorize an existing task."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "Text to search for among the user's open tasks.",
+                },
+                "due_hint": {
+                    "type": "string",
+                    "description": (
+                        "Due-date text to disambiguate when multiple tasks match, "
+                        "e.g. 'today' or 'June 20'."
+                    ),
+                },
+                "new_content": {
+                    "type": "string",
+                    "description": "New task text (omit to keep current).",
+                },
+                "new_due_string": {
+                    "type": "string",
+                    "description": (
+                        "The new due date AS THE USER SAID IT, e.g. 'June 25', "
+                        "'tomorrow', 'next Friday', 'no date'. Pass their words "
+                        "through unmodified — do NOT compute or convert this to a "
+                        "specific date yourself; JARVIS resolves it locally against "
+                        "the real current date. Omit to keep the current due date."
+                    ),
+                },
+                "new_description": {
+                    "type": "string",
+                    "description": "New notes for the task (omit to keep current).",
+                },
+                "new_category": {
+                    "type": "string",
+                    "enum": ["Daedabyte", "General", "Brightpoint"],
+                    "description": "New category/project (omit to keep current).",
+                },
+            },
+            "required": ["content"],
         },
     },
     {
@@ -208,7 +399,7 @@ TOOLS = [
 def _execute_tool(name: str, input_data: dict) -> str:
     """Dispatch a tool call and return a result string."""
     if name == "get_calendar_events":
-        from integrations import google_calendar, outlook_calendar
+        from integrations import google_calendar, outlook_calendar, outlook_ics
         days = int(input_data.get("days") or 7)
         events = []
         try:
@@ -219,6 +410,10 @@ def _execute_tool(name: str, input_data: dict) -> str:
             events += outlook_calendar.get_events(days, 20)
         except Exception as exc:  # noqa: BLE001
             log.warning("outlook calendar fetch failed: %s", exc)
+        try:
+            events += outlook_ics.get_events(days, 20)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("outlook ics fetch failed: %s", exc)
         if not events:
             return "(No upcoming events found.)"
         events.sort(key=lambda e: e.start.replace(tzinfo=None))
@@ -244,6 +439,10 @@ def _execute_tool(name: str, input_data: dict) -> str:
             end_iso=input_data["end"],
             description=input_data.get("description"),
             location=input_data.get("location"),
+            recurrence_freq=input_data.get("recurrence_freq"),
+            recurrence_count=input_data.get("recurrence_count"),
+            recurrence_until=input_data.get("recurrence_until"),
+            recurrence_interval=input_data.get("recurrence_interval"),
         )
     if name == "update_calendar_event":
         from integrations.google_calendar import update_event
@@ -257,6 +456,33 @@ def _execute_tool(name: str, input_data: dict) -> str:
             new_end_iso=input_data.get("new_end"),
             new_description=input_data.get("new_description"),
             new_location=input_data.get("new_location"),
+        )
+    if name == "get_todos":
+        from integrations import todoist
+        return todoist.list_tasks(input_data.get("filter"))
+    if name == "create_todo":
+        from integrations import todoist
+        return todoist.create_task(
+            content=input_data["content"],
+            category=input_data["category"],
+            due_string=input_data.get("due_string"),
+            description=input_data.get("description"),
+        )
+    if name == "complete_todo":
+        from integrations import todoist
+        return todoist.complete_task(
+            content=input_data["content"],
+            due_hint=input_data.get("due_hint"),
+        )
+    if name == "update_todo":
+        from integrations import todoist
+        return todoist.update_task(
+            content=input_data["content"],
+            due_hint=input_data.get("due_hint"),
+            new_content=input_data.get("new_content"),
+            new_due_string=input_data.get("new_due_string"),
+            new_description=input_data.get("new_description"),
+            new_category=input_data.get("new_category"),
         )
     if name == "load_knowledge_pool":
         import json
@@ -279,7 +505,10 @@ def _execute_tool(name: str, input_data: dict) -> str:
             return (
                 f"Pool '{pool_name}' not found. Available pools: {available}"
             )
-        account = data.get("account", CONFIG.google_accounts[0])
+        # Per-pool "account" overrides the top-level default — lets a pool
+        # (e.g. a work account's docs) pull from a different Google account
+        # than the rest of the user's knowledge pools.
+        account = pool.get("account") or data.get("account", CONFIG.google_accounts[0])
         from integrations.google_docs import load_pool
         content = load_pool(pool, account)
         header = f"## Knowledge Pool: {pool_name}\n_{pool.get('description', '')}_"
@@ -315,6 +544,10 @@ class ClaudeClient:
         self.context = context_builder or ContextBuilder()
         # Session memory: list of {"role": ..., "content": ...} dicts.
         self.history: list[dict] = []
+        # Sticky for the session: once a question triggers Monarch, keep it
+        # attached for follow-ups (e.g. "what about last month?") even if
+        # they don't repeat a financial keyword.
+        self._monarch_active = False
         self._init_client()
 
     def _init_client(self) -> None:
@@ -347,6 +580,7 @@ class ClaudeClient:
     def reset_session(self) -> None:
         """Clear conversation history (called when overlay reopens)."""
         self.history.clear()
+        self._monarch_active = False
         log.info("session history cleared")
 
     def reload_context(self) -> None:
@@ -392,6 +626,33 @@ class ClaudeClient:
             log.error("summarize_session failed: %s", exc)
             return ""
 
+    def _compact_history(self) -> None:
+        """Summarize older turns once history grows long, to bound token cost.
+
+        Only cuts at "turn boundaries" — history entries that are a plain
+        string user message, never a tool_result list — so the cut point
+        always falls between complete assistant turns and can't orphan a
+        tool_use/tool_result pairing.
+        """
+        boundaries = [
+            i for i, m in enumerate(self.history)
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+        ]
+        if len(boundaries) <= HISTORY_MAX_TURNS:
+            return
+
+        cut = boundaries[-HISTORY_KEEP_TURNS]
+        older, recent = self.history[:cut], self.history[cut:]
+        summary = self.summarize_session(older)
+        if not summary:
+            return
+
+        self.history = [
+            {"role": "user", "content": f"[Earlier in this session:]\n{summary}"},
+            {"role": "assistant", "content": "Got it, I'll keep that in mind."},
+        ] + recent
+        log.info("compacted %d older turn(s) into a summary", len(boundaries) - HISTORY_KEEP_TURNS)
+
     def send(
         self,
         user_message: str,
@@ -407,6 +668,7 @@ class ClaudeClient:
         if not self.ready:
             return self._init_error or "Claude client is not available."
 
+        self._compact_history()
         self.history.append({"role": "user", "content": user_message})
         system_prompt = self.context.build_system_prompt()
 
@@ -430,7 +692,8 @@ class ClaudeClient:
                 tool_choice={"type": "auto", "disable_parallel_tool_use": True},
             )
             stream_fn = self._client.messages.stream
-            if CONFIG.monarch_enabled:
+            if CONFIG.monarch_enabled and (self._monarch_active or _looks_financial(user_message)):
+                self._monarch_active = True
                 try:
                     from integrations.monarch_oauth import get_monarch_token
                     base_kwargs["mcp_servers"] = [{
@@ -485,7 +748,25 @@ class ClaudeClient:
                     })
                 self.history.append({"role": "user", "content": results})
             else:
-                log.warning("hit max tool rounds (%d) without a final answer", MAX_TOOL_ROUNDS)
+                log.warning("hit max tool rounds (%d); forcing a final answer", MAX_TOOL_ROUNDS)
+                try:
+                    forced_kwargs = dict(base_kwargs)
+                    forced_kwargs["tool_choice"] = {"type": "none"}
+                    full_text = ""
+                    with stream_fn(messages=self.history, **forced_kwargs) as stream:
+                        for text in stream.text_stream:
+                            full_text += text
+                            if on_delta:
+                                on_delta(text)
+                        final_msg = stream.get_final_message()
+                    self.history.append({
+                        "role": "assistant",
+                        "content": [_block_to_dict(b) for b in final_msg.content],
+                    })
+                    log.info("forced final response after exhausting tool rounds (%d chars)", len(full_text))
+                except Exception as exc:  # noqa: BLE001
+                    log.error("forced final response failed: %s", exc)
+                    return "Done — but I couldn't generate a summary. Check your calendar/tasks to confirm."
 
             log.info("response received (%d chars)", len(full_text))
             return full_text

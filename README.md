@@ -77,7 +77,33 @@ is optional.
    `.env` (`OUTLOOK_CLIENT_ID`, `OUTLOOK_TENANT_ID`).
 5. On first run, follow the device-code prompt printed to the console/log.
 
-### 7. Add your personal context
+### 6b. No Azure access? Use the published-calendar ICS fallback
+If your org won't grant an Azure App Registration, you can still surface
+your Outlook busy/free times via a published calendar feed — no admin
+approval needed, just your own Outlook-on-the-web settings:
+1. Outlook on the web → **Settings → Calendar → Shared calendars → Publish
+   a calendar**.
+2. Choose **"Can view when I'm busy"** and copy the **ICS link**.
+3. Paste it into `.env` as `OUTLOOK_ICS_URL=...`.
+
+This only shows blocks of busy/free time — no titles, locations, or
+descriptions, since that's all the publish mode exposes. It's labeled
+`[Outlook-ICS]` in JARVIS so it's clearly distinct from full Graph-based
+events, and it works alongside (not instead of) the Azure-based setup
+above if you ever get access to both.
+
+> **Treat this URL as a secret.** Anyone who has it can see your busy/free
+> times. Never share it or commit it to a repo.
+
+### 7. (Optional) Todoist
+1. In Todoist, go to **Settings → Integrations → Developer** and copy your
+   personal **API token**.
+2. Paste it into `.env` as `TODOIST_API_KEY=...`.
+3. Categories (e.g. "Daedabyte", "General", "Brightpoint") map to Todoist
+   projects — JARVIS creates the project automatically the first time it
+   files a task under a category that doesn't exist yet.
+
+### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
 ```
@@ -85,7 +111,7 @@ Edit `context/profile.md` with your roles, jobs, and preferences. Add any other
 `.md` files to `context/` and they're automatically included. (All real
 `context/*.md` files are gitignored.)
 
-### 8. Run it
+### 9. Run it
 ```bash
 python main.py
 ```
@@ -115,9 +141,12 @@ To keep prompts lean, each note is truncated to ~2000 characters in context.
 | `JARVIS_WINDOW_POSITION` | `top-right` / `top-left` / `bottom-right` / `bottom-left`. |
 | `JARVIS_HOTKEY` | Global toggle hotkey, e.g. `ctrl+space` (blank = off). |
 | `JARVIS_MAX_CONTEXT_CHARS` | Hard cap on assembled context (default 32000). |
+| `JARVIS_TIMEZONE` | IANA zone override for calendar events (blank = auto-detect). |
 | `WHISPER_MODEL` | `tiny` / `base` / `small` / `medium`. |
 | `GOOGLE_CREDENTIALS_PATH` | Path to Google OAuth `credentials.json`. |
 | `OUTLOOK_CLIENT_ID` / `_TENANT_ID` / `_CLIENT_SECRET` | Azure app registration. |
+| `OUTLOOK_ICS_URL` | Published calendar ICS link — no-Azure fallback, busy/free only. |
+| `TODOIST_API_KEY` | Personal API token from Todoist's Developer settings. |
 
 ---
 
@@ -176,6 +205,7 @@ jarvis/
 ├── integrations/
 │   ├── google_calendar.py
 │   ├── outlook_calendar.py
+│   ├── todoist.py
 │   └── notes_watcher.py
 ├── context/                # Your *.md context (gitignored; .example tracked)
 ├── notes/                  # Drop meeting notes here (gitignored)

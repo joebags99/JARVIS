@@ -103,6 +103,10 @@ class Config:
         default_factory=lambda: _get_list("GOOGLE_ACCOUNTS", ["default"])
     )
 
+    # Optional IANA zone override (e.g. "America/Chicago") for calendar events
+    # Claude creates without a UTC offset. Auto-detected via tzlocal if unset.
+    jarvis_timezone: str = field(default_factory=lambda: _get("JARVIS_TIMEZONE"))
+
     # Knowledge pools — JSON file defining named doc pools (see knowledge_pools.json.example).
     knowledge_pools_file: str = field(
         default_factory=lambda: _get("KNOWLEDGE_POOLS_FILE", "knowledge_pools.json")
@@ -114,6 +118,9 @@ class Config:
         default_factory=lambda: _get("MONARCH_ENABLED").lower() in ("true", "1", "yes")
     )
 
+    # Todoist — personal API token, no OAuth.
+    todoist_api_key: str = field(default_factory=lambda: _get("TODOIST_API_KEY"))
+
     # Outlook / Microsoft Graph
     outlook_client_id: str = field(default_factory=lambda: _get("OUTLOOK_CLIENT_ID"))
     outlook_tenant_id: str = field(
@@ -122,6 +129,10 @@ class Config:
     outlook_client_secret: str = field(
         default_factory=lambda: _get("OUTLOOK_CLIENT_SECRET")
     )
+    # Fallback when an Azure App Registration isn't available: a published
+    # free/busy-only ICS feed URL (Outlook on the web → Settings → Calendar
+    # → Shared calendars → Publish a calendar). Treat as a secret.
+    outlook_ics_url: str = field(default_factory=lambda: _get("OUTLOOK_ICS_URL"))
 
     palette: Palette = field(default_factory=Palette)
 
@@ -139,6 +150,14 @@ class Config:
     @property
     def outlook_enabled(self) -> bool:
         return bool(self.outlook_client_id)
+
+    @property
+    def outlook_ics_enabled(self) -> bool:
+        return bool(self.outlook_ics_url)
+
+    @property
+    def todoist_enabled(self) -> bool:
+        return bool(self.todoist_api_key)
 
 
 # Singleton-ish config used across the app.

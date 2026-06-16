@@ -22,9 +22,19 @@ google-api-python-client>=2.0.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.0
 
+# ── Timezone detection ─────────────────────────────────────────
+tzlocal>=5.0
+
 # ── Outlook / Microsoft Graph (optional) ─────────────────────
 msal>=1.28.0
 requests>=2.31.0
+
+# ── Outlook ICS feed (optional, no-Azure-access fallback) ────
+icalendar>=5.0.0
+recurring-ical-events>=2.1.0
+
+# ── Todoist (optional) ────────────────────────────────────────
+parsedatetime>=2.6
 
 # ── Global hotkey (optional) ─────────────────────────────────
 keyboard>=0.13.5
