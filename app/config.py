@@ -103,6 +103,10 @@ class Config:
         default_factory=lambda: _get_list("GOOGLE_ACCOUNTS", ["default"])
     )
 
+    # Optional IANA zone override (e.g. "America/Chicago") for calendar events
+    # Claude creates without a UTC offset. Auto-detected via tzlocal if unset.
+    jarvis_timezone: str = field(default_factory=lambda: _get("JARVIS_TIMEZONE"))
+
     # Knowledge pools — JSON file defining named doc pools (see knowledge_pools.json.example).
     knowledge_pools_file: str = field(
         default_factory=lambda: _get("KNOWLEDGE_POOLS_FILE", "knowledge_pools.json")

@@ -141,6 +141,7 @@ To keep prompts lean, each note is truncated to ~2000 characters in context.
 | `JARVIS_WINDOW_POSITION` | `top-right` / `top-left` / `bottom-right` / `bottom-left`. |
 | `JARVIS_HOTKEY` | Global toggle hotkey, e.g. `ctrl+space` (blank = off). |
 | `JARVIS_MAX_CONTEXT_CHARS` | Hard cap on assembled context (default 32000). |
+| `JARVIS_TIMEZONE` | IANA zone override for calendar events (blank = auto-detect). |
 | `WHISPER_MODEL` | `tiny` / `base` / `small` / `medium`. |
 | `GOOGLE_CREDENTIALS_PATH` | Path to Google OAuth `credentials.json`. |
 | `OUTLOOK_CLIENT_ID` / `_TENANT_ID` / `_CLIENT_SECRET` | Azure app registration. |

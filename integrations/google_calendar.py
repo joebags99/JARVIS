@@ -26,6 +26,45 @@ log = get_logger("google_cal")
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 TOKEN_DIR = ROOT_DIR / "tokens" / "google"
 
+_cached_timezone: str | None = None
+
+
+def _default_timezone() -> str:
+    """Best-effort IANA zone name to attach when Claude omits a UTC offset.
+
+    Never raises — falls back to UTC so a missing/failed tz lookup can't
+    block event creation. Resolution order: explicit override ->
+    auto-detected system zone -> "UTC".
+    """
+    global _cached_timezone
+    if _cached_timezone is not None:
+        return _cached_timezone
+    if CONFIG.jarvis_timezone:
+        _cached_timezone = CONFIG.jarvis_timezone
+        return _cached_timezone
+    try:
+        from tzlocal import get_localzone_name
+        _cached_timezone = get_localzone_name()
+    except Exception:  # noqa: BLE001
+        _cached_timezone = "UTC"
+    return _cached_timezone
+
+
+def _start_end(iso: str) -> dict:
+    """Build a start/end dict for the Calendar API from an ISO date/datetime.
+
+    Claude's tool schema asks it to always include a UTC offset, but it
+    doesn't reliably comply — a naive dateTime makes Google reject the
+    request with "Missing time zone definition". Attach a timeZone field
+    deterministically rather than trusting the LLM to format it correctly.
+    """
+    if len(iso) == 10:
+        return {"date": iso}
+    parsed = dt.datetime.fromisoformat(iso)
+    if parsed.tzinfo is None:
+        return {"dateTime": iso, "timeZone": _default_timezone()}
+    return {"dateTime": iso}
+
 
 @dataclass
 class CalEvent:
@@ -263,10 +302,6 @@ def create_event(
                 f"Available calendars: {', '.join(available)}"
             )
 
-        # All-day events use date strings ("YYYY-MM-DD"); timed events use dateTime.
-        def _start_end(iso: str) -> dict:
-            return {"date": iso} if len(iso) == 10 else {"dateTime": iso}
-
         body: dict = {
             "summary": summary,
             "start": _start_end(start_iso),
@@ -402,9 +437,6 @@ def update_event(
             patch["description"] = new_description
         if new_location is not None:
             patch["location"] = new_location
-
-        def _start_end(iso: str) -> dict:
-            return {"date": iso} if len(iso) == 10 else {"dateTime": iso}
 
         if new_start_iso is not None:
             patch["start"] = _start_end(new_start_iso)
