@@ -286,7 +286,29 @@ body.has-messages #hud {
 .msg-system .msg-content { color: var(--error); white-space: pre-wrap; }
 .msg-assistant .msg-content { color: var(--text); }
 
-.msg-content.streaming { white-space: pre-wrap; }
+.msg-content.thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+  color: var(--text-muted);
+}
+.thinking-spinner {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid rgba(0, 229, 255, 0.2);
+  border-top-color: var(--accent);
+  animation: thinking-spin 0.7s linear infinite;
+}
+.thinking-label {
+  font-size: 12px;
+  letter-spacing: 0.5px;
+}
+@keyframes thinking-spin {
+  to { transform: rotate(360deg); }
+}
 
 .md-line { margin: 2px 0; }
 .md-h1 { font-size: 17px; font-weight: 700; margin: 8px 0 4px; }

@@ -179,7 +179,11 @@ function startAssistantMessage() {
   wrap.appendChild(labelEl);
 
   const content = document.createElement("div");
-  content.className = "msg-content streaming";
+  content.className = "msg-content thinking";
+  content.innerHTML = `
+    <span class="thinking-spinner"></span>
+    <span class="thinking-label">Thinking&hellip;</span>
+  `;
   wrap.appendChild(content);
 
   transcript.appendChild(wrap);
@@ -187,16 +191,10 @@ function startAssistantMessage() {
   scrollToBottom();
 }
 
-function appendStreamChunk(chunk) {
-  if (!streamEl) return;
-  streamEl.textContent += chunk;
-  scrollToBottom();
-}
-
 function finishAssistantMessage(fullText) {
   if (streamEl) {
+    streamEl.classList.remove("thinking");
     streamEl.innerHTML = renderMarkdown(fullText);
-    streamEl.classList.remove("streaming");
     streamEl = null;
   }
   scrollToBottom();

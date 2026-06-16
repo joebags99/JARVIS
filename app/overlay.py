@@ -20,7 +20,6 @@ import datetime as dt
 import json
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Callable
 
@@ -33,7 +32,6 @@ WINDOW_W = 420
 WINDOW_H = 640
 MARGIN = 16
 MIN_TURNS_FOR_SUMMARY = 5  # user messages required before auto-saving a summary
-STREAM_FLUSH_INTERVAL = 0.05  # seconds between appendStreamChunk evaluate_js calls
 
 STATUS_IDLE = "Idle"
 STATUS_LISTENING = "Listening…"
@@ -260,31 +258,10 @@ class Overlay:
         self._eval("setInputsEnabled", False)
 
         def worker() -> None:
-            # Batch streamed tokens and flush on an interval rather than once per
-            # token — calling evaluate_js per token competes with the particle
-            # canvas's requestAnimationFrame loop on the webview's UI thread and
-            # freezes the animation while a response streams in.
-            buffer: list[str] = []
-            last_flush = time.monotonic()
-
-            def flush(force: bool = False) -> None:
-                nonlocal last_flush
-                if not buffer:
-                    return
-                now = time.monotonic()
-                if not force and now - last_flush < STREAM_FLUSH_INTERVAL:
-                    return
-                chunk = "".join(buffer)
-                buffer.clear()
-                last_flush = now
-                self._eval("appendStreamChunk", chunk)
-
-            def on_delta(chunk: str) -> None:
-                buffer.append(chunk)
-                flush()
-
-            reply = self.claude.send(text, on_delta=on_delta)
-            flush(force=True)
+            # No on_delta callback: the UI shows a thinking indicator while this
+            # runs, then renders the complete reply in one shot rather than
+            # piecing it together token by token.
+            reply = self.claude.send(text)
             self._eval("finishAssistantMessage", reply)
             self.set_status(STATUS_DONE)
             self._set_state("idle")
