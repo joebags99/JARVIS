@@ -167,6 +167,28 @@ TOOLS = [
         },
     },
     {
+        "name": "get_weather",
+        "description": (
+            "Get current weather and today's forecast for a location. Call this "
+            "when the user asks about the weather, whether to bring a jacket, "
+            "outdoor plans, or as part of a daily briefing. If the user names a "
+            "city use it; otherwise omit location to use their default."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": (
+                        "City/place to look up, e.g. 'Chicago, IL'. Omit to use "
+                        "the user's configured default location."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "recall_session_history",
         "description": (
             "Recall summaries of recent past JARVIS conversations. JARVIS auto-saves "
@@ -744,6 +766,9 @@ def _execute_tool(name: str, input_data: dict) -> str:
             modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d")
             blocks.append(f"### {note.path.name} (modified {modified})\n{note.content}")
         return "\n\n".join(blocks)
+    if name == "get_weather":
+        from integrations import weather
+        return weather.get_weather(input_data.get("location"))
     if name == "recall_session_history":
         import datetime as dt
         from integrations import notes_watcher

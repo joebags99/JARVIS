@@ -245,6 +245,21 @@ class Overlay:
     def toggle(self) -> None:
         self.hide() if self._visible else self.show()
 
+    def daily_briefing(self) -> None:
+        """Open the overlay and ask JARVIS for a one-shot daily briefing.
+
+        Composes the existing tools — calendar, to-dos, weather, and (if
+        configured) email — into a single morning summary. JARVIS only calls
+        the tools it actually has, so this degrades cleanly when integrations
+        aren't set up.
+        """
+        self.show()
+        self._submit(
+            "Give me my daily briefing for today: what's on my calendar, what's "
+            "due or overdue on my to-do list, today's weather, and anything "
+            "notable in my recent unread email. Keep it tight and scannable."
+        )
+
     def schedule(self, fn: Callable[[], None]) -> None:
         """Run ``fn``. pywebview's Window methods are thread-safe, so unlike
         tkinter's ``.after(0, ...)`` marshaling this can call straight through.

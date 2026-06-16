@@ -87,6 +87,7 @@ def main() -> int:
         on_reload=overlay.reload_context,
         on_quit=on_quit,
         schedule=schedule,
+        on_briefing=overlay.daily_briefing,
     )
     tray_holder["tray"] = tray
     tray.start()

@@ -13,8 +13,8 @@ calendars, and meeting notes.
 
 ## Features
 
-- **System tray** icon (idle / listening / thinking states) with Open, Reload
-  Context, Settings, and Quit.
+- **System tray** icon (idle / listening / thinking states) with Open, Daily
+  Briefing, Reload Context, Settings, and Quit.
 - **Floating overlay** — frameless, always-on-top, draggable, dark theme
   (`#0f0f0f` + cyan `#00bcd4`). Closes on `Esc` or click-away.
 - **Type or talk** — push-to-talk voice via local `faster-whisper` (no audio
@@ -24,6 +24,10 @@ calendars, and meeting notes.
 - **Meal prep** — plan dinners two weeks at a time in conversation (with real
   web search for recipe ideas), then push the plan to your Google Calendar and
   a Todoist shopping list in one go.
+- **Daily Briefing** — one click from the tray (or just ask): today's calendar,
+  overdue/today to-dos, the weather, and notable unread email in one summary.
+- **Weather** — current conditions and today's forecast for any city via
+  Open-Meteo (no API key needed); set `JARVIS_LOCATION` for a default.
 - **Email** (optional) — read and summarize recent Gmail, and draft replies for
   you to review. JARVIS never sends mail on its own; it only saves drafts.
 - **Cross-session memory** — when you close a longer chat, JARVIS saves a short
@@ -197,6 +201,7 @@ notes from the 16th and add any action items to Todoist."
 | `JARVIS_USER_NAME` | Your name, used in the prompt + UI. |
 | `JARVIS_WINDOW_POSITION` | `top-right` / `top-left` / `bottom-right` / `bottom-left`. |
 | `JARVIS_HOTKEY` | Global toggle hotkey, e.g. `ctrl+space` (blank = off). |
+| `JARVIS_LOCATION` | Default city for weather / daily briefing (blank = JARVIS asks). |
 | `JARVIS_MAX_CONTEXT_CHARS` | Hard cap on assembled context (default 32000). |
 | `JARVIS_TIMEZONE` | IANA zone override for calendar events (blank = auto-detect). |
 | `WHISPER_MODEL` | `tiny` / `base` / `small` / `medium`. |

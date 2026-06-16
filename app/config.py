@@ -93,6 +93,9 @@ class Config:
         default_factory=lambda: _get("JARVIS_WINDOW_POSITION", "top-right")
     )
     hotkey: str = field(default_factory=lambda: _get("JARVIS_HOTKEY"))
+    # Default location for weather / "what's it like out" when the user doesn't
+    # name one, e.g. "Chicago, IL". Blank = JARVIS asks which city.
+    location: str = field(default_factory=lambda: _get("JARVIS_LOCATION"))
     max_context_chars: int = field(
         default_factory=lambda: _get_int("JARVIS_MAX_CONTEXT_CHARS", 32000)
     )
