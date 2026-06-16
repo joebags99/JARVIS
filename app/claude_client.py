@@ -29,6 +29,26 @@ MAX_TOOL_ROUNDS = 5  # safety cap on local tool_use <-> tool_result round trips
 _MONARCH_MCP_URL = "https://api.monarch.com/mcp"
 _MCP_BETA = "mcp-client-2025-04-04"
 
+# Finance-related keywords used to decide whether a message warrants attaching
+# the remote Monarch MCP server. Attaching it on every request — regardless of
+# topic — burns tokens on tool definitions the model never uses.
+_FINANCIAL_KEYWORDS = (
+    "spend", "spent", "spending", "budget", "transaction", "expense",
+    "balance", "money", "financ", "income", "invest", "bill", "savings",
+    "credit", "debit", "bank", "monarch", "net worth", "cash flow",
+    "subscription", "paycheck", "afford", "owe", "debt",
+)
+
+# History compaction: once a session accumulates more than this many user
+# turns, older turns are summarized away to bound per-request token cost.
+HISTORY_MAX_TURNS = 8
+HISTORY_KEEP_TURNS = 3
+
+
+def _looks_financial(message: str) -> bool:
+    lowered = message.lower()
+    return any(kw in lowered for kw in _FINANCIAL_KEYWORDS)
+
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
 TOOLS = [
@@ -475,6 +495,10 @@ class ClaudeClient:
         self.context = context_builder or ContextBuilder()
         # Session memory: list of {"role": ..., "content": ...} dicts.
         self.history: list[dict] = []
+        # Sticky for the session: once a question triggers Monarch, keep it
+        # attached for follow-ups (e.g. "what about last month?") even if
+        # they don't repeat a financial keyword.
+        self._monarch_active = False
         self._init_client()
 
     def _init_client(self) -> None:
@@ -507,6 +531,7 @@ class ClaudeClient:
     def reset_session(self) -> None:
         """Clear conversation history (called when overlay reopens)."""
         self.history.clear()
+        self._monarch_active = False
         log.info("session history cleared")
 
     def reload_context(self) -> None:
@@ -552,6 +577,33 @@ class ClaudeClient:
             log.error("summarize_session failed: %s", exc)
             return ""
 
+    def _compact_history(self) -> None:
+        """Summarize older turns once history grows long, to bound token cost.
+
+        Only cuts at "turn boundaries" — history entries that are a plain
+        string user message, never a tool_result list — so the cut point
+        always falls between complete assistant turns and can't orphan a
+        tool_use/tool_result pairing.
+        """
+        boundaries = [
+            i for i, m in enumerate(self.history)
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+        ]
+        if len(boundaries) <= HISTORY_MAX_TURNS:
+            return
+
+        cut = boundaries[-HISTORY_KEEP_TURNS]
+        older, recent = self.history[:cut], self.history[cut:]
+        summary = self.summarize_session(older)
+        if not summary:
+            return
+
+        self.history = [
+            {"role": "user", "content": f"[Earlier in this session:]\n{summary}"},
+            {"role": "assistant", "content": "Got it, I'll keep that in mind."},
+        ] + recent
+        log.info("compacted %d older turn(s) into a summary", len(boundaries) - HISTORY_KEEP_TURNS)
+
     def send(
         self,
         user_message: str,
@@ -567,6 +619,7 @@ class ClaudeClient:
         if not self.ready:
             return self._init_error or "Claude client is not available."
 
+        self._compact_history()
         self.history.append({"role": "user", "content": user_message})
         system_prompt = self.context.build_system_prompt()
 
@@ -590,7 +643,8 @@ class ClaudeClient:
                 tool_choice={"type": "auto", "disable_parallel_tool_use": True},
             )
             stream_fn = self._client.messages.stream
-            if CONFIG.monarch_enabled:
+            if CONFIG.monarch_enabled and (self._monarch_active or _looks_financial(user_message)):
+                self._monarch_active = True
                 try:
                     from integrations.monarch_oauth import get_monarch_token
                     base_kwargs["mcp_servers"] = [{
