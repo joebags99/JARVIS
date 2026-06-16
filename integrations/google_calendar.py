@@ -50,18 +50,22 @@ def _default_timezone() -> str:
     return _cached_timezone
 
 
-def _start_end(iso: str) -> dict:
+def _start_end(iso: str, force_timezone: bool = False) -> dict:
     """Build a start/end dict for the Calendar API from an ISO date/datetime.
 
     Claude's tool schema asks it to always include a UTC offset, but it
     doesn't reliably comply — a naive dateTime makes Google reject the
     request with "Missing time zone definition". Attach a timeZone field
     deterministically rather than trusting the LLM to format it correctly.
+
+    Google also requires timeZone unconditionally on recurring events,
+    even when dateTime already carries a UTC offset — pass
+    force_timezone=True for those (see create_event's rrule handling).
     """
     if len(iso) == 10:
         return {"date": iso}
     parsed = dt.datetime.fromisoformat(iso)
-    if parsed.tzinfo is None:
+    if force_timezone or parsed.tzinfo is None:
         return {"dateTime": iso, "timeZone": _default_timezone()}
     return {"dateTime": iso}
 
@@ -304,8 +308,8 @@ def create_event(
 
         body: dict = {
             "summary": summary,
-            "start": _start_end(start_iso),
-            "end": _start_end(end_iso),
+            "start": _start_end(start_iso, force_timezone=bool(rrule)),
+            "end": _start_end(end_iso, force_timezone=bool(rrule)),
         }
         if description:
             body["description"] = description
