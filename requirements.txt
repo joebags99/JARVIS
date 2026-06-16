@@ -26,6 +26,9 @@ google-auth-oauthlib>=1.2.0
 msal>=1.28.0
 requests>=2.31.0
 
+# ── Todoist (optional) ────────────────────────────────────────
+parsedatetime>=2.6
+
 # ── Global hotkey (optional) ─────────────────────────────────
 keyboard>=0.13.5
 

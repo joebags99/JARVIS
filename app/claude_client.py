@@ -224,8 +224,11 @@ TOOLS = [
                 "due_string": {
                     "type": "string",
                     "description": (
-                        "Natural-language due date, e.g. 'June 20', 'tomorrow', "
-                        "'every Monday'. Omit for no due date."
+                        "The due date AS THE USER SAID IT, e.g. 'June 20', 'tomorrow', "
+                        "'next Friday', 'every Monday'. Pass their words through "
+                        "unmodified — do NOT compute or convert this to a specific "
+                        "date yourself; JARVIS resolves it locally against the real "
+                        "current date. Omit for no due date."
                     ),
                 },
                 "description": {
@@ -290,8 +293,11 @@ TOOLS = [
                 "new_due_string": {
                     "type": "string",
                     "description": (
-                        "New natural-language due date, e.g. 'June 25', 'tomorrow', "
-                        "'no date' (omit to keep current)."
+                        "The new due date AS THE USER SAID IT, e.g. 'June 25', "
+                        "'tomorrow', 'next Friday', 'no date'. Pass their words "
+                        "through unmodified — do NOT compute or convert this to a "
+                        "specific date yourself; JARVIS resolves it locally against "
+                        "the real current date. Omit to keep the current due date."
                     ),
                 },
                 "new_description": {

@@ -8,10 +8,19 @@ Categories map 1:1 to Todoist projects (e.g. "Daedabyte", "General",
 "Brightpoint"). Resolving a category looks up an existing project by name
 (case-insensitive); if none exists yet, one is created on the fly so JARVIS
 never blocks on missing setup.
+
+Due dates are resolved locally with ``parsedatetime`` rather than trusting
+Claude (or Todoist's own parser) with phrases like "next Friday" — LLMs are
+unreliable at date arithmetic, so the tool layer asks Claude to pass the
+user's words through unmodified and this module anchors them to the real
+system clock instead.
 """
 
 from __future__ import annotations
 
+import datetime as dt
+
+import parsedatetime
 import requests
 
 from app.config import CONFIG
@@ -21,6 +30,30 @@ log = get_logger("todoist")
 
 BASE = "https://api.todoist.com/api/v1"
 DEFAULT_FILTER = "overdue | today"
+
+_CAL = parsedatetime.Calendar()
+# Recurring phrases need Todoist's own parser to set up the recurrence rule —
+# parsedatetime only resolves a single point in time, not "every Monday".
+_RECURRING_HINTS = ("every", "each", "daily", "weekly", "biweekly", "monthly", "yearly", "annually")
+
+
+def _resolve_due(phrase: str) -> dict:
+    """Turn a natural-language due phrase into Todoist due_date/due_datetime fields.
+
+    Falls back to passing the phrase through as due_string (Todoist's own
+    parser) when it's a recurring pattern or parsedatetime can't parse it —
+    e.g. "no date" to clear a due date.
+    """
+    lowered = phrase.lower()
+    if any(hint in lowered for hint in _RECURRING_HINTS):
+        return {"due_string": phrase}
+
+    parsed, status = _CAL.parseDT(phrase, sourceTime=dt.datetime.now())
+    if status == 0:
+        return {"due_string": phrase}
+    if status & 2:  # time-of-day was specified
+        return {"due_datetime": parsed.isoformat()}
+    return {"due_date": parsed.date().isoformat()}
 
 
 def _headers() -> dict:
@@ -119,7 +152,7 @@ def create_task(
 
     body: dict = {"content": content, "project_id": project_id}
     if due_string:
-        body["due_string"] = due_string
+        body.update(_resolve_due(due_string))
     if description:
         body["description"] = description
 
@@ -226,7 +259,7 @@ def update_task(
     if new_content is not None:
         patch["content"] = new_content
     if new_due_string is not None:
-        patch["due_string"] = new_due_string
+        patch.update(_resolve_due(new_due_string))
     if new_description is not None:
         patch["description"] = new_description
 
