@@ -189,6 +189,26 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
     return all_events[:max_events]
 
 
+def _build_rrule(
+    recurrence_freq: str, recurrence_count: int | None, recurrence_until: str | None
+) -> str:
+    """Build an RFC 5545 RRULE from structured fields. Raises ValueError if invalid.
+
+    Built deterministically in Python rather than asked of Claude — same
+    reasoning as the Todoist due-date handling: date/recurrence math should
+    never depend on LLM arithmetic.
+    """
+    if bool(recurrence_count) == bool(recurrence_until):
+        raise ValueError(
+            "exactly one of recurrence_count or recurrence_until is required "
+            "when recurrence_freq is set"
+        )
+    if recurrence_count:
+        return f"RRULE:FREQ={recurrence_freq};COUNT={recurrence_count}"
+    until = dt.date.fromisoformat(recurrence_until).strftime("%Y%m%dT000000Z")
+    return f"RRULE:FREQ={recurrence_freq};UNTIL={until}"
+
+
 def create_event(
     account_name: str,
     calendar_name: str,
@@ -197,12 +217,22 @@ def create_event(
     end_iso: str,
     description: str | None = None,
     location: str | None = None,
+    recurrence_freq: str | None = None,
+    recurrence_count: int | None = None,
+    recurrence_until: str | None = None,
 ) -> str:
     """Create a calendar event. Returns a human-readable status string for Claude."""
     try:
         from googleapiclient.discovery import build
     except ImportError:
         return "Error: Google API libraries not installed."
+
+    rrule: str | None = None
+    if recurrence_freq:
+        try:
+            rrule = _build_rrule(recurrence_freq, recurrence_count, recurrence_until)
+        except ValueError as exc:
+            return f"Error: {exc}"
 
     creds = _load_credentials(account_name)
     if creds is None:
@@ -246,15 +276,22 @@ def create_event(
             body["description"] = description
         if location:
             body["location"] = location
+        if rrule:
+            body["recurrence"] = [rrule]
 
         created = service.events().insert(calendarId=cal_id, body=body).execute()
+        recur_note = ""
+        if recurrence_count:
+            recur_note = f" repeating {recurrence_freq}, {recurrence_count} times"
+        elif recurrence_until:
+            recur_note = f" repeating {recurrence_freq} until {recurrence_until}"
         log.info(
-            "[%s/%s] created event '%s' at %s (id=%s)",
-            account_name, matched_name, summary, start_iso, created.get("id"),
+            "[%s/%s] created event '%s' at %s%s (id=%s)",
+            account_name, matched_name, summary, start_iso, recur_note, created.get("id"),
         )
         return (
             f"Event '{summary}' created on the '{matched_name}' calendar "
-            f"starting {start_iso}."
+            f"starting {start_iso}{recur_note}."
         )
     except Exception as exc:  # noqa: BLE001
         log.error("[%s] create_event failed: %s", account_name, exc)
@@ -276,6 +313,11 @@ def update_event(
 
     Returns a human-readable status string for Claude. Uses Google's PATCH
     so unmentioned fields are left untouched.
+
+    Known limitation: no concept of editing a recurring series (single
+    instance vs. "this and following" vs. "all") — that needs
+    recurringEventId/originalStartTime handling on instances, which isn't
+    implemented here.
     """
     try:
         from googleapiclient.discovery import build

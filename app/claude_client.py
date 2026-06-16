@@ -24,7 +24,7 @@ from .logging_setup import get_logger
 log = get_logger("claude")
 
 MAX_TOKENS = 1024
-MAX_TOOL_ROUNDS = 5  # safety cap on local tool_use <-> tool_result round trips
+MAX_TOOL_ROUNDS = 8  # safety cap on local tool_use <-> tool_result round trips
 
 _MONARCH_MCP_URL = "https://api.monarch.com/mcp"
 _MCP_BETA = "mcp-client-2025-04-04"
@@ -197,6 +197,31 @@ TOOLS = [
                 "location": {
                     "type": "string",
                     "description": "Optional location.",
+                },
+                "recurrence_freq": {
+                    "type": "string",
+                    "enum": ["DAILY", "WEEKLY", "MONTHLY", "YEARLY"],
+                    "description": (
+                        "Set only if the user wants this event to repeat, e.g. "
+                        "'every week' -> WEEKLY. Omit entirely for a one-time event. "
+                        "If set, you MUST also set exactly one of recurrence_count or "
+                        "recurrence_until — never create an open-ended recurring event."
+                    ),
+                },
+                "recurrence_count": {
+                    "type": "integer",
+                    "description": (
+                        "Total occurrences including the first, e.g. 'for 5 weeks' -> 5. "
+                        "Use this OR recurrence_until, not both."
+                    ),
+                },
+                "recurrence_until": {
+                    "type": "string",
+                    "description": (
+                        "Last possible date (YYYY-MM-DD, inclusive) the recurrence may "
+                        "extend to, e.g. 'every Monday until August 1st' -> '2026-08-01'. "
+                        "Use this OR recurrence_count, not both."
+                    ),
                 },
             },
             "required": ["account_name", "calendar_name", "summary", "start", "end"],
@@ -403,6 +428,9 @@ def _execute_tool(name: str, input_data: dict) -> str:
             end_iso=input_data["end"],
             description=input_data.get("description"),
             location=input_data.get("location"),
+            recurrence_freq=input_data.get("recurrence_freq"),
+            recurrence_count=input_data.get("recurrence_count"),
+            recurrence_until=input_data.get("recurrence_until"),
         )
     if name == "update_calendar_event":
         from integrations.google_calendar import update_event
@@ -708,7 +736,25 @@ class ClaudeClient:
                     })
                 self.history.append({"role": "user", "content": results})
             else:
-                log.warning("hit max tool rounds (%d) without a final answer", MAX_TOOL_ROUNDS)
+                log.warning("hit max tool rounds (%d); forcing a final answer", MAX_TOOL_ROUNDS)
+                try:
+                    forced_kwargs = dict(base_kwargs)
+                    forced_kwargs["tool_choice"] = {"type": "none"}
+                    full_text = ""
+                    with stream_fn(messages=self.history, **forced_kwargs) as stream:
+                        for text in stream.text_stream:
+                            full_text += text
+                            if on_delta:
+                                on_delta(text)
+                        final_msg = stream.get_final_message()
+                    self.history.append({
+                        "role": "assistant",
+                        "content": [_block_to_dict(b) for b in final_msg.content],
+                    })
+                    log.info("forced final response after exhausting tool rounds (%d chars)", len(full_text))
+                except Exception as exc:  # noqa: BLE001
+                    log.error("forced final response failed: %s", exc)
+                    return "Done — but I couldn't generate a summary. Check your calendar/tasks to confirm."
 
             log.info("response received (%d chars)", len(full_text))
             return full_text
