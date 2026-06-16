@@ -417,10 +417,19 @@ TOOLS = [
         "description": (
             "Save an approved 2-week dinner plan: creates one calendar event per "
             "dinner and one Todoist Groceries task per shopping-list item, then "
-            "records the cycle. Only call this after the user has reviewed and "
-            "approved the specific dinners and shopping list — never invent and "
-            "save a plan without confirmation. Call get_calendar_events first to "
-            "confirm the right account_name and calendar_name."
+            "records the cycle. Before calling this tool: "
+            "(1) ask the user what meat and produce they currently have on hand "
+            "and roughly how long each item has been stored, and schedule the "
+            "most perishable items earliest in the 14 days; "
+            "(2) call get_meal_history to avoid repeating recent dinners; "
+            "(3) use web search for recipe ideas that fit the user's preferences "
+            "and what they already have; "
+            "(4) present the full 14-day overview — date, dish, and a recipe link "
+            "or short recipe summary for each — plus the shopping list, and wait "
+            "for explicit approval. Never call this tool without that approval. "
+            "Default to account_name='personal' and calendar_name='Family' for "
+            "meal events unless the user says otherwise; call get_calendar_events "
+            "first only if you need to confirm those names match exactly."
         ),
         "input_schema": {
             "type": "object",
@@ -449,7 +458,15 @@ TOOLS = [
                         "properties": {
                             "date": {"type": "string", "description": "YYYY-MM-DD."},
                             "dish": {"type": "string", "description": "Dinner name, e.g. 'Sheet-pan chicken fajitas'."},
-                            "notes": {"type": "string", "description": "Optional recipe link or notes."},
+                            "notes": {
+                                "type": "string",
+                                "description": (
+                                    "Recipe link or brief recipe text for this dish — "
+                                    "becomes the calendar event's description, so include "
+                                    "it for every meal unless the user explicitly says "
+                                    "they don't want one."
+                                ),
+                            },
                         },
                         "required": ["date", "dish"],
                     },
