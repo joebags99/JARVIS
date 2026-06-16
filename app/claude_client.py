@@ -59,7 +59,9 @@ TOOLS = [
             "asks about their schedule, appointments, meetings, what they have coming "
             "up, or what they're doing on a specific day. Also call it before "
             "creating or editing an event so you know the correct account_name and "
-            "calendar_name to use."
+            "calendar_name to use. Entries tagged [Outlook-ICS] are free/busy only — "
+            "no title or location data exists for them, so treat their 'Busy' summary "
+            "as opaque and never invent a real title or location for one."
         ),
         "input_schema": {
             "type": "object",
@@ -361,7 +363,7 @@ TOOLS = [
 def _execute_tool(name: str, input_data: dict) -> str:
     """Dispatch a tool call and return a result string."""
     if name == "get_calendar_events":
-        from integrations import google_calendar, outlook_calendar
+        from integrations import google_calendar, outlook_calendar, outlook_ics
         days = int(input_data.get("days") or 7)
         events = []
         try:
@@ -372,6 +374,10 @@ def _execute_tool(name: str, input_data: dict) -> str:
             events += outlook_calendar.get_events(days, 20)
         except Exception as exc:  # noqa: BLE001
             log.warning("outlook calendar fetch failed: %s", exc)
+        try:
+            events += outlook_ics.get_events(days, 20)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("outlook ics fetch failed: %s", exc)
         if not events:
             return "(No upcoming events found.)"
         events.sort(key=lambda e: e.start.replace(tzinfo=None))

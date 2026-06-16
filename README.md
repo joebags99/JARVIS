@@ -77,6 +77,24 @@ is optional.
    `.env` (`OUTLOOK_CLIENT_ID`, `OUTLOOK_TENANT_ID`).
 5. On first run, follow the device-code prompt printed to the console/log.
 
+### 6b. No Azure access? Use the published-calendar ICS fallback
+If your org won't grant an Azure App Registration, you can still surface
+your Outlook busy/free times via a published calendar feed — no admin
+approval needed, just your own Outlook-on-the-web settings:
+1. Outlook on the web → **Settings → Calendar → Shared calendars → Publish
+   a calendar**.
+2. Choose **"Can view when I'm busy"** and copy the **ICS link**.
+3. Paste it into `.env` as `OUTLOOK_ICS_URL=...`.
+
+This only shows blocks of busy/free time — no titles, locations, or
+descriptions, since that's all the publish mode exposes. It's labeled
+`[Outlook-ICS]` in JARVIS so it's clearly distinct from full Graph-based
+events, and it works alongside (not instead of) the Azure-based setup
+above if you ever get access to both.
+
+> **Treat this URL as a secret.** Anyone who has it can see your busy/free
+> times. Never share it or commit it to a repo.
+
 ### 7. (Optional) Todoist
 1. In Todoist, go to **Settings → Integrations → Developer** and copy your
    personal **API token**.
@@ -126,6 +144,7 @@ To keep prompts lean, each note is truncated to ~2000 characters in context.
 | `WHISPER_MODEL` | `tiny` / `base` / `small` / `medium`. |
 | `GOOGLE_CREDENTIALS_PATH` | Path to Google OAuth `credentials.json`. |
 | `OUTLOOK_CLIENT_ID` / `_TENANT_ID` / `_CLIENT_SECRET` | Azure app registration. |
+| `OUTLOOK_ICS_URL` | Published calendar ICS link — no-Azure fallback, busy/free only. |
 | `TODOIST_API_KEY` | Personal API token from Todoist's Developer settings. |
 
 ---

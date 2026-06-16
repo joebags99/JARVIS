@@ -125,6 +125,10 @@ class Config:
     outlook_client_secret: str = field(
         default_factory=lambda: _get("OUTLOOK_CLIENT_SECRET")
     )
+    # Fallback when an Azure App Registration isn't available: a published
+    # free/busy-only ICS feed URL (Outlook on the web → Settings → Calendar
+    # → Shared calendars → Publish a calendar). Treat as a secret.
+    outlook_ics_url: str = field(default_factory=lambda: _get("OUTLOOK_ICS_URL"))
 
     palette: Palette = field(default_factory=Palette)
 
@@ -142,6 +146,10 @@ class Config:
     @property
     def outlook_enabled(self) -> bool:
         return bool(self.outlook_client_id)
+
+    @property
+    def outlook_ics_enabled(self) -> bool:
+        return bool(self.outlook_ics_url)
 
     @property
     def todoist_enabled(self) -> bool:
