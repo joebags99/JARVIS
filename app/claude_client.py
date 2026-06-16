@@ -428,7 +428,7 @@ class ClaudeClient:
                     }]
                     stream_kwargs["betas"] = [_MCP_BETA]
                     _stream_fn = self._client.beta.messages.stream
-                    log.debug("using beta endpoint with monarch mcp_servers attached")
+                    log.info("using beta endpoint with monarch mcp_servers attached")
                 except Exception as exc:
                     log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
                     _stream_fn = self._client.messages.stream
@@ -443,7 +443,7 @@ class ClaudeClient:
                         on_delta(text)
                 final_msg = stream.get_final_message()
 
-            log.debug(
+            log.info(
                 "first pass content block types: %s",
                 [b.type for b in final_msg.content],
             )

@@ -86,6 +86,11 @@ def _load_credentials(account_name: str):
         return None
 
     try:
+        log.info(
+            "[%s] no valid Google Docs token found; launching OAuth consent "
+            "flow (a browser window should open now)",
+            account_name,
+        )
         flow = InstalledAppFlow.from_client_secrets_file(str(cred_file), SCOPES)
         sig = inspect.signature(flow.run_local_server)
         if "prompt" in sig.parameters:

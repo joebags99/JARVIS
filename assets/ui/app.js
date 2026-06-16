@@ -49,12 +49,46 @@ function renderInline(line) {
     .join("");
 }
 
+function isTableRow(line) {
+  const t = line.trim();
+  return t.startsWith("|") || (t.includes("|") && !t.startsWith("```"));
+}
+
+function isTableSeparator(line) {
+  return /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$/.test(line.trim());
+}
+
+function splitTableRow(line) {
+  let t = line.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|")) t = t.slice(0, -1);
+  return t.split("|").map((cell) => cell.trim());
+}
+
+function renderTable(headerCells, bodyRows) {
+  let html = `<table class="md-table"><thead><tr>`;
+  for (const cell of headerCells) {
+    html += `<th>${renderInline(escapeHtml(cell))}</th>`;
+  }
+  html += `</tr></thead><tbody>`;
+  for (const row of bodyRows) {
+    html += `<tr>`;
+    for (const cell of row) {
+      html += `<td>${renderInline(escapeHtml(cell))}</td>`;
+    }
+    html += `</tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
+
 function renderMarkdown(text) {
   const lines = text.replace(/\n+$/, "").split("\n");
   let html = "";
   let inCodeBlock = false;
 
-  for (const raw of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
     const line = escapeHtml(raw);
 
     if (line.startsWith("```")) {
@@ -63,6 +97,22 @@ function renderMarkdown(text) {
     }
     if (inCodeBlock) {
       html += `<div class="md-code-block">${line || "&nbsp;"}</div>`;
+      continue;
+    }
+    if (
+      isTableRow(raw) &&
+      i + 1 < lines.length &&
+      isTableSeparator(lines[i + 1])
+    ) {
+      const headerCells = splitTableRow(raw);
+      let j = i + 2;
+      const bodyRows = [];
+      while (j < lines.length && isTableRow(lines[j]) && !isTableSeparator(lines[j])) {
+        bodyRows.push(splitTableRow(lines[j]));
+        j++;
+      }
+      html += renderTable(headerCells, bodyRows);
+      i = j - 1;
       continue;
     }
     if (line.startsWith("### ")) {

@@ -193,6 +193,26 @@ body[data-state="listening"] #core {
   padding: 1px 16px;
   white-space: pre-wrap;
 }
+.md-table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: 12px;
+  width: 100%;
+}
+.md-table th, .md-table td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.md-table th {
+  background: rgba(0, 188, 212, 0.08);
+  color: var(--accent);
+  font-weight: 600;
+}
+.md-table tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
 
 #status {
   position: relative;
