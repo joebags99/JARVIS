@@ -3,7 +3,8 @@ anthropic>=0.40.0
 python-dotenv>=1.0.0
 
 # ── UI / tray ────────────────────────────────────────────────
-customtkinter>=5.2.2
+pywebview>=5.1
+pythonnet>=3.0.3; sys_platform == 'win32'
 pystray>=0.19.5
 Pillow>=10.2.0
 
@@ -27,3 +28,5 @@ requests>=2.31.0
 
 # ── Global hotkey (optional) ─────────────────────────────────
 keyboard>=0.13.5
+
+

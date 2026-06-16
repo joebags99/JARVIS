@@ -103,6 +103,17 @@ class Config:
         default_factory=lambda: _get_list("GOOGLE_ACCOUNTS", ["default"])
     )
 
+    # Knowledge pools — JSON file defining named doc pools (see knowledge_pools.json.example).
+    knowledge_pools_file: str = field(
+        default_factory=lambda: _get("KNOWLEDGE_POOLS_FILE", "knowledge_pools.json")
+    )
+
+    # Monarch Money — connects via official MCP server using OAuth.
+    # Set MONARCH_ENABLED=true; a browser opens on first use for authorization.
+    monarch_enabled: bool = field(
+        default_factory=lambda: _get("MONARCH_ENABLED").lower() in ("true", "1", "yes")
+    )
+
     # Outlook / Microsoft Graph
     outlook_client_id: str = field(default_factory=lambda: _get("OUTLOOK_CLIENT_ID"))
     outlook_tenant_id: str = field(

@@ -1,7 +1,7 @@
 """JARVIS — entry point.
 
 Wires together the tray icon, overlay window, Claude client, voice pipeline, and
-notes watcher, then hands control to the tkinter main loop. ``python main.py``
+notes watcher, then hands control to the webview event loop. ``python main.py``
 starts everything; the app lives in the system tray until you quit it.
 """
 
@@ -39,11 +39,11 @@ def main() -> int:
     recorder = Recorder()
     transcriber = Transcriber()
 
-    # Overlay owns the tkinter root.
+    # Overlay owns the webview window and its event loop.
     try:
         from app.overlay import Overlay
     except Exception as exc:  # noqa: BLE001
-        log.error("could not import UI (is customtkinter installed?): %s", exc)
+        log.error("could not import UI (is pywebview installed?): %s", exc)
         print(f"Fatal: UI dependencies missing — {exc}", file=sys.stderr)
         return 1
 
@@ -61,12 +61,9 @@ def main() -> int:
         on_state_change=on_state_change,
     )
 
-    # schedule(): run a callable on the tkinter thread from any thread.
+    # schedule(): run a callable safely regardless of calling thread.
     def schedule(fn) -> None:
-        try:
-            overlay.root.after(0, fn)
-        except Exception:  # noqa: BLE001
-            pass
+        overlay.schedule(fn)
 
     # Notes watcher (optional) — refreshes nothing directly, just logs activity.
     from integrations.notes_watcher import NotesWatcher

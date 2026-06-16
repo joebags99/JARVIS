@@ -6,9 +6,11 @@ work happens on a background thread (the caller is responsible for that); this
 module is intentionally synchronous and stream-oriented.
 
 Tool use flow:
-  1. First stream pass — Claude may emit text AND a tool_use block.
-  2. Tools are executed locally; results fed back as tool_result messages.
-  3. Second stream pass — Claude emits the final confirmation (streamed).
+  Bounded loop (see MAX_TOOL_ROUNDS): each round streams a response, and if
+  Claude emits a local tool_use block, the tool runs and its result is fed
+  back for another round. Parallel tool use is disabled so a local tool_use
+  and the remote Monarch MCP tool are never requested in the same turn —
+  that combination left a dangling, unpaired mcp_tool_use block in history.
 """
 
 from __future__ import annotations
@@ -22,10 +24,47 @@ from .logging_setup import get_logger
 log = get_logger("claude")
 
 MAX_TOKENS = 1024
+MAX_TOOL_ROUNDS = 5  # safety cap on local tool_use <-> tool_result round trips
+
+_MONARCH_MCP_URL = "https://api.monarch.com/mcp"
+_MCP_BETA = "mcp-client-2025-04-04"
 
 # ── Tool definitions ──────────────────────────────────────────────────────────
 
-CALENDAR_TOOLS = [
+TOOLS = [
+    {
+        "name": "get_calendar_events",
+        "description": (
+            "Fetch the user's upcoming calendar events. Call this whenever the user "
+            "asks about their schedule, appointments, meetings, what they have coming "
+            "up, or what they're doing on a specific day. Also call it before "
+            "creating or editing an event so you know the correct account_name and "
+            "calendar_name to use."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "days": {
+                    "type": "integer",
+                    "description": "How many days ahead to look. Default 7.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "get_recent_notes",
+        "description": (
+            "Load recent meeting notes from the user's notes folder. Call this when "
+            "the user asks about recent meetings, wants to reference notes, asks "
+            "what was discussed or decided, or asks about action items."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
     {
         "name": "update_calendar_event",
         "description": (
@@ -33,7 +72,8 @@ CALENDAR_TOOLS = [
             "Finds the event by its current title; supply only the fields that "
             "should change — everything else is left untouched. "
             "Use this instead of create_calendar_event whenever the user asks to "
-            "edit, reschedule, rename, or modify an existing event."
+            "edit, reschedule, rename, or modify an existing event. "
+            "Call get_calendar_events first if you need to confirm the account or calendar name."
         ),
         "input_schema": {
             "type": "object",
@@ -86,8 +126,8 @@ CALENDAR_TOOLS = [
         "name": "create_calendar_event",
         "description": (
             "Create an event on the user's Google Calendar. "
-            "The calendar events already in the system prompt show the account name "
-            "and calendar name in their source tag, e.g. '[Google/personal/Bills]' "
+            "Call get_calendar_events first to see existing events — their source "
+            "tags show the account and calendar name, e.g. '[Google/personal/Bills]' "
             "means account_name='personal', calendar_name='Bills'. "
             "Use existing events to infer appropriate timing when the user doesn't "
             "give exact times. Always include timezone offset in start/end."
@@ -139,12 +179,61 @@ CALENDAR_TOOLS = [
             },
             "required": ["account_name", "calendar_name", "summary", "start", "end"],
         },
-    }
+    },
+    {
+        "name": "load_knowledge_pool",
+        "description": (
+            "Load content from a named Google Docs knowledge pool to help answer the "
+            "user's question. Call this when a question relates to a topic listed in "
+            "the Available Knowledge Pools section of your system prompt (e.g. 'work', "
+            "'finances', 'personal'). Do NOT call it for general questions unrelated "
+            "to those topics."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pool_name": {
+                    "type": "string",
+                    "description": (
+                        "The exact pool name to load, e.g. 'work', 'finances', 'personal'."
+                    ),
+                },
+            },
+            "required": ["pool_name"],
+        },
+    },
 ]
 
 
 def _execute_tool(name: str, input_data: dict) -> str:
     """Dispatch a tool call and return a result string."""
+    if name == "get_calendar_events":
+        from integrations import google_calendar, outlook_calendar
+        days = int(input_data.get("days") or 7)
+        events = []
+        try:
+            events += google_calendar.get_events(days, 20)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("google calendar fetch failed: %s", exc)
+        try:
+            events += outlook_calendar.get_events(days, 20)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("outlook calendar fetch failed: %s", exc)
+        if not events:
+            return "(No upcoming events found.)"
+        events.sort(key=lambda e: e.start.replace(tzinfo=None))
+        return "\n".join(e.format_line() for e in events[:20])
+    if name == "get_recent_notes":
+        import datetime as dt
+        from integrations import notes_watcher
+        notes = notes_watcher.read_recent_notes(5, 2000)
+        if not notes:
+            return "(No meeting notes in /notes yet.)"
+        blocks = []
+        for note in notes:
+            modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d")
+            blocks.append(f"### {note.path.name} (modified {modified})\n{note.content}")
+        return "\n\n".join(blocks)
     if name == "create_calendar_event":
         from integrations.google_calendar import create_event
         return create_event(
@@ -169,6 +258,32 @@ def _execute_tool(name: str, input_data: dict) -> str:
             new_description=input_data.get("new_description"),
             new_location=input_data.get("new_location"),
         )
+    if name == "load_knowledge_pool":
+        import json
+        from .config import ROOT_DIR
+        pools_path = ROOT_DIR / CONFIG.knowledge_pools_file
+        if not pools_path.exists():
+            return (
+                "No knowledge_pools.json found. "
+                "Copy knowledge_pools.json.example and fill in your Google Doc IDs."
+            )
+        try:
+            data = json.loads(pools_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            return f"Error reading knowledge_pools.json: {exc}"
+        pool_name = input_data.get("pool_name", "")
+        pools = data.get("pools", {})
+        pool = pools.get(pool_name)
+        if pool is None:
+            available = ", ".join(pools.keys()) or "(none configured)"
+            return (
+                f"Pool '{pool_name}' not found. Available pools: {available}"
+            )
+        account = data.get("account", CONFIG.google_accounts[0])
+        from integrations.google_docs import load_pool
+        content = load_pool(pool, account)
+        header = f"## Knowledge Pool: {pool_name}\n_{pool.get('description', '')}_"
+        return f"{header}\n\n{content}"
     return f"Unknown tool: {name}"
 
 
@@ -183,7 +298,10 @@ def _block_to_dict(block) -> dict:
             "name": block.name,
             "input": block.input,
         }
-    return {"type": block.type}
+    # MCP-related block types (mcp_tool_use, mcp_tool_result, server_tool_use, ...)
+    # carry fields we don't model explicitly — keep them intact so replaying this
+    # history back to the API doesn't drop data the API itself put there.
+    return block.model_dump()
 
 
 # ── Client ────────────────────────────────────────────────────────────────────
@@ -294,30 +412,68 @@ class ClaudeClient:
 
         full_text = ""
         try:
-            # ── First pass: stream with tools enabled ─────────────────────────
-            with self._client.messages.stream(
+            # ── Build API kwargs; add Monarch MCP server when enabled. These are
+            # reused on every round of the loop below, so local tools and the
+            # Monarch MCP tool stay available across sequential tool rounds.
+            base_kwargs: dict = dict(
                 model=CONFIG.anthropic_model,
                 max_tokens=MAX_TOKENS,
                 system=system_prompt,
-                messages=self.history,
-                tools=CALENDAR_TOOLS,
-            ) as stream:
-                for text in stream.text_stream:
-                    full_text += text
-                    if on_delta:
-                        on_delta(text)
-                final_msg = stream.get_final_message()
+                tools=TOOLS,
+                # A local tool_use always forces the API to stop the turn (it
+                # needs a client-supplied tool_result before continuing). If the
+                # model also requested the remote Monarch MCP tool in that same
+                # turn, the server never gets to resolve/pair it before the stop,
+                # leaving a dangling mcp_tool_use block that breaks the next
+                # call. Disabling parallel tool use keeps local and MCP tool
+                # calls on separate rounds instead.
+                tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+            )
+            stream_fn = self._client.messages.stream
+            if CONFIG.monarch_enabled:
+                try:
+                    from integrations.monarch_oauth import get_monarch_token
+                    base_kwargs["mcp_servers"] = [{
+                        "type": "url",
+                        "name": "monarch",
+                        "url": _MONARCH_MCP_URL,
+                        "authorization_token": get_monarch_token(),
+                    }]
+                    base_kwargs["betas"] = [_MCP_BETA]
+                    stream_fn = self._client.beta.messages.stream
+                    log.info("using beta endpoint with monarch mcp_servers attached")
+                except Exception as exc:
+                    log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
 
-            tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
+            # ── Bounded tool-use loop: keep tools/mcp_servers attached on every
+            # round so local tools (e.g. load_knowledge_pool) and the Monarch
+            # MCP tool can both be used for one question, just sequentially.
+            for round_num in range(1, MAX_TOOL_ROUNDS + 1):
+                with stream_fn(messages=self.history, **base_kwargs) as stream:
+                    for text in stream.text_stream:
+                        full_text += text
+                        if on_delta:
+                            on_delta(text)
+                    final_msg = stream.get_final_message()
 
-            if tool_uses:
-                # Commit assistant turn (text + tool_use blocks) to history.
+                log.info(
+                    "round %d content block types: %s",
+                    round_num, [b.type for b in final_msg.content],
+                )
+
                 self.history.append({
                     "role": "assistant",
                     "content": [_block_to_dict(b) for b in final_msg.content],
                 })
 
-                # Execute each tool, collect results.
+                tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
+                if not tool_uses:
+                    break
+
+                # Discard any pre-tool text streamed this round — the real
+                # answer comes after the tool result, not before it.
+                full_text = ""
+
                 results = []
                 for tu in tool_uses:
                     outcome = _execute_tool(tu.name, tu.input)
@@ -328,23 +484,8 @@ class ClaudeClient:
                         "content": outcome,
                     })
                 self.history.append({"role": "user", "content": results})
-
-                # ── Second pass: stream Claude's follow-up confirmation ────────
-                followup = ""
-                with self._client.messages.stream(
-                    model=CONFIG.anthropic_model,
-                    max_tokens=MAX_TOKENS,
-                    system=system_prompt,
-                    messages=self.history,
-                ) as stream:
-                    for text in stream.text_stream:
-                        followup += text
-                        full_text += text
-                        if on_delta:
-                            on_delta(text)
-                self.history.append({"role": "assistant", "content": followup})
             else:
-                self.history.append({"role": "assistant", "content": full_text})
+                log.warning("hit max tool rounds (%d) without a final answer", MAX_TOOL_ROUNDS)
 
             log.info("response received (%d chars)", len(full_text))
             return full_text

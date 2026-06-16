@@ -1,35 +1,32 @@
 """Assembles the dynamic system prompt for JARVIS.
 
-This is the brain of JARVIS: the quality of every answer depends on what gets
-assembled here. It is deliberately small, readable, and easy to extend — add a
-new section by writing one method and appending it in ``build_system_prompt``.
+The system prompt is intentionally lean: only the user profile and current
+date/time are included on every request. Everything else (calendar, notes,
+finances, knowledge docs) is fetched on-demand via Claude tool calls so
+tokens are only spent when data is actually relevant to the question.
 
-Sources
--------
 Static (cached, reloaded on "Reload Context"):
     * every ``.md`` file in ``context/`` (profile first, then the rest)
-Dynamic (fetched fresh per query):
+Dynamic (always included — tiny):
     * current date & time
-    * Google + Outlook calendar events (next 7 days)
-    * the 5 most recent files in ``notes/``
+On-demand via tools:
+    * calendar events (get_calendar_events)
+    * meeting notes  (get_recent_notes)
+    * finances       (get_financial_summary)
+    * knowledge docs (load_knowledge_pool)
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import json
 from pathlib import Path
 
-from .config import CONFIG, CONTEXT_DIR
+from .config import CONFIG, CONTEXT_DIR, ROOT_DIR
 from .logging_setup import get_logger
-from integrations import google_calendar, outlook_calendar, notes_watcher
 
 log = get_logger("context")
 
-# Caps from the spec to keep the prompt within token budget.
-MAX_NOTES = 5
-MAX_NOTE_CHARS = 2000
-MAX_EVENTS = 20
-CALENDAR_DAYS = 7
 PROFILE_FILENAME = "profile.md"
 
 
@@ -45,7 +42,6 @@ class ContextBuilder:
         cache: dict[str, str] = {}
         if CONTEXT_DIR.exists():
             for path in sorted(CONTEXT_DIR.glob("*.md")):
-                # Skip committed example templates.
                 if path.name.endswith(".example.md"):
                     continue
                 try:
@@ -83,34 +79,25 @@ class ContextBuilder:
         now = dt.datetime.now().astimezone()
         return now.strftime("%A, %B %d, %Y — %I:%M %p %Z (UTC%z)")
 
-    def _calendar_section(self) -> str:
-        events = []
+    def _knowledge_pools_section(self) -> str:
+        pools_file = ROOT_DIR / CONFIG.knowledge_pools_file
+        if not pools_file.exists():
+            return ""
         try:
-            events += google_calendar.get_events(CALENDAR_DAYS, MAX_EVENTS)
+            data = json.loads(pools_file.read_text(encoding="utf-8"))
+            pools = data.get("pools", {})
+            if not pools:
+                return ""
+            lines = [
+                "Use the `load_knowledge_pool` tool when answering questions about these topics:"
+            ]
+            for name, pool in pools.items():
+                desc = pool.get("description", "")
+                lines.append(f"- **{name}**: {desc}")
+            return "\n".join(lines)
         except Exception as exc:  # noqa: BLE001
-            log.error("google calendar error: %s", exc)
-        try:
-            events += outlook_calendar.get_events(CALENDAR_DAYS, MAX_EVENTS)
-        except Exception as exc:  # noqa: BLE001
-            log.error("outlook calendar error: %s", exc)
-
-        if not events:
-            return "(No calendar connected, or no upcoming events.)"
-
-        # Sort merged events chronologically, cap to MAX_EVENTS.
-        events.sort(key=lambda e: e.start.replace(tzinfo=None))
-        events = events[:MAX_EVENTS]
-        return "\n".join(e.format_line() for e in events)
-
-    def _notes_section(self) -> str:
-        notes = notes_watcher.read_recent_notes(MAX_NOTES, MAX_NOTE_CHARS)
-        if not notes:
-            return "(No meeting notes in /notes yet.)"
-        blocks = []
-        for note in notes:
-            modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d")
-            blocks.append(f"### {note.path.name} (modified {modified})\n{note.content}")
-        return "\n\n".join(blocks)
+            log.warning("could not read knowledge pools file: %s", exc)
+            return ""
 
     # ── Assembly ──────────────────────────────────────────────────────────────
     def build_system_prompt(self) -> str:
@@ -119,13 +106,17 @@ class ContextBuilder:
             (
                 f"You are JARVIS, a personal AI assistant for {name}. You are smart, "
                 "concise, and proactive. You have full awareness of the user's "
-                "schedule, roles, and notes."
+                "schedule, roles, and notes — but you fetch data on demand using "
+                "tools rather than loading everything upfront. Only call a tool when "
+                "the question actually needs that data."
             ),
             f"## Who You Are Assisting\n{self._profile_section()}",
             f"## Today's Date & Time\n{self._datetime_section()}",
-            f"## Upcoming Calendar Events (next {CALENDAR_DAYS} days)\n{self._calendar_section()}",
-            f"## Recent Meeting Notes\n{self._notes_section()}",
         ]
+
+        pools = self._knowledge_pools_section()
+        if pools:
+            sections.append(f"## Available Knowledge Pools\n{pools}")
 
         other = self._other_context_section()
         if other:
