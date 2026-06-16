@@ -33,16 +33,29 @@ from app.logging_setup import get_logger
 log = get_logger("monarch_oauth")
 
 _OAUTH_BASE = "https://api.monarch.com"
+_APP_BASE = "https://app.monarch.com"
 _MCP_RESOURCE = f"{_OAUTH_BASE}/mcp"
 _MCP_SCOPE = "mcp:read mcp:write"
 _DISCOVERY_URLS = [
     f"{_OAUTH_BASE}/mcp/.well-known/oauth-authorization-server",
     f"{_OAUTH_BASE}/.well-known/oauth-authorization-server",
+    f"{_APP_BASE}/.well-known/oauth-authorization-server",
+    f"{_APP_BASE}/.well-known/openid-configuration",
 ]
 _TOKEN_CACHE = ROOT_DIR / "tokens" / "monarch_oauth.json"
 _CALLBACK_PORT = 9432
 _REDIRECT_URI = f"http://localhost:{_CALLBACK_PORT}/callback"
 _EXPIRY_BUFFER = 300  # refresh 5 minutes before actual expiry
+
+# Monarch's Cloudflare front door blocks requests with the default
+# urllib User-Agent as a bot signature (error 1010). Pose as a browser.
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -55,7 +68,7 @@ def _read_http_error(exc: urllib.error.HTTPError) -> str:
 
 
 def _get_json(url: str, timeout: int = 10) -> dict:
-    req = Request(url, headers={"Accept": "application/json"})
+    req = Request(url, headers={**_BROWSER_HEADERS, "Accept": "application/json"})
     with urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
@@ -64,7 +77,7 @@ def _post_form(url: str, data: dict, timeout: int = 15) -> dict:
     body = urlencode(data).encode()
     req = Request(
         url, data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={**_BROWSER_HEADERS, "Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
     try:
@@ -80,7 +93,7 @@ def _post_json(url: str, data: dict, timeout: int = 10) -> dict:
     body = json.dumps(data).encode()
     req = Request(
         url, data=body,
-        headers={"Content-Type": "application/json"},
+        headers={**_BROWSER_HEADERS, "Content-Type": "application/json"},
         method="POST",
     )
     try:
@@ -141,7 +154,7 @@ def _protected_resource_metadata() -> dict | None:
     probes = [
         Request(
             _MCP_RESOURCE,
-            headers={"Accept": "application/json, text/event-stream"},
+            headers={**_BROWSER_HEADERS, "Accept": "application/json, text/event-stream"},
         ),
         Request(
             _MCP_RESOURCE,
@@ -154,6 +167,7 @@ def _protected_resource_metadata() -> dict | None:
                 },
             }).encode(),
             headers={
+                **_BROWSER_HEADERS,
                 "Accept": "application/json, text/event-stream",
                 "Content-Type": "application/json",
             },
@@ -184,7 +198,8 @@ def _discover() -> dict:
     authorization server(s) it trusts, then fetch each one's metadata
     (trying both the OAuth and OpenID Connect discovery document names,
     since the AS may be a third-party identity provider). Falls back to
-    guessing well-known paths on api.monarch.com itself as a last resort.
+    guessing well-known paths on api.monarch.com / app.monarch.com as a
+    last resort.
     """
     candidates: list[str] = []
     resource_meta = _protected_resource_metadata()
