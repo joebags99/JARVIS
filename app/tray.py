@@ -1,8 +1,8 @@
 """System tray icon and menu.
 
-Runs ``pystray`` on a background thread (tkinter must own the main thread). Menu
-callbacks marshal back onto the UI thread via ``schedule`` so we never touch
-tkinter from the tray thread. The icon image swaps with JARVIS's state
+Runs ``pystray`` on a background thread (the webview's event loop owns the
+main thread). Menu callbacks go through ``schedule`` so tray-thread code never
+touches the UI directly. The icon image swaps with JARVIS's state
 (idle / listening / thinking).
 """
 
