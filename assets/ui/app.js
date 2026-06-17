@@ -329,15 +329,48 @@ function renderDials(dials) {
       <div class="dial-desc">${escapeHtml(d.description)}</div>`;
     const range = row.querySelector(".dial-range");
     const valEl = row.querySelector(".dial-value");
-    // Live numeric feedback while dragging (cheap, local)…
+
+    // Native range dragging breaks under `user-select: none` in the embedded
+    // WebView (a click registers, a drag doesn't), so drive the thumb ourselves
+    // with pointer capture — reliable regardless of that quirk.
+    const valueFromX = (clientX) => {
+      const rect = range.getBoundingClientRect();
+      const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      return Math.round((pct * 100) / 5) * 5;
+    };
+    const preview = (v) => {
+      range.value = v;
+      valEl.textContent = v;
+    };
+    const commit = async (v) =>
+      renderDials(await callApiAsync("set_dial", d.key, v));
+
+    let dragging = false;
+    range.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      range.setPointerCapture(e.pointerId);
+      preview(valueFromX(e.clientX));
+      range.focus(); // preventDefault below would otherwise suppress focus
+      e.preventDefault();
+    });
+    range.addEventListener("pointermove", (e) => {
+      if (dragging) preview(valueFromX(e.clientX));
+    });
+    const finishDrag = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      try {
+        range.releasePointerCapture(e.pointerId);
+      } catch (_) {}
+      commit(parseInt(range.value, 10));
+    };
+    range.addEventListener("pointerup", finishDrag);
+    range.addEventListener("pointercancel", finishDrag);
+    // Keyboard (arrow keys) still works through the native events.
     range.addEventListener("input", () => {
       valEl.textContent = range.value;
     });
-    // …commit to Python on release and refresh descriptions from the result.
-    range.addEventListener("change", async () => {
-      const updated = await callApiAsync("set_dial", d.key, parseInt(range.value, 10));
-      renderDials(updated);
-    });
+    range.addEventListener("change", () => commit(parseInt(range.value, 10)));
     dialsList.appendChild(row);
   }
 }
@@ -426,9 +459,22 @@ const particles = (() => {
     listening: "207, 102, 121",
     done: "76, 175, 121",
   };
+  // Target overall pace per mode. Idle stays gently in motion (never 0) so the
+  // field keeps drifting while you type or read; thinking is fast and busy.
+  const TARGET_SPEED = {
+    idle: 0.8,
+    thinking: 2.6,
+    listening: 1.9,
+    done: 0.8,
+  };
+  const BASE_DRIFT = 0.28; // min per-particle velocity → idle never freezes
 
   let mode = "idle";
   let points = [];
+  // Eased global speed so mode changes glide instead of snapping — when JARVIS
+  // finishes a reply the field smoothly winds down from its energetic
+  // "thinking" pace to a slow idle drift rather than stopping dead.
+  let speed = TARGET_SPEED.idle;
 
   function resize() {
     const app = document.getElementById("app");
@@ -458,7 +504,10 @@ const particles = (() => {
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
     const color = COLORS[mode] || COLORS.idle;
-    const speedMul = mode === "thinking" ? 2.5 : mode === "listening" ? 1.8 : 1;
+
+    // Ease the global pace toward this mode's target so transitions are smooth.
+    const target = TARGET_SPEED[mode] ?? TARGET_SPEED.idle;
+    speed += (target - speed) * 0.05;
 
     for (const p of points) {
       if (mode === "thinking") {
@@ -470,12 +519,24 @@ const particles = (() => {
       } else if (mode === "listening") {
         p.vx += (Math.random() - 0.5) * 0.04;
         p.vy += (Math.random() - 0.5) * 0.04;
+      } else {
+        // Idle: a faint random wander keeps the drift alive and organic.
+        p.vx += (Math.random() - 0.5) * 0.012;
+        p.vy += (Math.random() - 0.5) * 0.012;
       }
 
-      p.x += p.vx * speedMul;
-      p.y += p.vy * speedMul;
+      // Light damping reins in the thinking-swirl buildup, but a velocity floor
+      // means particles keep drifting at idle instead of decaying to a halt.
       p.vx *= 0.97;
       p.vy *= 0.97;
+      const mag = Math.hypot(p.vx, p.vy) || 0.0001;
+      if (mag < BASE_DRIFT) {
+        p.vx = (p.vx / mag) * BASE_DRIFT;
+        p.vy = (p.vy / mag) * BASE_DRIFT;
+      }
+
+      p.x += p.vx * speed;
+      p.y += p.vy * speed;
 
       if (p.x < 0) p.x = canvas.width;
       if (p.x > canvas.width) p.x = 0;
