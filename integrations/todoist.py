@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import time
 
 import parsedatetime
 import requests
@@ -65,15 +66,68 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {CONFIG.todoist_api_key}"}
 
 
+# Transient HTTP statuses worth retrying. 502/503/504 (gateway/unavailable) and
+# 429 (rate limit) mean the request almost certainly wasn't applied, so they're
+# safe to retry even for writes. 500 is ambiguous for a write (it may have taken
+# effect), so it's only retried on GETs to avoid creating duplicate tasks.
+_RETRY_STATUSES = {429, 500, 502, 503, 504}
+_MAX_ATTEMPTS = 3
+_BACKOFF_BASE = 0.5  # seconds → 0.5s, 1.0s between attempts
+
+
+def _request(method: str, path: str, **kwargs) -> requests.Response:
+    """HTTP to the Todoist API with auth, timeout, and transient-failure retries.
+
+    Todoist occasionally returns a brief 503/502 or drops a connection; rather
+    than fail the user's command on a momentary blip, retry a couple of times
+    with exponential backoff. Non-transient errors (400/401/404…) raise at once.
+    """
+    url = path if path.startswith("http") else f"{BASE}{path}"
+    kwargs.setdefault("timeout", 15)
+    kwargs.setdefault("headers", _headers())
+    is_get = method.upper() == "GET"
+
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            resp = requests.request(method, url, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            retryable = status in _RETRY_STATUSES and (status != 500 or is_get)
+            if not retryable or attempt == _MAX_ATTEMPTS:
+                raise
+            last_exc = exc
+        except requests.Timeout as exc:
+            # A write may have been applied server-side before timing out, so
+            # don't risk a duplicate — only retry timeouts on GETs.
+            if not is_get or attempt == _MAX_ATTEMPTS:
+                raise
+            last_exc = exc
+        except requests.ConnectionError as exc:
+            # Never reached the server → always safe to retry.
+            if attempt == _MAX_ATTEMPTS:
+                raise
+            last_exc = exc
+
+        delay = _BACKOFF_BASE * (2 ** (attempt - 1))
+        log.warning(
+            "Todoist %s %s failed (attempt %d/%d: %s); retrying in %.1fs",
+            method, path, attempt, _MAX_ATTEMPTS, last_exc, delay,
+        )
+        time.sleep(delay)
+
+    raise last_exc  # pragma: no cover — loop always returns or raises above
+
+
 def _results(resp: requests.Response) -> list[dict]:
     """List endpoints on API v1 return {"results": [...], "next_cursor": ...}."""
     return resp.json().get("results", [])
 
 
 def _get_projects() -> list[dict]:
-    resp = requests.get(f"{BASE}/projects", headers=_headers(), timeout=15)
-    resp.raise_for_status()
-    return _results(resp)
+    return _results(_request("GET", "/projects"))
 
 
 def _resolve_project(category: str) -> tuple[str, str]:
@@ -89,11 +143,7 @@ def _resolve_project(category: str) -> tuple[str, str]:
         if category.lower() in proj.get("name", "").lower():
             return proj["id"], proj["name"]
 
-    resp = requests.post(
-        f"{BASE}/projects", headers=_headers(), json={"name": category}, timeout=15
-    )
-    resp.raise_for_status()
-    created = resp.json()
+    created = _request("POST", "/projects", json={"name": category}).json()
     log.info("created new Todoist project '%s' (id=%s)", category, created["id"])
     return created["id"], created["name"]
 
@@ -122,11 +172,7 @@ def list_tasks(filter_str: str | None = None) -> str:
 
     query = filter_str or DEFAULT_FILTER
     try:
-        resp = requests.get(
-            f"{BASE}/tasks", headers=_headers(), params={"filter": query}, timeout=15
-        )
-        resp.raise_for_status()
-        tasks = _results(resp)
+        tasks = _results(_request("GET", "/tasks", params={"filter": query}))
     except Exception as exc:  # noqa: BLE001
         log.error("list_tasks failed (filter=%r): %s", query, exc)
         return f"Error fetching Todoist tasks: {exc}"
@@ -198,9 +244,7 @@ def create_task(
         body["description"] = description
 
     try:
-        resp = requests.post(f"{BASE}/tasks", headers=_headers(), json=body, timeout=15)
-        resp.raise_for_status()
-        created = resp.json()
+        created = _request("POST", "/tasks", json=body).json()
     except Exception as exc:  # noqa: BLE001
         log.error("create_task failed: %s", exc)
         return f"Error creating Todoist task: {exc}"
@@ -215,13 +259,7 @@ def create_task(
         errors: list[str] = []
         for step in subtasks:
             try:
-                sub_resp = requests.post(
-                    f"{BASE}/tasks",
-                    headers=_headers(),
-                    json={"content": step, "parent_id": created["id"]},
-                    timeout=15,
-                )
-                sub_resp.raise_for_status()
+                _request("POST", "/tasks", json={"content": step, "parent_id": created["id"]})
                 added += 1
             except Exception as exc:  # noqa: BLE001
                 log.error("create_task: subtask '%s' failed: %s", step, exc)
@@ -240,9 +278,7 @@ def _find_task(content: str, due_hint: str | None = None) -> tuple[dict | None, 
     Returns (task, None) on a single match, or (None, message) when the
     caller should relay that message back to Claude (no match / ambiguous).
     """
-    resp = requests.get(f"{BASE}/tasks", headers=_headers(), timeout=15)
-    resp.raise_for_status()
-    tasks = _results(resp)
+    tasks = _results(_request("GET", "/tasks"))
 
     matches = [t for t in tasks if content.lower() in t.get("content", "").lower()]
     if not matches:
@@ -283,10 +319,7 @@ def complete_task(content: str, due_hint: str | None = None) -> str:
         return error
 
     try:
-        resp = requests.post(
-            f"{BASE}/tasks/{target['id']}/close", headers=_headers(), timeout=15
-        )
-        resp.raise_for_status()
+        _request("POST", f"/tasks/{target['id']}/close")
     except Exception as exc:  # noqa: BLE001
         log.error("complete_task failed (id=%s): %s", target["id"], exc)
         return f"Error completing Todoist task: {exc}"
@@ -332,10 +365,7 @@ def update_task(
 
     if patch:
         try:
-            resp = requests.post(
-                f"{BASE}/tasks/{target['id']}", headers=_headers(), json=patch, timeout=15
-            )
-            resp.raise_for_status()
+            _request("POST", f"/tasks/{target['id']}", json=patch)
         except Exception as exc:  # noqa: BLE001
             log.error("update_task failed (id=%s): %s", target["id"], exc)
             return f"Error updating Todoist task: {exc}"
@@ -344,13 +374,11 @@ def update_task(
     if new_category is not None:
         try:
             project_id, matched_category = _resolve_project(new_category)
-            resp = requests.post(
-                f"{BASE}/tasks/{target['id']}/move",
-                headers=_headers(),
+            _request(
+                "POST",
+                f"/tasks/{target['id']}/move",
                 json={"project_id": project_id},
-                timeout=15,
             )
-            resp.raise_for_status()
         except Exception as exc:  # noqa: BLE001
             log.error("update_task: move to '%s' failed (id=%s): %s", new_category, target["id"], exc)
             return f"Error moving Todoist task to '{new_category}': {exc}"
