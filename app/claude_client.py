@@ -925,6 +925,45 @@ def _block_to_dict(block) -> dict:
     return block.model_dump()
 
 
+def _with_message_cache_breakpoint(messages: list[dict]) -> list[dict]:
+    """Return ``messages`` with an ephemeral cache breakpoint on the final block.
+
+    Prompt caching is a prefix match over ``tools → system → messages``. The
+    tools+system prefix already carries its own breakpoint, but the *messages*
+    array is otherwise re-billed as fresh input on every request. A single
+    ``send()`` can fire up to MAX_TOOL_ROUNDS API calls, each re-sending the
+    whole (and growing) history; follow-up turns in a session re-send it again.
+
+    Marking the last block moves the breakpoint to the end of the conversation
+    each round. The previous request's breakpoint is now a prefix of this one,
+    so the API serves that span from cache (a ~10x cheaper read) and only the
+    newest turn is written fresh — the standard incremental multi-turn pattern.
+
+    The stored history is never mutated: only a shallow copy down to the last
+    block is made, so cache_control markers never accumulate or persist.
+    """
+    if not messages:
+        return messages
+    last = dict(messages[-1])
+    content = last.get("content")
+    breakpoint = {"type": "ephemeral"}
+    if isinstance(content, str):
+        if not content:
+            return messages  # empty text block would be rejected by the API
+        last["content"] = [
+            {"type": "text", "text": content, "cache_control": breakpoint}
+        ]
+    elif isinstance(content, list) and content:
+        new_content = list(content)
+        block = dict(new_content[-1])
+        block["cache_control"] = breakpoint
+        new_content[-1] = block
+        last["content"] = new_content
+    else:
+        return messages  # nothing markable (e.g. empty content list)
+    return messages[:-1] + [last]
+
+
 # ── Client ────────────────────────────────────────────────────────────────────
 
 class ClaudeClient:
@@ -1173,7 +1212,8 @@ class ClaudeClient:
             # round so local tools (e.g. load_knowledge_pool) and the Monarch
             # MCP tool can both be used for one question, just sequentially.
             for round_num in range(1, MAX_TOOL_ROUNDS + 1):
-                with stream_fn(messages=self.history, **base_kwargs) as stream:
+                messages = _with_message_cache_breakpoint(self.history)
+                with stream_fn(messages=messages, **base_kwargs) as stream:
                     for text in stream.text_stream:
                         full_text += text
                         if on_delta:
@@ -1237,7 +1277,8 @@ class ClaudeClient:
                     forced_kwargs = dict(base_kwargs)
                     forced_kwargs["tool_choice"] = {"type": "none"}
                     full_text = ""
-                    with stream_fn(messages=self.history, **forced_kwargs) as stream:
+                    messages = _with_message_cache_breakpoint(self.history)
+                    with stream_fn(messages=messages, **forced_kwargs) as stream:
                         for text in stream.text_stream:
                             full_text += text
                             if on_delta:
