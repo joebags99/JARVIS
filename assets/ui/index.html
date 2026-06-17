@@ -15,9 +15,23 @@
         J A R V I S
       </div>
       <div id="header-actions">
+        <button id="dials-btn" class="icon-btn" title="Voice dials">&#127899;</button>
         <button id="clear-btn" class="icon-btn" title="Clear chat">&#8634;</button>
         <button id="close-btn" class="icon-btn" title="Close">&#10005;</button>
       </div>
+    </div>
+
+    <!-- Voice dials: drag a slider to retune JARVIS instantly, no LLM call. -->
+    <div id="dials-panel" class="hidden" aria-hidden="true">
+      <div id="dials-head">
+        <span class="dials-title">Voice Dials</span>
+        <div class="dials-head-actions">
+          <button id="dials-save" class="dials-link" title="Save these as your defaults">Save</button>
+          <button id="dials-reset" class="dials-link" title="Reset to defaults">Reset</button>
+          <button id="dials-close" class="dials-link" title="Close">&#10005;</button>
+        </div>
+      </div>
+      <div id="dials-list"></div>
     </div>
 
     <div id="transcript">

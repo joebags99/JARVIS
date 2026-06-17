@@ -215,17 +215,19 @@ cp context/persona.example.md context/persona.md
 `persona.md` is the *character* doc — how JARVIS talks, separate from
 `profile.md` (which is about you). Skip it and he uses a movie-accurate default.
 
-Five **voice dials** (0–100) fine-tune him live, no file edit needed — just say:
+Five **voice dials** (0–100) fine-tune him live. Two ways to change them:
 
-- *"Turn the sarcasm up to 70."*
-- *"Humor down 15% for this convo."*
-- *"Max brevity — just the facts."* / *"Stop calling me Sir."*
-- *"Reset your personality."*
+- **Sliders** — click the 🎛 button in the overlay header for a panel of
+  sliders, with **Save** (make current values your defaults) and **Reset**.
+  Adjusting a slider talks straight to Python — no model call, so it costs
+  zero tokens.
+- **Just ask** — *"turn the sarcasm up to 70"*, *"humor down 15% for this
+  convo"*, *"max brevity"*, *"stop calling me Sir"*, *"reset your personality"*.
 
 Dials are `brevity`, `formality`, `humor`, `sarcasm`, `proactivity`. Changes
-apply to the current session; ask him to *remember* one and it persists. To set
-the defaults directly, `cp persona_dials.example.json persona_dials.json` and
-edit the numbers (both gitignored).
+apply to the current session unless you Save them (or ask him to *remember*).
+To set the defaults directly, `cp persona_dials.example.json persona_dials.json`
+and edit the numbers (both gitignored).
 
 ### 9. Run it
 ```bash

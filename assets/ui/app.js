@@ -28,6 +28,15 @@ function callApi(method, ...args) {
   }
 }
 
+// Like callApi but returns the Python method's value (pywebview resolves a
+// promise). Used by the voice-dials panel to read/refresh state.
+function callApiAsync(method, ...args) {
+  if (window.pywebview && window.pywebview.api) {
+    return window.pywebview.api[method](...args);
+  }
+  return Promise.resolve(null);
+}
+
 // ── Markdown (mirrors app/overlay.py's previous tkinter renderer) ──────────
 
 function escapeHtml(s) {
@@ -220,6 +229,10 @@ function finishAssistantMessage(fullText) {
 function clearTranscript() {
   transcript.querySelectorAll(".msg").forEach((el) => el.remove());
   document.body.classList.remove("has-messages");
+  // A session reset restores the default dials; refresh the panel if it's open.
+  if (dialsPanel && !dialsPanel.classList.contains("hidden")) {
+    callApiAsync("get_dials").then(renderDials);
+  }
 }
 
 function resetEntry() {
@@ -288,6 +301,77 @@ micBtn.addEventListener("click", () => callApi("toggle_recording"));
 speakBtn.addEventListener("click", () => callApi("toggle_tts"));
 clearBtn.addEventListener("click", () => callApi("clear_chat"));
 closeBtn.addEventListener("click", () => callApi("close_overlay"));
+
+// ── Voice dials panel ──────────────────────────────────────────────────────
+// Sliders mutate JARVIS's persona directly through Python (no model call, so
+// no tokens). The next message just picks up the new values.
+
+const dialsBtn = document.getElementById("dials-btn");
+const dialsPanel = document.getElementById("dials-panel");
+const dialsList = document.getElementById("dials-list");
+const dialsSave = document.getElementById("dials-save");
+const dialsReset = document.getElementById("dials-reset");
+const dialsClose = document.getElementById("dials-close");
+
+function renderDials(dials) {
+  if (!Array.isArray(dials)) return;
+  dialsList.innerHTML = "";
+  for (const d of dials) {
+    const row = document.createElement("div");
+    row.className = "dial-row";
+    row.dataset.key = d.key;
+    row.innerHTML = `
+      <div class="dial-top">
+        <span class="dial-name">${escapeHtml(d.label)}</span>
+        <span class="dial-value">${d.value}</span>
+      </div>
+      <input class="dial-range" type="range" min="0" max="100" step="5" value="${d.value}" />
+      <div class="dial-desc">${escapeHtml(d.description)}</div>`;
+    const range = row.querySelector(".dial-range");
+    const valEl = row.querySelector(".dial-value");
+    // Live numeric feedback while dragging (cheap, local)…
+    range.addEventListener("input", () => {
+      valEl.textContent = range.value;
+    });
+    // …commit to Python on release and refresh descriptions from the result.
+    range.addEventListener("change", async () => {
+      const updated = await callApiAsync("set_dial", d.key, parseInt(range.value, 10));
+      renderDials(updated);
+    });
+    dialsList.appendChild(row);
+  }
+}
+
+async function openDials() {
+  const dials = await callApiAsync("get_dials");
+  renderDials(dials);
+  dialsPanel.classList.remove("hidden");
+  dialsPanel.setAttribute("aria-hidden", "false");
+}
+
+function closeDials() {
+  dialsPanel.classList.add("hidden");
+  dialsPanel.setAttribute("aria-hidden", "true");
+}
+
+function toggleDials() {
+  if (dialsPanel.classList.contains("hidden")) {
+    openDials();
+  } else {
+    closeDials();
+  }
+}
+
+dialsBtn.addEventListener("click", toggleDials);
+dialsClose.addEventListener("click", closeDials);
+dialsReset.addEventListener("click", async () => {
+  renderDials(await callApiAsync("reset_dials"));
+});
+dialsSave.addEventListener("click", async () => {
+  renderDials(await callApiAsync("save_dials_default"));
+  dialsSave.classList.add("flash");
+  setTimeout(() => dialsSave.classList.remove("flash"), 600);
+});
 
 // ── Window dragging (frameless window — no native title bar) ──────────────
 

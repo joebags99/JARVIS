@@ -165,10 +165,28 @@ class Persona:
         scope = "permanently" if persist else "for this session"
         return f"{key.title()} {old} → {new}/100 ({scope}). {_describe(key, new)}"
 
+    def persist_current(self) -> str:
+        """Save the current session dials as the defaults for future sessions."""
+        self._defaults = dict(self.dials)
+        self._save_defaults()
+        return "Saved current voice dials as the new defaults."
+
     # ── Rendering (read by the context builder) ──────────────────────────────
     def summary(self) -> str:
         """One-line snapshot of every dial, e.g. for a quick status reply."""
         return ", ".join(f"{k} {v}" for k, v in self.dials.items())
+
+    def state(self) -> list[dict]:
+        """Structured snapshot for the UI: one row per dial with its guidance."""
+        return [
+            {
+                "key": key,
+                "label": key.title(),
+                "value": self.dials[key],
+                "description": _describe(key, self.dials[key]),
+            }
+            for key in DIAL_BANDS
+        ]
 
     def render(self) -> str:
         """Markdown block of current dial settings + how to change them."""
