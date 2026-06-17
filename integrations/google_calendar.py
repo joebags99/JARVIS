@@ -18,6 +18,7 @@ from pathlib import Path
 
 from app.config import ROOT_DIR, CONFIG
 from app.logging_setup import get_logger
+from integrations import google_api
 
 log = get_logger("google_cal")
 
@@ -220,7 +221,9 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
         try:
             service = build("calendar", "v3", credentials=creds, cache_discovery=False)
 
-            cal_list = service.calendarList().list().execute()
+            cal_list = google_api.execute(
+                service.calendarList().list(), label="calendar.calendarList.list"
+            )
             calendars = cal_list.get("items", [])
             log.info("[%s] found %d calendars", account_name, len(calendars))
 
@@ -230,17 +233,16 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
                 cal_name = cal.get("summary", cal_id)
                 source = f"Google/{account_name}/{cal_name}"
                 try:
-                    result = (
-                        service.events()
-                        .list(
+                    result = google_api.execute(
+                        service.events().list(
                             calendarId=cal_id,
                             timeMin=now.isoformat(),
                             timeMax=end.isoformat(),
                             singleEvents=True,
                             orderBy="startTime",
                             maxResults=max_events,
-                        )
-                        .execute()
+                        ),
+                        label="calendar.events.list",
                     )
                     fetched = []
                     for item in result.get("items", []):
@@ -331,7 +333,9 @@ def create_event(
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
 
         # Resolve calendar name → ID (exact match first, then partial).
-        cal_list = service.calendarList().list().execute()
+        cal_list = google_api.execute(
+            service.calendarList().list(), label="calendar.calendarList.list"
+        )
         cal_id: str | None = None
         matched_name = calendar_name
         for cal in cal_list.get("items", []):
@@ -364,7 +368,11 @@ def create_event(
         if rrule:
             body["recurrence"] = [rrule]
 
-        created = service.events().insert(calendarId=cal_id, body=body).execute()
+        created = google_api.execute(
+            service.events().insert(calendarId=cal_id, body=body),
+            idempotent=False,  # creating twice would duplicate the event
+            label="calendar.events.insert",
+        )
         recur_note = ""
         if rrule:
             unit = {"DAILY": "day", "WEEKLY": "week", "MONTHLY": "month", "YEARLY": "year"}.get(
@@ -426,7 +434,9 @@ def update_event(
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
 
         # Resolve calendar name → ID.
-        cal_list = service.calendarList().list().execute()
+        cal_list = google_api.execute(
+            service.calendarList().list(), label="calendar.calendarList.list"
+        )
         cal_id: str | None = None
         matched_cal_name = calendar_name
         for cal in cal_list.get("items", []):
@@ -449,13 +459,16 @@ def update_event(
 
         # Search a wide window so we catch recent and upcoming events.
         now = dt.datetime.now(dt.timezone.utc)
-        result = service.events().list(
-            calendarId=cal_id,
-            timeMin=(now - dt.timedelta(days=7)).isoformat(),
-            timeMax=(now + dt.timedelta(days=90)).isoformat(),
-            singleEvents=True,
-            q=event_summary,
-        ).execute()
+        result = google_api.execute(
+            service.events().list(
+                calendarId=cal_id,
+                timeMin=(now - dt.timedelta(days=7)).isoformat(),
+                timeMax=(now + dt.timedelta(days=90)).isoformat(),
+                singleEvents=True,
+                q=event_summary,
+            ),
+            label="calendar.events.list",
+        )
 
         matches = [
             item for item in result.get("items", [])
@@ -512,11 +525,16 @@ def update_event(
         if not patch:
             return "Error: no fields to update were specified."
 
-        service.events().patch(
-            calendarId=cal_id,
-            eventId=target["id"],
-            body=patch,
-        ).execute()
+        # PATCH with the same body is idempotent — re-applying yields the same
+        # result, so a retry is safe.
+        google_api.execute(
+            service.events().patch(
+                calendarId=cal_id,
+                eventId=target["id"],
+                body=patch,
+            ),
+            label="calendar.events.patch",
+        )
 
         display_name = new_summary or target.get("summary", event_summary)
         log.info(
