@@ -23,11 +23,17 @@ from .logging_setup import get_logger
 
 log = get_logger("claude")
 
-MAX_TOKENS = 1024
+MAX_TOKENS = 2048
 # Meal-plan tool calls carry 14 dinners with recipe text plus a shopping
 # list — easily several times MAX_TOKENS — so they get a bigger budget for
 # that turn instead of risking a truncated, invalid tool_use JSON payload.
 _MEAL_MAX_TOKENS = 4096
+# If a round still hits the output cap *while emitting a tool_use*, its JSON
+# arguments are truncated and would fail to execute (e.g. a half-written
+# create_note loses its 'content'). We re-run that round once with this larger
+# budget rather than running a malformed call. Output is billed per token
+# actually generated, so a high ceiling costs nothing on normal short replies.
+_MAX_TOKENS_CEILING = 8192
 MAX_TOOL_ROUNDS = 8  # safety cap on local tool_use <-> tool_result round trips
 
 _MONARCH_MCP_URL = "https://api.monarch.com/mcp"
@@ -837,9 +843,19 @@ def _execute_tool(name: str, input_data: dict) -> str:
         return "\n\n".join(blocks)
     if name == "create_note":
         from integrations import notes_watcher
+        category = (input_data.get("category") or "").strip()
+        content = (input_data.get("content") or "").strip()
+        missing = [
+            f for f, v in (("category", category), ("content", content)) if not v
+        ]
+        if missing:
+            return (
+                f"Error: create_note is missing required field(s): "
+                f"{', '.join(missing)}. Provide them and call it once more."
+            )
         return notes_watcher.create_note(
-            category=input_data["category"],
-            content=input_data["content"],
+            category=category,
+            content=content,
             title=input_data.get("title"),
             date=input_data.get("date"),
         )
@@ -1354,12 +1370,33 @@ class ClaudeClient:
                     round_num, [b.type for b in final_msg.content],
                 )
 
+                tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
+
+                # If the output cap was hit *while emitting a tool_use*, the
+                # tool's JSON arguments are truncated and would fail to execute
+                # (e.g. a long create_note loses its 'content'). Discard this
+                # half-formed attempt and re-run the round with a bigger budget,
+                # rather than running a broken call and looping on the error.
+                if (
+                    tool_uses
+                    and final_msg.stop_reason == "max_tokens"
+                    and base_kwargs.get("max_tokens", MAX_TOKENS) < _MAX_TOKENS_CEILING
+                ):
+                    log.warning(
+                        "round %d truncated mid tool_use (max_tokens); retrying with %d-token budget",
+                        round_num, _MAX_TOKENS_CEILING,
+                    )
+                    base_kwargs["max_tokens"] = _MAX_TOKENS_CEILING
+                    if full_text and on_reset:
+                        on_reset()
+                    full_text = ""
+                    continue
+
                 self.history.append({
                     "role": "assistant",
                     "content": [_block_to_dict(b) for b in final_msg.content],
                 })
 
-                tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
                 if not tool_uses:
                     break
 
