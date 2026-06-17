@@ -74,14 +74,15 @@ def _hint_matches(result: dict, hint: str) -> bool:
     return False
 
 
-def get_weather(location: str | None = None) -> str:
-    """Return current conditions + today's forecast for *location*. Never raises."""
+def get_weather(location: str | None = None, days: int = 1) -> str:
+    """Return current conditions + a 1-to-16 day forecast for *location*. Never raises."""
     place = (location or CONFIG.location or "").strip()
     if not place:
         return (
             "No location given and no default set. Ask the user which city, or "
             "set JARVIS_LOCATION in .env."
         )
+    days = max(1, min(int(days or 1), 16))
 
     # Open-Meteo geocodes on the bare place name, so "Charlotte, NC" finds
     # nothing — split the city from any state/country hints and use the hints
@@ -125,7 +126,7 @@ def get_weather(location: str | None = None) -> str:
                 "temperature_unit": "fahrenheit",
                 "wind_speed_unit": "mph",
                 "timezone": "auto",
-                "forecast_days": 1,
+                "forecast_days": days,
             },
             timeout=15,
         )
@@ -138,32 +139,73 @@ def get_weather(location: str | None = None) -> str:
     cur = data.get("current", {})
     daily = data.get("daily", {})
 
-    def _first(key):
+    def _day(key, i):
         vals = daily.get(key) or []
-        return vals[0] if vals else None
+        return vals[i] if i < len(vals) else None
 
     now_desc = _describe(cur.get("weather_code"))
     temp = cur.get("temperature_2m")
     feels = cur.get("apparent_temperature")
     humidity = cur.get("relative_humidity_2m")
     wind = cur.get("wind_speed_10m")
-    hi = _first("temperature_2m_max")
-    lo = _first("temperature_2m_min")
-    precip = _first("precipitation_probability_max")
 
-    parts = [f"{label}: {now_desc}"]
-    if temp is not None:
+    def _temp_clause() -> str | None:
+        if temp is None:
+            return None
         feels_note = f" (feels {round(feels)}°)" if feels is not None else ""
-        parts.append(f"{round(temp)}°F{feels_note}")
-    if hi is not None and lo is not None:
-        parts.append(f"high {round(hi)}° / low {round(lo)}°")
-    if precip is not None:
-        parts.append(f"{precip}% precip")
-    if wind is not None:
-        parts.append(f"wind {round(wind)} mph")
-    if humidity is not None:
-        parts.append(f"humidity {humidity}%")
+        return f"{round(temp)}°F{feels_note}"
 
-    line = ", ".join(parts) + "."
-    log.info("weather for %s -> %r", label, line)
+    def _wind_humidity() -> list[str]:
+        out = []
+        if wind is not None:
+            out.append(f"wind {round(wind)} mph")
+        if humidity is not None:
+            out.append(f"humidity {humidity}%")
+        return out
+
+    def _day_forecast(i: int) -> str:
+        """high/low + precip for forecast day i (no description prefix)."""
+        seg = []
+        hi, lo = _day("temperature_2m_max", i), _day("temperature_2m_min", i)
+        precip = _day("precipitation_probability_max", i)
+        if hi is not None and lo is not None:
+            seg.append(f"high {round(hi)}° / low {round(lo)}°")
+        if precip is not None:
+            seg.append(f"{precip}% precip")
+        return ", ".join(seg)
+
+    times = daily.get("time") or []
+    if days <= 1 or len(times) <= 1:
+        # Compact single line (current conditions + today's high/low/precip).
+        parts = [f"{label}: {now_desc}"]
+        if (t := _temp_clause()):
+            parts.append(t)
+        if (today := _day_forecast(0)):
+            parts.append(today)
+        parts.extend(_wind_humidity())
+        line = ", ".join(parts) + "."
+    else:
+        import datetime as dt
+
+        def _label_day(date_str: str, i: int) -> str:
+            if i == 0:
+                return "Today"
+            try:
+                return dt.date.fromisoformat(date_str).strftime("%a %b %d")
+            except (ValueError, TypeError):
+                return date_str
+
+        now_line = ", ".join(
+            [f"{label} — now: {now_desc}"]
+            + ([t] if (t := _temp_clause()) else [])
+            + _wind_humidity()
+        )
+        lines = [now_line + ".", "Forecast:"]
+        for i, date_str in enumerate(times):
+            day_desc = _describe(_day("weather_code", i))
+            detail = _day_forecast(i)
+            lines.append(f"- {_label_day(date_str, i)}: {day_desc}" + (f", {detail}" if detail else ""))
+        line = "\n".join(lines)
+
+    log.info("weather for %s (%d day(s)) -> %r", label, days, line[:120])
     return line

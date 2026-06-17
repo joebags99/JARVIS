@@ -175,10 +175,13 @@ TOOLS = [
     {
         "name": "get_weather",
         "description": (
-            "Get current weather and today's forecast for a location. Call this "
+            "Get current weather plus a daily forecast for a location. Call this "
             "when the user asks about the weather, whether to bring a jacket, "
             "outdoor plans, or as part of a daily briefing. If the user names a "
-            "city use it; otherwise omit location to use their default."
+            "city use it; otherwise omit location to use their default. For "
+            "tomorrow, the weekend, or any future day, set days to cover from "
+            "today through that day (use today's date in your system prompt to "
+            "count — e.g. if today is Wednesday, the weekend needs days≈4)."
         ),
         "input_schema": {
             "type": "object",
@@ -188,6 +191,14 @@ TOOLS = [
                     "description": (
                         "City/place to look up, e.g. 'Chicago, IL'. Omit to use "
                         "the user's configured default location."
+                    ),
+                },
+                "days": {
+                    "type": "integer",
+                    "description": (
+                        "Number of forecast days to return, today through that many "
+                        "days ahead (1-16). Default 1 (today only). Increase it when "
+                        "the user asks about tomorrow or an extended/weekend outlook."
                     ),
                 },
             },
@@ -827,7 +838,9 @@ def _execute_tool(name: str, input_data: dict) -> str:
         return "\n\n".join(blocks)
     if name == "get_weather":
         from integrations import weather
-        return weather.get_weather(input_data.get("location"))
+        return weather.get_weather(
+            input_data.get("location"), days=int(input_data.get("days") or 1)
+        )
     if name == "recall_session_history":
         import datetime as dt
         from integrations import notes_watcher
