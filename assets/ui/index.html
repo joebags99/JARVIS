@@ -10,7 +10,10 @@
     <canvas id="particles"></canvas>
 
     <div id="header" class="drag-handle">
-      <div id="title"><span id="core"></span>J A R V I S</div>
+      <div id="title">
+        <span class="core-rig"><span class="reticle"></span><span id="core"></span></span>
+        J A R V I S
+      </div>
       <div id="header-actions">
         <button id="clear-btn" class="icon-btn" title="Clear chat">&#8634;</button>
         <button id="close-btn" class="icon-btn" title="Close">&#10005;</button>
@@ -33,6 +36,16 @@
       <textarea id="entry" placeholder="Ask JARVIS…" rows="1"></textarea>
       <button id="mic-btn" class="icon-btn" title="Voice input">&#127908;</button>
       <button id="send-btn" class="icon-btn" title="Send">&#10148;</button>
+    </div>
+
+    <!-- HUD frame: glowing corner brackets with node dots + ambient scan sweep.
+         Decorative only — pointer-events: none so it never blocks the UI. -->
+    <div id="hud-frame" aria-hidden="true">
+      <span class="corner tl"></span>
+      <span class="corner tr"></span>
+      <span class="corner bl"></span>
+      <span class="corner br"></span>
+      <span class="scan-sweep"></span>
     </div>
   </div>
   <script src="app.js"></script>
