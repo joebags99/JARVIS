@@ -65,9 +65,16 @@ class Transcriber:
         try:
             if on_status:
                 on_status("Transcribing…")
+            # Bias toward the user's canonical names so proper nouns transcribe
+            # right at the source ("" when no glossary → no effect).
+            from . import name_corrector
+            hotwords = name_corrector.hotwords()
             # vad_filter=False: don't let Whisper's silence detector discard real audio.
             segments, info = self._model.transcribe(
-                str(wav_path), beam_size=5, vad_filter=False
+                str(wav_path),
+                beam_size=5,
+                vad_filter=False,
+                hotwords=hotwords or None,
             )
             text = " ".join(seg.text.strip() for seg in segments).strip()
             log.info(

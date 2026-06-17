@@ -19,6 +19,7 @@ system clock instead.
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 import parsedatetime
 import requests
@@ -35,6 +36,11 @@ _CAL = parsedatetime.Calendar()
 # Recurring phrases need Todoist's own parser to set up the recurrence rule —
 # parsedatetime only resolves a single point in time, not "every Monday".
 _RECURRING_HINTS = ("every", "each", "daily", "weekly", "biweekly", "monthly", "yearly", "annually")
+# Match the hints as whole words only, so "everyone" / "delivery" / "weekly
+# standup" are handled correctly ("weekly" still matches, "delivery" doesn't).
+_RECURRING_RE = re.compile(
+    r"\b(" + "|".join(re.escape(h) for h in _RECURRING_HINTS) + r")\b", re.IGNORECASE
+)
 
 
 def _resolve_due(phrase: str) -> dict:
@@ -44,8 +50,7 @@ def _resolve_due(phrase: str) -> dict:
     parser) when it's a recurring pattern or parsedatetime can't parse it —
     e.g. "no date" to clear a due date.
     """
-    lowered = phrase.lower()
-    if any(hint in lowered for hint in _RECURRING_HINTS):
+    if _RECURRING_RE.search(phrase):
         return {"due_string": phrase}
 
     parsed, status = _CAL.parseDT(phrase, sourceTime=dt.datetime.now())

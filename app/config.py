@@ -64,6 +64,14 @@ def _get_int(name: str, default: int) -> int:
         return default
 
 
+def _get_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
 def _get_list(name: str, default: list[str]) -> list[str]:
     raw = os.getenv(name, "").strip()
     if not raw:
@@ -80,6 +88,12 @@ class Config:
     anthropic_model: str = field(
         default_factory=lambda: _get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
     )
+    # Cheap model used only for throwaway summarization (session summaries +
+    # history compaction). Defaults to Haiku — those calls don't need the main
+    # model's quality and run far cheaper here.
+    summary_model: str = field(
+        default_factory=lambda: _get("ANTHROPIC_SUMMARY_MODEL", "claude-haiku-4-5")
+    )
 
     # App
     user_name: str = field(default_factory=lambda: _get("JARVIS_USER_NAME", "User"))
@@ -87,6 +101,9 @@ class Config:
         default_factory=lambda: _get("JARVIS_WINDOW_POSITION", "top-right")
     )
     hotkey: str = field(default_factory=lambda: _get("JARVIS_HOTKEY"))
+    # Default location for weather / "what's it like out" when the user doesn't
+    # name one, e.g. "Chicago, IL". Blank = JARVIS asks which city.
+    location: str = field(default_factory=lambda: _get("JARVIS_LOCATION"))
     max_context_chars: int = field(
         default_factory=lambda: _get_int("JARVIS_MAX_CONTEXT_CHARS", 32000)
     )
@@ -96,6 +113,40 @@ class Config:
     # Device index (int) or partial name string. Empty = system default.
     audio_input_device: str = field(
         default_factory=lambda: _get("AUDIO_INPUT_DEVICE", "")
+    )
+    # Glossary of canonical fantasy/proper names + known misspellings, used to
+    # correct transcription/typed input and bias Whisper. See the .example file.
+    name_corrections_file: str = field(
+        default_factory=lambda: _get("NAME_CORRECTIONS_FILE", "name_corrections.json")
+    )
+    # Similarity (0-1) a capitalized word must reach to be auto-corrected to a
+    # canonical name when it isn't an explicitly-listed variant. High by default
+    # so only near-certain typos are fixed (real names like "Adrian" stay put);
+    # lower it toward ~0.78 for more aggressive matching.
+    name_fuzzy_cutoff: float = field(
+        default_factory=lambda: _get_float("NAME_FUZZY_CUTOFF", 0.85)
+    )
+
+    # ── Text-to-speech (optional) ────────────────────────────────────────────
+    # Read replies aloud. Off by default; toggled at runtime via the speaker
+    # button or the tray. Engine: "edge" (free neural, online) | "system"
+    # (pyttsx3, offline/robotic) | "elevenlabs" (premium, needs an API key).
+    tts_enabled: bool = field(
+        default_factory=lambda: _get("TTS_ENABLED").lower() in ("true", "1", "yes")
+    )
+    tts_engine: str = field(default_factory=lambda: _get("TTS_ENGINE", "edge"))
+    # Engine-specific voice id/name. Blank → the backend's own default
+    # (edge: en-GB-RyanNeural, system: OS default, elevenlabs: ELEVENLABS_VOICE_ID).
+    tts_voice: str = field(default_factory=lambda: _get("TTS_VOICE"))
+    # pyttsx3 speaking rate (words per minute); ignored by the other engines.
+    tts_rate: int = field(default_factory=lambda: _get_int("TTS_RATE", 175))
+    # ElevenLabs (only used when tts_engine == "elevenlabs").
+    elevenlabs_api_key: str = field(default_factory=lambda: _get("ELEVENLABS_API_KEY"))
+    elevenlabs_voice_id: str = field(
+        default_factory=lambda: _get("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
+    )
+    elevenlabs_model: str = field(
+        default_factory=lambda: _get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
     )
 
     # Google Calendar
@@ -126,6 +177,20 @@ class Config:
 
     # Todoist — personal API token, no OAuth.
     todoist_api_key: str = field(default_factory=lambda: _get("TODOIST_API_KEY"))
+
+    # Gmail — reuses the Google OAuth credentials.json but needs its own consent
+    # (mail scopes), so it's opt-in. Set GMAIL_ENABLED=true to surface the email
+    # read/draft tools; first use opens a browser to authorize the mail scopes.
+    gmail_enabled: bool = field(
+        default_factory=lambda: _get("GMAIL_ENABLED").lower() in ("true", "1", "yes")
+    )
+    # Which Google accounts to use for Gmail (comma-separated names, each with
+    # its own mail token under tokens/google_mail/{name}.json). Defaults to the
+    # calendar's GOOGLE_ACCOUNTS list when unset, so a single GOOGLE_ACCOUNTS
+    # covers both — set GMAIL_ACCOUNTS only when the mail accounts differ.
+    gmail_accounts: list[str] = field(
+        default_factory=lambda: _get_list("GMAIL_ACCOUNTS", [])
+    )
 
     # Outlook / Microsoft Graph
     outlook_client_id: str = field(default_factory=lambda: _get("OUTLOOK_CLIENT_ID"))
@@ -164,6 +229,16 @@ class Config:
     @property
     def todoist_enabled(self) -> bool:
         return bool(self.todoist_api_key)
+
+    @property
+    def gmail_available(self) -> bool:
+        """Gmail is usable only if opted in AND Google credentials exist on disk."""
+        return self.gmail_enabled and self.google_enabled
+
+    @property
+    def gmail_accounts_resolved(self) -> list[str]:
+        """Gmail account names, falling back to the calendar's GOOGLE_ACCOUNTS."""
+        return self.gmail_accounts or self.google_accounts
 
 
 # Singleton-ish config used across the app.

@@ -13,18 +13,33 @@ calendars, and meeting notes.
 
 ## Features
 
-- **System tray** icon (idle / listening / thinking states) with Open, Reload
-  Context, Settings, and Quit.
+- **System tray** icon (idle / listening / thinking states) with Open, Daily
+  Briefing, Reload Context, Settings, and Quit.
 - **Floating overlay** — frameless, always-on-top, draggable, dark theme
   (`#0f0f0f` + cyan `#00bcd4`). Closes on `Esc` or click-away.
 - **Type or talk** — push-to-talk voice via local `faster-whisper` (no audio
   ever leaves your machine; transcription is free and offline).
+- **Talk back (optional)** — JARVIS can read replies aloud, off by default and
+  toggled live with the speaker button or the tray. Pick your engine: free
+  neural `edge-tts`, fully-offline `pyttsx3`, or premium ElevenLabs.
+- **Name corrections** — a glossary of your fantasy/proper names fixes Whisper's
+  (and your typos') misspellings, and biases transcription toward the right
+  spelling. "Cailynn" → "Kailin" everywhere it matters.
 - **Context-aware** — assembles a system prompt from your `context/*.md` files,
   Google + Outlook calendars (next 7 days), recent `notes/`, and the date/time.
 - **Meal prep** — plan dinners two weeks at a time in conversation (with real
   web search for recipe ideas), then push the plan to your Google Calendar and
   a Todoist shopping list in one go.
-- **Streaming replies** that fill in token by token.
+- **Daily Briefing** — one click from the tray (or just ask): today's calendar,
+  overdue/today to-dos, the weather, and notable unread email in one summary.
+- **Weather** — current conditions and today's forecast for any city via
+  Open-Meteo (no API key needed); set `JARVIS_LOCATION` for a default.
+- **Email** (optional) — read and summarize recent Gmail, and draft replies for
+  you to review. JARVIS never sends mail on its own; it only saves drafts.
+- **Cross-session memory** — when you close a longer chat, JARVIS saves a short
+  recap and can recall it later ("pick up where we left off").
+- **Smooth replies** — an animated "thinking" indicator while JARVIS composes,
+  then the answer fades in line by line (no half-formed text filling in).
 - **Graceful degradation** — missing mic, missing calendar creds, or a missing
   API key are handled with clear messages, never a crash.
 
@@ -117,6 +132,68 @@ for ideas, proposes a plan for you to approve, then creates the calendar
 events and a "Groceries" Todoist project. Plans are recorded in
 `meal_plans.json` (gitignored) so future cycles avoid recent repeats.
 
+### 7c. (Optional) Gmail
+Reuses the Google `credentials.json` from step 5 but needs its own consent for
+mail scopes (read + draft), so it's opt-in:
+1. In the [Google Cloud Console](https://console.cloud.google.com/), enable the
+   **Gmail API** on the same project.
+2. Set `GMAIL_ENABLED=true` in `.env`.
+3. List the inboxes you want under `GMAIL_ACCOUNTS` (comma-separated names). For
+   three accounts: `GMAIL_ACCOUNTS=personal,work,side`. Leave it blank to reuse
+   the calendar's `GOOGLE_ACCOUNTS` instead.
+4. The **first** time each account is used, a browser opens to authorize it —
+   pick the matching Google login in the account chooser for each one. Tokens
+   are cached per account under `tokens/google_mail/{name}.json` (gitignored).
+
+JARVIS searches **all** configured inboxes at once (each result is tagged with
+its account, e.g. `[work]`), reads recent mail, and **drafts** replies for you
+to review — it never sends mail on its own, since sending is hard to undo. With
+several accounts, tell it which to draft from ("draft a reply from my work
+email"). Ask things like "any unread from Sam this week across my inboxes?" or
+"summarize today's email."
+
+> **Authorizing 3 accounts:** the very first "check my email" will walk through
+> the browser consent for each account in turn (one window per account). After
+> that the tokens are cached and it's silent. If a window picks the wrong Google
+> login, delete that account's file under `tokens/google_mail/` and try again.
+
+### 7d. (Optional) Spoken replies (TTS)
+JARVIS can read answers aloud. It's **off by default** — turn it on live with the
+speaker button in the overlay or the **Speak Replies** tray item, or start it on
+with `TTS_ENABLED=true`. Choose an engine with `TTS_ENGINE` and install just what
+it needs:
+- **`edge`** (default) — free, natural neural voices via `edge-tts`. Needs
+  `edge-tts` + `miniaudio` and an internet connection. Note the reply text is
+  sent to Microsoft (unlike the fully-local speech-to-text).
+- **`system`** — fully offline via `pyttsx3` and your OS voices. Private and
+  free, but a more robotic voice. Nothing leaves your machine.
+- **`elevenlabs`** — premium, most expressive. Set `ELEVENLABS_API_KEY` (and
+  optionally `ELEVENLABS_VOICE_ID`); uses only `requests`.
+
+Speech stops automatically when you send a new message or start the mic, so
+JARVIS never talks over you.
+
+### 7e. (Optional) Name corrections
+Voice transcription and typing mangle fantasy/proper names ("Kailin" → "Cailynn",
+"Adaria" → "Ederia"). Give JARVIS a glossary and it fixes them — in the chat, in
+saved notes, and in tool calls — for both spoken and typed input:
+
+```bash
+cp name_corrections.example.json name_corrections.json
+```
+
+Each canonical spelling lists its known misspellings:
+
+```json
+{ "names": { "Kailin": ["Cailynn", "Caelyn"], "Adaria": ["Ederia"] } }
+```
+
+Listed variants are corrected exactly; a conservative fuzzy matcher also catches
+new, unlisted close variants (capitalized, near-exact only — normal prose is left
+alone). The canonical names are also fed to Whisper as hints so transcription
+gets them right more often to begin with. Edit the file and hit **Reload Context**
+(tray) to apply changes without restarting. The file is gitignored.
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
@@ -163,16 +240,24 @@ notes from the 16th and add any action items to Todoist."
 |---|---|
 | `ANTHROPIC_API_KEY` | **Required.** Your Claude API key. |
 | `ANTHROPIC_MODEL` | Model id (default `claude-sonnet-4-6`). |
+| `ANTHROPIC_SUMMARY_MODEL` | Cheap model for session/compaction summaries (default `claude-haiku-4-5`). |
 | `JARVIS_USER_NAME` | Your name, used in the prompt + UI. |
 | `JARVIS_WINDOW_POSITION` | `top-right` / `top-left` / `bottom-right` / `bottom-left`. |
 | `JARVIS_HOTKEY` | Global toggle hotkey, e.g. `ctrl+space` (blank = off). |
+| `JARVIS_LOCATION` | Default city for weather / daily briefing (blank = JARVIS asks). |
 | `JARVIS_MAX_CONTEXT_CHARS` | Hard cap on assembled context (default 32000). |
 | `JARVIS_TIMEZONE` | IANA zone override for calendar events (blank = auto-detect). |
 | `WHISPER_MODEL` | `tiny` / `base` / `small` / `medium`. |
+| `TTS_ENABLED` | `true` to start with spoken replies on (toggle live anytime). Default off. |
+| `TTS_ENGINE` | `edge` (free neural) / `system` (offline pyttsx3) / `elevenlabs` (premium). |
+| `TTS_VOICE` | Engine-specific voice (blank = engine default). |
+| `ELEVENLABS_API_KEY` | Required only when `TTS_ENGINE=elevenlabs`. |
 | `GOOGLE_CREDENTIALS_PATH` | Path to Google OAuth `credentials.json`. |
 | `OUTLOOK_CLIENT_ID` / `_TENANT_ID` / `_CLIENT_SECRET` | Azure app registration. |
 | `OUTLOOK_ICS_URL` | Published calendar ICS link — no-Azure fallback, busy/free only. |
 | `TODOIST_API_KEY` | Personal API token from Todoist's Developer settings. |
+| `GMAIL_ENABLED` | `true` to enable Gmail read/draft tools (reuses Google `credentials.json`). |
+| `GMAIL_ACCOUNTS` | Comma-separated Gmail account names, e.g. `personal,work,side` (blank = reuse `GOOGLE_ACCOUNTS`). |
 
 ---
 
@@ -203,6 +288,10 @@ git status --ignored
 **Voice button is disabled.** Either `sounddevice`/`faster-whisper` aren't
 installed or no microphone was detected. Text input always works. On first voice
 use, the Whisper model downloads automatically (this can take a minute).
+
+**Speaker button is greyed out.** TTS deps aren't installed or the engine isn't
+configured. For `edge`, install `edge-tts` + `miniaudio`; for `system`, install
+`pyttsx3`; for `elevenlabs`, set `ELEVENLABS_API_KEY`. Text replies always work.
 
 **Calendar shows nothing.** Calendars are optional and skip silently when not
 configured. Check `logs/jarvis.log` for auth details.

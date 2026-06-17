@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy to name_corrections.json (gitignored) to fix misheard/misspelled proper names. Each canonical spelling maps to a list of known variants; a conservative fuzzy matcher also catches new close variants. Used to correct voice + typed input and to bias Whisper.",
+  "names": {
+    "Kailin": ["Cailynn", "Caelyn", "Kaylin"],
+    "Edwin": ["Edwinn"],
+    "Adaria": ["Ederia", "Adria"]
+  }
+}

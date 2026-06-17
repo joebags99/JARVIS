@@ -64,6 +64,10 @@ _WEB_SEARCH_TOOL = {
 # turns, older turns are summarized away to bound per-request token cost.
 HISTORY_MAX_TURNS = 8
 HISTORY_KEEP_TURNS = 3
+# When compacting, fat tool_result payloads (calendar dumps, note bodies, email
+# lists) from older turns are truncated to this many chars — the model already
+# acted on them, so the full text no longer needs to ride along every request.
+TOOL_RESULT_KEEP_CHARS = 600
 
 
 def _looks_financial(message: str) -> bool:
@@ -160,6 +164,50 @@ TOOLS = [
                 },
             },
             "required": ["category", "content"],
+        },
+    },
+    {
+        "name": "get_weather",
+        "description": (
+            "Get current weather and today's forecast for a location. Call this "
+            "when the user asks about the weather, whether to bring a jacket, "
+            "outdoor plans, or as part of a daily briefing. If the user names a "
+            "city use it; otherwise omit location to use their default."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": (
+                        "City/place to look up, e.g. 'Chicago, IL'. Omit to use "
+                        "the user's configured default location."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "recall_session_history",
+        "description": (
+            "Recall summaries of recent past JARVIS conversations. JARVIS auto-saves "
+            "a short summary whenever a session with several exchanges is closed, so "
+            "this is your cross-session memory. Call it when the user refers back to "
+            "an earlier conversation — 'what did we decide last time', 'pick up where "
+            "we left off', 'what were we talking about yesterday' — or when earlier "
+            "context would clearly help. This is separate from meeting notes; use "
+            "get_recent_notes for those."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "How many recent session summaries to load. Default 3.",
+                },
+            },
+            "required": [],
         },
     },
     {
@@ -601,6 +649,89 @@ TOOLS = [
 ]
 
 
+# Email tools are only surfaced when Gmail is configured (GMAIL_ENABLED=true +
+# Google credentials present). Appended to TOOLS at import time so the cached
+# tool prefix stays constant for a given install.
+EMAIL_TOOLS = [
+    {
+        "name": "get_emails",
+        "description": (
+            "List the user's recent emails (sender, subject, date, snippet). Call "
+            "this when the user asks about their inbox, recent mail, unread "
+            "messages, or wants you to find or summarize an email. Searches all "
+            "configured Gmail accounts by default; each result line is tagged with "
+            "its source account, e.g. '[work]'. Use the query to narrow results "
+            "with Gmail search syntax, e.g. 'is:unread', 'from:sam', "
+            "'newer_than:7d', 'subject:invoice'. Defaults to the inbox."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Gmail search query, e.g. 'is:unread', 'from:boss "
+                        "newer_than:3d'. Omit for the most recent inbox messages."
+                    ),
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "How many emails to return per account (1-25). Default 10.",
+                },
+                "account": {
+                    "type": "string",
+                    "description": (
+                        "Restrict the search to one configured Gmail account by its "
+                        "name (the tag shown in earlier results, e.g. 'work'). Omit "
+                        "to search every account at once."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "create_email_draft",
+        "description": (
+            "Create a Gmail draft for the user to review and send themselves. "
+            "JARVIS never sends mail automatically — this only saves a draft. Use "
+            "it when the user asks you to write, draft, or reply to an email. "
+            "Confirm the recipient and the gist with the user if either is unclear "
+            "rather than inventing an address or details. When several Gmail "
+            "accounts are configured you MUST set account; if it's unclear which "
+            "one the draft should come from, ask the user before drafting."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Recipient email address."},
+                "subject": {"type": "string", "description": "Email subject line."},
+                "body": {
+                    "type": "string",
+                    "description": "The full body text of the email.",
+                },
+                "cc": {
+                    "type": "string",
+                    "description": "Optional CC recipient(s), comma-separated.",
+                },
+                "account": {
+                    "type": "string",
+                    "description": (
+                        "Which configured Gmail account to save the draft under "
+                        "(the account name, e.g. 'work'). Required when more than "
+                        "one account is configured."
+                    ),
+                },
+            },
+            "required": ["to", "subject", "body"],
+        },
+    },
+]
+
+if CONFIG.gmail_available:
+    TOOLS = TOOLS + EMAIL_TOOLS
+
+
 def _execute_tool(name: str, input_data: dict) -> str:
     """Dispatch a tool call and return a result string."""
     if name == "get_calendar_events":
@@ -634,6 +765,22 @@ def _execute_tool(name: str, input_data: dict) -> str:
         for note in notes:
             modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d")
             blocks.append(f"### {note.path.name} (modified {modified})\n{note.content}")
+        return "\n\n".join(blocks)
+    if name == "get_weather":
+        from integrations import weather
+        return weather.get_weather(input_data.get("location"))
+    if name == "recall_session_history":
+        import datetime as dt
+        from integrations import notes_watcher
+        summaries = notes_watcher.read_recent_session_summaries(
+            int(input_data.get("limit") or 3)
+        )
+        if not summaries:
+            return "(No past session summaries yet.)"
+        blocks = []
+        for note in summaries:
+            modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d %H:%M")
+            blocks.append(f"### {note.path.name} (saved {modified})\n{note.content}")
         return "\n\n".join(blocks)
     if name == "create_note":
         from integrations import notes_watcher
@@ -742,6 +889,22 @@ def _execute_tool(name: str, input_data: dict) -> str:
         content = load_pool(pool, account)
         header = f"## Knowledge Pool: {pool_name}\n_{pool.get('description', '')}_"
         return f"{header}\n\n{content}"
+    if name == "get_emails":
+        from integrations import gmail
+        return gmail.list_emails(
+            query=input_data.get("query"),
+            max_results=int(input_data.get("max_results") or 10),
+            account=input_data.get("account"),
+        )
+    if name == "create_email_draft":
+        from integrations import gmail
+        return gmail.create_draft(
+            to=input_data["to"],
+            subject=input_data["subject"],
+            body=input_data["body"],
+            cc=input_data.get("cc"),
+            account=input_data.get("account"),
+        )
     return f"Unknown tool: {name}"
 
 
@@ -841,7 +1004,7 @@ class ClaudeClient:
 
         try:
             response = self._client.messages.create(
-                model=CONFIG.anthropic_model,
+                model=CONFIG.summary_model,
                 max_tokens=400,
                 messages=[{
                     "role": "user",
@@ -883,19 +1046,56 @@ class ClaudeClient:
             {"role": "user", "content": f"[Earlier in this session:]\n{summary}"},
             {"role": "assistant", "content": "Got it, I'll keep that in mind."},
         ] + recent
+        self._trim_old_tool_results()
         log.info("compacted %d older turn(s) into a summary", len(boundaries) - HISTORY_KEEP_TURNS)
+
+    def _trim_old_tool_results(self) -> None:
+        """Truncate large tool_result payloads from all but the most recent turn.
+
+        Only touches the ``tool_result`` blocks JARVIS itself appends (plain
+        string content in user-role messages) and leaves the latest turn's
+        results full, so the current working context is untouched while stale
+        calendar/notes/email dumps stop riding along on every request.
+        """
+        boundaries = [
+            i for i, m in enumerate(self.history)
+            if m.get("role") == "user" and isinstance(m.get("content"), str)
+        ]
+        cutoff = boundaries[-1] if boundaries else len(self.history)
+        trimmed = 0
+        for m in self.history[:cutoff]:
+            if m.get("role") != "user" or not isinstance(m.get("content"), list):
+                continue
+            for block in m["content"]:
+                if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                    continue
+                content = block.get("content")
+                if isinstance(content, str) and len(content) > TOOL_RESULT_KEEP_CHARS:
+                    block["content"] = (
+                        content[:TOOL_RESULT_KEEP_CHARS].rstrip()
+                        + "\n…(older tool output trimmed to save context)"
+                    )
+                    trimmed += 1
+        if trimmed:
+            log.info("trimmed %d older tool-result block(s) during compaction", trimmed)
 
     def send(
         self,
         user_message: str,
         on_delta: Callable[[str], None] | None = None,
+        on_reset: Callable[[], None] | None = None,
     ) -> str:
         """Send a message with full context; stream deltas via ``on_delta``.
 
-        Handles a single round of tool use transparently: if Claude calls a
-        tool (e.g. create_calendar_event), the tool executes locally and Claude
-        streams a confirmation response. Returns the complete assistant reply.
-        Never raises — failures return a readable error string.
+        Handles tool use transparently: if Claude calls a tool (e.g.
+        create_calendar_event), the tool executes locally and Claude streams a
+        confirmation response. Returns the complete assistant reply. Never
+        raises — failures return a readable error string.
+
+        ``on_delta`` receives each streamed text chunk. ``on_reset`` is called
+        whenever a round's pre-tool text is discarded (the model spoke, then
+        decided to call a tool) so the UI can roll its live stream back to a
+        "thinking" state instead of showing text that's about to be replaced.
         """
         if not self.ready:
             return self._init_error or "Claude client is not available."
@@ -925,8 +1125,31 @@ class ClaudeClient:
                 tool_choice={"type": "auto", "disable_parallel_tool_use": True},
             )
             stream_fn = self._client.messages.stream
-            if CONFIG.monarch_enabled and (self._monarch_active or _looks_financial(user_message)):
+
+            # The Monarch MCP path needs parallel tool use DISABLED (so a local
+            # tool_use and an mcp_tool_use never land in the same turn and leave
+            # a dangling block); the web-search path needs it ENABLED (the API
+            # rejects disable_parallel_tool_use alongside that programmatic
+            # server tool). Those requirements are mutually exclusive, so at
+            # most one may attach per turn. Both flags stay sticky for the
+            # session, so we pick per-turn by the *current* message's topic:
+            # finance wins a finance message, meal wins a meal message, and a
+            # neutral follow-up favors Monarch's parallel-safe path.
+            fin_now = _looks_financial(user_message)
+            meal_now = _looks_meal_related(user_message)
+            if fin_now:
                 self._monarch_active = True
+            if meal_now:
+                self._meal_active = True
+
+            want_monarch = CONFIG.monarch_enabled and (
+                fin_now or (self._monarch_active and not meal_now)
+            )
+            want_web = meal_now or (self._meal_active and not fin_now)
+            if want_monarch and want_web:
+                want_web = False  # can't share a turn — keep the MCP-safe path
+
+            if want_monarch:
                 try:
                     from integrations.monarch_oauth import get_monarch_token
                     base_kwargs["mcp_servers"] = [{
@@ -940,16 +1163,8 @@ class ClaudeClient:
                     log.info("using beta endpoint with monarch mcp_servers attached")
                 except Exception as exc:
                     log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
-
-            # Native web search — only attached for meal/recipe conversations
-            # (sticky for the session) so it isn't billed on every message.
-            if self._meal_active or _looks_meal_related(user_message):
-                self._meal_active = True
+            elif want_web:
                 base_kwargs["tools"] = TOOLS + [_WEB_SEARCH_TOOL]
-                # The API rejects disable_parallel_tool_use alongside this
-                # "programmatic" server tool ("tool_choice.disable_parallel_tool_use:
-                # true cannot be used with programmatic tool calling") — drop it
-                # for this turn rather than disabling web search.
                 base_kwargs["tool_choice"] = {"type": "auto"}
                 base_kwargs["max_tokens"] = _MEAL_MAX_TOKENS
                 log.info("web search tool attached (meal-related conversation)")
@@ -980,13 +1195,22 @@ class ClaudeClient:
                     break
 
                 # Discard any pre-tool text streamed this round — the real
-                # answer comes after the tool result, not before it.
+                # answer comes after the tool result, not before it. Tell the UI
+                # to roll its live stream back to "thinking" so the discarded
+                # text doesn't linger on screen until the next round renders.
+                if full_text and on_reset:
+                    on_reset()
                 full_text = ""
 
                 results = []
                 for tu in tool_uses:
+                    is_error = False
                     try:
                         outcome = _execute_tool(tu.name, tu.input)
+                        # Integrations report handled failures as "Error: ..."
+                        # strings — flag those so the model treats them as
+                        # failures to recover from, not as data.
+                        is_error = outcome.lstrip().startswith("Error")
                     except Exception as exc:  # noqa: BLE001
                         # A tool_use block always needs a paired tool_result —
                         # if execution raises (e.g. a required field was missing
@@ -998,11 +1222,13 @@ class ClaudeClient:
                             f"Error: tool '{tu.name}' failed ({exc}). "
                             "Check that all required fields were provided and try again."
                         )
+                        is_error = True
                     log.info("tool %s -> %r", tu.name, outcome[:120])
                     results.append({
                         "type": "tool_result",
                         "tool_use_id": tu.id,
                         "content": outcome,
+                        "is_error": is_error,
                     })
                 self.history.append({"role": "user", "content": results})
             else:

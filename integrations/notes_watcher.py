@@ -92,6 +92,40 @@ def read_recent_notes(category: str, limit: int = 5, max_chars: int = 2000) -> l
     return notes
 
 
+def read_recent_session_summaries(limit: int = 3, max_chars: int = 1500) -> list[Note]:
+    """Return recent auto-saved JARVIS session summaries, newest first.
+
+    These ``session_*.md`` files live in the ``notes/`` root (not a category
+    subfolder) and are written by the overlay when a conversation with several
+    exchanges is closed. They're JARVIS's cross-session memory — kept separate
+    from the user's category meeting notes so the two never mix. Never raises.
+    """
+    if not NOTES_DIR.exists():
+        return []
+    files = [
+        p
+        for p in NOTES_DIR.iterdir()
+        if p.is_file()
+        and p.name.startswith("session_")
+        and p.suffix.lower() == ".md"
+    ]
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    notes: list[Note] = []
+    for path in files[:limit]:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not read session summary %s: %s", path.name, exc)
+            continue
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "\n…(truncated)"
+        notes.append(Note(path=path, content=text, modified=path.stat().st_mtime))
+
+    log.info("loaded %d recent session summary(ies)", len(notes))
+    return notes
+
+
 def _slugify(title: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
     return slug or "note"

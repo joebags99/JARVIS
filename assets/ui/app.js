@@ -7,12 +7,18 @@ const statusEl = document.getElementById("status");
 const entry = document.getElementById("entry");
 const sendBtn = document.getElementById("send-btn");
 const micBtn = document.getElementById("mic-btn");
+const speakBtn = document.getElementById("speak-btn");
 const clearBtn = document.getElementById("clear-btn");
 const closeBtn = document.getElementById("close-btn");
 const header = document.getElementById("header");
 
 let userName = "User";
 let streamEl = null;
+
+const THINKING_HTML = `
+    <span class="thinking-dots"><i></i><i></i><i></i></span>
+    <span class="thinking-label">JARVIS is thinking&hellip;</span>
+  `;
 
 // ── API bridge ────────────────────────────────────────────────────────────
 
@@ -180,10 +186,7 @@ function startAssistantMessage() {
 
   const content = document.createElement("div");
   content.className = "msg-content thinking";
-  content.innerHTML = `
-    <span class="thinking-spinner"></span>
-    <span class="thinking-label">Thinking&hellip;</span>
-  `;
+  content.innerHTML = THINKING_HTML;
   wrap.appendChild(content);
 
   transcript.appendChild(wrap);
@@ -191,13 +194,27 @@ function startAssistantMessage() {
   scrollToBottom();
 }
 
+// Reveal the finished reply. Nothing is shown while JARVIS works (the thinking
+// dots stay up the whole time); when the full text arrives we render it, then
+// stagger each top-level block so the answer fades in line by line.
 function finishAssistantMessage(fullText) {
-  if (streamEl) {
-    streamEl.classList.remove("thinking");
-    streamEl.innerHTML = renderMarkdown(fullText);
-    streamEl = null;
-  }
+  if (!streamEl) return;
+  const el = streamEl;
+  streamEl = null;
+
+  el.classList.remove("thinking");
+  el.innerHTML = renderMarkdown(fullText);
+
+  const blocks = Array.from(el.children);
+  blocks.forEach((block, i) => {
+    block.style.animationDelay = i * 60 + "ms";
+    block.classList.add("reveal");
+  });
+
+  // Keep the view pinned to the newest content as the lines settle in.
   scrollToBottom();
+  setTimeout(scrollToBottom, 140);
+  setTimeout(scrollToBottom, 400);
 }
 
 function clearTranscript() {
@@ -233,6 +250,17 @@ function setVoiceAvailable(available) {
   micBtn.disabled = !available;
 }
 
+// Speaker (TTS) toggle — filled speaker + cyan glow when on, muted when off.
+function setTTSEnabled(enabled) {
+  speakBtn.classList.toggle("active", enabled);
+  speakBtn.innerHTML = enabled ? "&#128266;" : "&#128263;";
+  speakBtn.title = enabled ? "Speaking replies (click to mute)" : "Speak replies";
+}
+
+function setTtsAvailable(available) {
+  speakBtn.disabled = !available;
+}
+
 // ── Input handling ───────────────────────────────────────────────────────
 
 function autoResize() {
@@ -257,6 +285,7 @@ entry.addEventListener("keydown", (e) => {
 });
 sendBtn.addEventListener("click", sendMessage);
 micBtn.addEventListener("click", () => callApi("toggle_recording"));
+speakBtn.addEventListener("click", () => callApi("toggle_tts"));
 clearBtn.addEventListener("click", () => callApi("clear_chat"));
 closeBtn.addEventListener("click", () => callApi("close_overlay"));
 

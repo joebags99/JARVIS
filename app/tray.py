@@ -25,11 +25,17 @@ class Tray:
         on_quit: Callable[[], None],
         schedule: Callable[[Callable[[], None]], None],
         on_settings: Callable[[], None] | None = None,
+        on_briefing: Callable[[], None] | None = None,
+        on_tts_toggle: Callable[[], None] | None = None,
+        tts_state: Callable[[], bool] | None = None,
     ) -> None:
         self._on_open = on_open
         self._on_reload = on_reload
         self._on_quit = on_quit
         self._on_settings = on_settings
+        self._on_briefing = on_briefing
+        self._on_tts_toggle = on_tts_toggle
+        self._tts_state = tts_state
         self._schedule = schedule
         self._icon = None
         self._thread = None
@@ -43,6 +49,16 @@ class Tray:
 
         menu = Menu(
             Item("Open", wrap(self._on_open), default=True),
+            Item("Daily Briefing", wrap(self._on_briefing or (lambda: None)),
+                 enabled=self._on_briefing is not None),
+            Item(
+                "Speak Replies",
+                wrap(self._on_tts_toggle or (lambda: None)),
+                # Live checkmark reflecting whether TTS is currently on.
+                checked=(lambda _i: bool(self._tts_state and self._tts_state()))
+                        if self._on_tts_toggle is not None else None,
+                enabled=self._on_tts_toggle is not None,
+            ),
             Item("Reload Context", wrap(self._on_reload)),
             Item("Settings", wrap(self._on_settings or (lambda: None)),
                  enabled=self._on_settings is not None),

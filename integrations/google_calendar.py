@@ -70,6 +70,43 @@ def _start_end(iso: str, force_timezone: bool = False) -> dict:
     return {"dateTime": iso}
 
 
+def _derive_end_iso(target: dict, new_start_iso: str) -> str:
+    """Pick an end that's consistent with a newly-set start.
+
+    When the caller moves an event's start but doesn't give a new end, Google
+    rejects a mismatched pair (e.g. a timed start with an all-day end → "Invalid
+    start time"). Derive the end here: preserve the original duration when the
+    start's all-day/timed nature is unchanged, otherwise fall back to a sensible
+    default (1 hour for timed, 1 day for all-day) so all-day↔timed conversions
+    don't blow up.
+    """
+    start_raw = target.get("start", {})
+    end_raw = target.get("end", {})
+    new_all_day = len(new_start_iso) == 10
+
+    if new_all_day:
+        span_days = 1
+        try:
+            s = dt.date.fromisoformat(start_raw["date"])
+            e = dt.date.fromisoformat(end_raw["date"])
+            span_days = (e - s).days or 1
+        except Exception:  # noqa: BLE001
+            pass
+        new_start = dt.date.fromisoformat(new_start_iso)
+        return (new_start + dt.timedelta(days=span_days)).isoformat()
+
+    duration = dt.timedelta(hours=1)
+    try:
+        s = dt.datetime.fromisoformat(start_raw["dateTime"])
+        e = dt.datetime.fromisoformat(end_raw["dateTime"])
+        if e > s:
+            duration = e - s
+    except Exception:  # noqa: BLE001
+        pass
+    new_start = dt.datetime.fromisoformat(new_start_iso)
+    return (new_start + duration).isoformat()
+
+
 @dataclass
 class CalEvent:
     """A normalized calendar event, source-agnostic."""
@@ -462,7 +499,14 @@ def update_event(
 
         if new_start_iso is not None:
             patch["start"] = _start_end(new_start_iso)
-        if new_end_iso is not None:
+            # Always send a matching end — if the caller didn't supply one,
+            # derive it so we never pair a timed start with an all-day end (or
+            # vice versa), which Google rejects as "Invalid start time".
+            end_iso = new_end_iso if new_end_iso is not None else _derive_end_iso(
+                target, new_start_iso
+            )
+            patch["end"] = _start_end(end_iso)
+        elif new_end_iso is not None:
             patch["end"] = _start_end(new_end_iso)
 
         if not patch:

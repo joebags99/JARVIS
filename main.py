@@ -32,12 +32,14 @@ def main() -> int:
     from app.claude_client import ClaudeClient
     from app.recorder import Recorder
     from app.transcriber import Transcriber
+    from app.tts import Speaker
 
     context = ContextBuilder()
     context.reload_static()
     claude = ClaudeClient(context_builder=context)
     recorder = Recorder()
     transcriber = Transcriber()
+    speaker = Speaker()
 
     # Overlay owns the webview window and its event loop.
     try:
@@ -58,6 +60,7 @@ def main() -> int:
         claude_client=claude,
         recorder=recorder,
         transcriber=transcriber,
+        speaker=speaker,
         on_state_change=on_state_change,
     )
 
@@ -87,6 +90,9 @@ def main() -> int:
         on_reload=overlay.reload_context,
         on_quit=on_quit,
         schedule=schedule,
+        on_briefing=overlay.daily_briefing,
+        on_tts_toggle=overlay._toggle_tts,
+        tts_state=lambda: overlay._tts_enabled,
     )
     tray_holder["tray"] = tray
     tray.start()
