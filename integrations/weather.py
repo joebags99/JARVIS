@@ -39,6 +39,41 @@ def _describe(code: int | None) -> str:
     return _WMO.get(int(code), "unknown conditions")
 
 
+# US state abbreviations → full names, so a hint like "NC" matches Open-Meteo's
+# admin1 field ("North Carolina"). Covers the common "City, ST" form users type.
+_US_STATES = {
+    "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas",
+    "ca": "california", "co": "colorado", "ct": "connecticut", "de": "delaware",
+    "fl": "florida", "ga": "georgia", "hi": "hawaii", "id": "idaho",
+    "il": "illinois", "in": "indiana", "ia": "iowa", "ks": "kansas",
+    "ky": "kentucky", "la": "louisiana", "me": "maine", "md": "maryland",
+    "ma": "massachusetts", "mi": "michigan", "mn": "minnesota", "ms": "mississippi",
+    "mo": "missouri", "mt": "montana", "ne": "nebraska", "nv": "nevada",
+    "nh": "new hampshire", "nj": "new jersey", "nm": "new mexico", "ny": "new york",
+    "nc": "north carolina", "nd": "north dakota", "oh": "ohio", "ok": "oklahoma",
+    "or": "oregon", "pa": "pennsylvania", "ri": "rhode island", "sc": "south carolina",
+    "sd": "south dakota", "tn": "tennessee", "tx": "texas", "ut": "utah",
+    "vt": "vermont", "va": "virginia", "wa": "washington", "wv": "west virginia",
+    "wi": "wisconsin", "wy": "wyoming", "dc": "district of columbia",
+}
+
+
+def _hint_matches(result: dict, hint: str) -> bool:
+    """True if a region hint (e.g. 'NC', 'Texas', 'France') matches a geocode hit."""
+    hint = hint.strip().lower()
+    if not hint:
+        return True
+    expanded = _US_STATES.get(hint, hint)
+    fields = [
+        str(result.get(k, "")).lower()
+        for k in ("admin1", "admin2", "country", "country_code")
+    ]
+    for f in fields:
+        if f and (f == hint or f == expanded or expanded in f or hint in f):
+            return True
+    return False
+
+
 def get_weather(location: str | None = None) -> str:
     """Return current conditions + today's forecast for *location*. Never raises."""
     place = (location or CONFIG.location or "").strip()
@@ -48,17 +83,26 @@ def get_weather(location: str | None = None) -> str:
             "set JARVIS_LOCATION in .env."
         )
 
+    # Open-Meteo geocodes on the bare place name, so "Charlotte, NC" finds
+    # nothing — split the city from any state/country hints and use the hints
+    # to disambiguate among the candidates instead.
+    parts = [p.strip() for p in place.split(",") if p.strip()]
+    name = parts[0] if parts else place
+    hints = parts[1:]
+
     try:
         geo = requests.get(
             _GEOCODE_URL,
-            params={"name": place, "count": 1, "language": "en", "format": "json"},
+            params={"name": name, "count": 10, "language": "en", "format": "json"},
             timeout=15,
         )
         geo.raise_for_status()
         results = geo.json().get("results") or []
         if not results:
             return f"Couldn't find a location matching '{place}'."
-        top = results[0]
+        # Prefer the candidate matching the most hints; results are already
+        # population-sorted, so ties (and the no-hint case) keep the top hit.
+        top = max(results, key=lambda r: sum(_hint_matches(r, h) for h in hints))
         lat, lon = top["latitude"], top["longitude"]
         label = ", ".join(
             part for part in (top.get("name"), top.get("admin1"), top.get("country_code"))
