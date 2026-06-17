@@ -22,6 +22,9 @@ calendars, and meeting notes.
 - **Talk back (optional)** — JARVIS can read replies aloud, off by default and
   toggled live with the speaker button or the tray. Pick your engine: free
   neural `edge-tts`, fully-offline `pyttsx3`, or premium ElevenLabs.
+- **Name corrections** — a glossary of your fantasy/proper names fixes Whisper's
+  (and your typos') misspellings, and biases transcription toward the right
+  spelling. "Cailynn" → "Kailin" everywhere it matters.
 - **Context-aware** — assembles a system prompt from your `context/*.md` files,
   Google + Outlook calendars (next 7 days), recent `notes/`, and the date/time.
 - **Meal prep** — plan dinners two weeks at a time in conversation (with real
@@ -169,6 +172,27 @@ it needs:
 
 Speech stops automatically when you send a new message or start the mic, so
 JARVIS never talks over you.
+
+### 7e. (Optional) Name corrections
+Voice transcription and typing mangle fantasy/proper names ("Kailin" → "Cailynn",
+"Adaria" → "Ederia"). Give JARVIS a glossary and it fixes them — in the chat, in
+saved notes, and in tool calls — for both spoken and typed input:
+
+```bash
+cp name_corrections.example.json name_corrections.json
+```
+
+Each canonical spelling lists its known misspellings:
+
+```json
+{ "names": { "Kailin": ["Cailynn", "Caelyn"], "Adaria": ["Ederia"] } }
+```
+
+Listed variants are corrected exactly; a conservative fuzzy matcher also catches
+new, unlisted close variants (capitalized, near-exact only — normal prose is left
+alone). The canonical names are also fed to Whisper as hints so transcription
+gets them right more often to begin with. Edit the file and hit **Reload Context**
+(tray) to apply changes without restarting. The file is gitignored.
 
 ### 8. Add your personal context
 ```bash

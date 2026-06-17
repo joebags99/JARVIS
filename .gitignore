@@ -22,6 +22,9 @@ knowledge_pools.json
 # Meal-prep cycles (your dinner plans/shopping lists)
 meal_plans.json
 
+# Fantasy/proper-name corrections glossary (your character names)
+name_corrections.json
+
 # Everything in /context except the committed example templates.
 context/*
 !context/*.example.md

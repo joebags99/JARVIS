@@ -352,6 +352,10 @@ class Overlay:
     # ── Input handling ────────────────────────────────────────────────────────
 
     def _submit(self, text: str) -> None:
+        # Fix misheard/misspelled proper names (voice + typed) before it reaches
+        # the chat, the session notes, or any tool call.
+        from . import name_corrector
+        text = name_corrector.normalize_names(text)
         # Barge-in: never let JARVIS talk over a new request.
         if self.speaker is not None:
             self.speaker.stop()
@@ -463,6 +467,8 @@ class Overlay:
 
     def reload_context(self) -> None:
         self.claude.reload_context()
+        from . import name_corrector
+        name_corrector.reload()
         if self._visible:
             self.set_status("Context reloaded")
 

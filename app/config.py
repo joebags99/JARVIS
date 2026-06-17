@@ -64,6 +64,14 @@ def _get_int(name: str, default: int) -> int:
         return default
 
 
+def _get_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
 def _get_list(name: str, default: list[str]) -> list[str]:
     raw = os.getenv(name, "").strip()
     if not raw:
@@ -105,6 +113,18 @@ class Config:
     # Device index (int) or partial name string. Empty = system default.
     audio_input_device: str = field(
         default_factory=lambda: _get("AUDIO_INPUT_DEVICE", "")
+    )
+    # Glossary of canonical fantasy/proper names + known misspellings, used to
+    # correct transcription/typed input and bias Whisper. See the .example file.
+    name_corrections_file: str = field(
+        default_factory=lambda: _get("NAME_CORRECTIONS_FILE", "name_corrections.json")
+    )
+    # Similarity (0-1) a capitalized word must reach to be auto-corrected to a
+    # canonical name when it isn't an explicitly-listed variant. High by default
+    # so only near-certain typos are fixed (real names like "Adrian" stay put);
+    # lower it toward ~0.78 for more aggressive matching.
+    name_fuzzy_cutoff: float = field(
+        default_factory=lambda: _get_float("NAME_FUZZY_CUTOFF", 0.85)
     )
 
     # ── Text-to-speech (optional) ────────────────────────────────────────────
