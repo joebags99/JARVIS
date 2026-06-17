@@ -188,6 +188,11 @@ class Overlay:
             transparent=True,
             background_color="#0f0f0f",
             resizable=False,
+            # pywebview makes the WHOLE frameless window a drag region by
+            # default, which hijacks click-drag in the transcript (so text can't
+            # be selected) and moves the window instead. We do our own dragging
+            # from the header via move_window, so disable the blanket behavior.
+            easy_drag=False,
         )
         self.window.events.loaded += self._on_loaded
 
