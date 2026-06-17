@@ -207,5 +207,7 @@ def get_weather(location: str | None = None, days: int = 1) -> str:
             lines.append(f"- {_label_day(date_str, i)}: {day_desc}" + (f", {detail}" if detail else ""))
         line = "\n".join(lines)
 
-    log.info("weather for %s (%d day(s)) -> %r", label, days, line[:120])
+    # Log the full result on one line (newlines flattened) — truncating it hid
+    # the multi-day highs and made a current-vs-high temp read look like a bug.
+    log.info("weather for %s (%d day(s)) -> %s", label, days, line.replace("\n", " | "))
     return line
