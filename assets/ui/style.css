@@ -401,6 +401,7 @@ body.has-messages #hud {
 }
 
 .msg {
+  position: relative;
   margin-bottom: 10px;
 }
 
@@ -409,6 +410,47 @@ body.has-messages #hud {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 2px;
+}
+
+/* Selectable message text (drag-select works; the body is user-select:none).
+   The -webkit- prefix matters for the embedded WebView. */
+.msg-content {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+
+/* Hover-reveal copy button, top-right of each message. */
+.msg-copy {
+  position: absolute;
+  top: -2px;
+  right: 0;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 5px;
+  background: rgba(26, 26, 26, 0.85);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.msg:hover .msg-copy {
+  opacity: 0.6;
+}
+.msg-copy:hover {
+  opacity: 1;
+  color: var(--accent);
+  background: var(--border);
+}
+.msg-copy.copied {
+  opacity: 1;
+  color: var(--success);
 }
 
 .msg-user .msg-label { color: var(--text-muted); }

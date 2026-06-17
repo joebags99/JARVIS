@@ -158,6 +158,63 @@ function setUserName(name) {
   userName = name;
 }
 
+// ── Copy-to-clipboard (for grabbing emails, drafts, etc.) ──────────────────
+
+const COPY_ICON = "&#128203;"; // 📋
+const CHECK_ICON = "&#10003;"; // ✓
+
+async function copyText(text, btn) {
+  let ok = false;
+  // Async Clipboard API works in the embedded WebView under a user gesture.
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch (_) {
+    /* fall through to legacy path */
+  }
+  if (!ok) {
+    // Legacy fallback for webviews without async clipboard access.
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch (_) {
+      /* nothing more we can do */
+    }
+  }
+  if (btn) {
+    btn.classList.add("copied");
+    btn.innerHTML = ok ? CHECK_ICON : "&#33;"; // ✓ or ! on failure
+    btn.title = ok ? "Copied!" : "Copy failed";
+    setTimeout(() => {
+      btn.classList.remove("copied");
+      btn.innerHTML = COPY_ICON;
+      btn.title = "Copy";
+    }, 1200);
+  }
+}
+
+// Add a hover-reveal copy button that grabs the message's clean visible text
+// (innerText strips markdown markers, so pasted emails/drafts come out tidy).
+function attachCopyButton(wrap, contentEl) {
+  const btn = document.createElement("button");
+  btn.className = "msg-copy";
+  btn.title = "Copy";
+  btn.innerHTML = COPY_ICON;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    copyText(contentEl.innerText, btn);
+  });
+  wrap.appendChild(btn);
+}
+
 function addMessage(role, label, text) {
   document.body.classList.add("has-messages");
 
@@ -177,6 +234,10 @@ function addMessage(role, label, text) {
     content.textContent = text;
   }
   wrap.appendChild(content);
+
+  if (role !== "system") {
+    attachCopyButton(wrap, content);
+  }
 
   transcript.appendChild(wrap);
   scrollToBottom();
@@ -213,6 +274,7 @@ function finishAssistantMessage(fullText) {
 
   el.classList.remove("thinking");
   el.innerHTML = renderMarkdown(fullText);
+  attachCopyButton(el.parentElement, el);
 
   const blocks = Array.from(el.children);
   blocks.forEach((block, i) => {
