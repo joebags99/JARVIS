@@ -964,6 +964,28 @@ def _with_message_cache_breakpoint(messages: list[dict]) -> list[dict]:
     return messages[:-1] + [last]
 
 
+class _MonarchUnavailable(Exception):
+    """Internal signal that the Monarch MCP server couldn't be reached this turn.
+
+    Raised from the per-turn helper so ``send`` can retry once with the MCP
+    server detached instead of failing the whole answer."""
+
+
+def _is_mcp_connection_error(exc: Exception) -> bool:
+    """True for the transient 400 the API raises when it can't reach an MCP server.
+
+    Monarch's hosted MCP server occasionally goes unavailable/unresponsive; the
+    API surfaces that as ``invalid_request_error`` with a "Connection error
+    while communicating with MCP server" message. That's not a problem with the
+    request itself, so it's worth retrying the turn without the MCP server
+    attached rather than failing the whole answer.
+    """
+    msg = str(exc).lower()
+    return "mcp server" in msg and (
+        "connection error" in msg or "unavailable" in msg or "unresponsive" in msg
+    )
+
+
 # ── Client ────────────────────────────────────────────────────────────────────
 
 class ClaudeClient:
@@ -1144,11 +1166,34 @@ class ClaudeClient:
         self.history.append({"role": "user", "content": user_message})
         system_prompt = self.context.build_system_prompt()
 
-        full_text = ""
-        try:
-            # ── Build API kwargs; add Monarch MCP server when enabled. These are
-            # reused on every round of the loop below, so local tools and the
-            # Monarch MCP tool stay available across sequential tool rounds.
+        # The Monarch MCP path needs parallel tool use DISABLED (so a local
+        # tool_use and an mcp_tool_use never land in the same turn and leave
+        # a dangling block); the web-search path needs it ENABLED (the API
+        # rejects disable_parallel_tool_use alongside that programmatic
+        # server tool). Those requirements are mutually exclusive, so at
+        # most one may attach per turn. Both flags stay sticky for the
+        # session, so we pick per-turn by the *current* message's topic:
+        # finance wins a finance message, meal wins a meal message, and a
+        # neutral follow-up favors Monarch's parallel-safe path.
+        fin_now = _looks_financial(user_message)
+        meal_now = _looks_meal_related(user_message)
+        if fin_now:
+            self._monarch_active = True
+        if meal_now:
+            self._meal_active = True
+
+        want_monarch = CONFIG.monarch_enabled and (
+            fin_now or (self._monarch_active and not meal_now)
+        )
+        want_web = meal_now or (self._meal_active and not fin_now)
+        if want_monarch and want_web:
+            want_web = False  # can't share a turn — keep the MCP-safe path
+
+        # If Monarch's hosted MCP server is unreachable mid-turn the API rejects
+        # the whole request; rather than fail the answer we retry once with the
+        # MCP server detached, so the user still gets a (finance-less) reply.
+        allow_monarch = True
+        while True:
             base_kwargs: dict = dict(
                 model=CONFIG.anthropic_model,
                 max_tokens=MAX_TOKENS,
@@ -1163,51 +1208,70 @@ class ClaudeClient:
                 # calls on separate rounds instead.
                 tool_choice={"type": "auto", "disable_parallel_tool_use": True},
             )
-            stream_fn = self._client.messages.stream
+            try:
+                return self._run_turn(
+                    base_kwargs, want_monarch, want_web, allow_monarch,
+                    on_delta, on_reset,
+                )
+            except _MonarchUnavailable as exc:
+                log.warning(
+                    "Monarch MCP server unreachable; retrying without finance data: %s",
+                    exc.__cause__,
+                )
+                del self.history[history_snapshot + 1:]  # keep the user message
+                allow_monarch = False
+                continue
+            except Exception as exc:  # noqa: BLE001
+                log.error("Claude API call failed: %s", exc)
+                # Roll back the entire failed turn (the user message plus any
+                # partial assistant/tool_result exchanges already appended this
+                # round) so a dangling tool_use can never linger into the next
+                # request — truncating to the pre-turn length handles that
+                # regardless of which round the failure happened in.
+                del self.history[history_snapshot:]
+                return f"⚠️ Error contacting Claude: {exc}"
 
-            # The Monarch MCP path needs parallel tool use DISABLED (so a local
-            # tool_use and an mcp_tool_use never land in the same turn and leave
-            # a dangling block); the web-search path needs it ENABLED (the API
-            # rejects disable_parallel_tool_use alongside that programmatic
-            # server tool). Those requirements are mutually exclusive, so at
-            # most one may attach per turn. Both flags stay sticky for the
-            # session, so we pick per-turn by the *current* message's topic:
-            # finance wins a finance message, meal wins a meal message, and a
-            # neutral follow-up favors Monarch's parallel-safe path.
-            fin_now = _looks_financial(user_message)
-            meal_now = _looks_meal_related(user_message)
-            if fin_now:
-                self._monarch_active = True
-            if meal_now:
-                self._meal_active = True
+    def _run_turn(
+        self,
+        base_kwargs: dict,
+        want_monarch: bool,
+        want_web: bool,
+        allow_monarch: bool,
+        on_delta: Callable[[str], None] | None,
+        on_reset: Callable[[], None] | None,
+    ) -> str:
+        """Run one full tool-use loop and return the assistant's reply.
 
-            want_monarch = CONFIG.monarch_enabled and (
-                fin_now or (self._monarch_active and not meal_now)
-            )
-            want_web = meal_now or (self._meal_active and not fin_now)
-            if want_monarch and want_web:
-                want_web = False  # can't share a turn — keep the MCP-safe path
+        Attaches the Monarch MCP server (or web search) per the want_* flags.
+        Raises ``_MonarchUnavailable`` if the MCP server can't be reached so the
+        caller can retry without it; any other failure propagates for the caller
+        to roll back and surface.
+        """
+        full_text = ""
+        stream_fn = self._client.messages.stream
+        monarch_attached = False
+        if want_monarch and allow_monarch:
+            try:
+                from integrations.monarch_oauth import get_monarch_token
+                base_kwargs["mcp_servers"] = [{
+                    "type": "url",
+                    "name": "monarch",
+                    "url": _MONARCH_MCP_URL,
+                    "authorization_token": get_monarch_token(),
+                }]
+                base_kwargs["betas"] = [_MCP_BETA]
+                stream_fn = self._client.beta.messages.stream
+                monarch_attached = True
+                log.info("using beta endpoint with monarch mcp_servers attached")
+            except Exception as exc:
+                log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
+        elif want_web:
+            base_kwargs["tools"] = TOOLS + [_WEB_SEARCH_TOOL]
+            base_kwargs["tool_choice"] = {"type": "auto"}
+            base_kwargs["max_tokens"] = _MEAL_MAX_TOKENS
+            log.info("web search tool attached (meal-related conversation)")
 
-            if want_monarch:
-                try:
-                    from integrations.monarch_oauth import get_monarch_token
-                    base_kwargs["mcp_servers"] = [{
-                        "type": "url",
-                        "name": "monarch",
-                        "url": _MONARCH_MCP_URL,
-                        "authorization_token": get_monarch_token(),
-                    }]
-                    base_kwargs["betas"] = [_MCP_BETA]
-                    stream_fn = self._client.beta.messages.stream
-                    log.info("using beta endpoint with monarch mcp_servers attached")
-                except Exception as exc:
-                    log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
-            elif want_web:
-                base_kwargs["tools"] = TOOLS + [_WEB_SEARCH_TOOL]
-                base_kwargs["tool_choice"] = {"type": "auto"}
-                base_kwargs["max_tokens"] = _MEAL_MAX_TOKENS
-                log.info("web search tool attached (meal-related conversation)")
-
+        try:
             # ── Bounded tool-use loop: keep tools/mcp_servers attached on every
             # round so local tools (e.g. load_knowledge_pool) and the Monarch
             # MCP tool can both be used for one question, just sequentially.
@@ -1297,11 +1361,9 @@ class ClaudeClient:
             return full_text
 
         except Exception as exc:  # noqa: BLE001
-            log.error("Claude API call failed: %s", exc)
-            # Roll back the entire failed turn (the user message plus any
-            # partial assistant/tool_result exchanges already appended this
-            # round) so a dangling tool_use can never linger into the next
-            # request — truncating to the pre-turn length handles that
-            # regardless of which round the failure happened in.
-            del self.history[history_snapshot:]
-            return f"⚠️ Error contacting Claude: {exc}"
+            # A transient Monarch MCP outage is recoverable — signal the caller
+            # to retry without it. Everything else propagates for the caller to
+            # roll back the turn and surface a readable error.
+            if monarch_attached and _is_mcp_connection_error(exc):
+                raise _MonarchUnavailable from exc
+            raise
