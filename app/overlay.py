@@ -118,6 +118,9 @@ class _JSApi:
     def set_focused(self, is_focused: bool) -> None:
         self._overlay._set_focused(is_focused)
 
+    def toggle_tts(self) -> None:
+        self._overlay._toggle_tts()
+
 
 class Overlay:
     def __init__(
@@ -125,6 +128,7 @@ class Overlay:
         claude_client,
         recorder,
         transcriber,
+        speaker=None,
         on_state_change: Callable[[str], None] | None = None,
         on_quit: Callable[[], None] | None = None,
     ) -> None:
@@ -133,11 +137,16 @@ class Overlay:
         self.claude = claude_client
         self.recorder = recorder
         self.transcriber = transcriber
+        self.speaker = speaker
         self.on_state_change = on_state_change
         self.on_quit = on_quit
 
         self._visible = False
         self._recording = False
+        # TTS starts on only if both opted-in via config AND actually available.
+        self._tts_enabled = bool(
+            CONFIG.tts_enabled and speaker is not None and speaker.available
+        )
         self._win_x, self._win_y = self._initial_position()
         self._current_alpha: int = WINDOW_ALPHA_IDLE
         self._alpha_cancel: threading.Event | None = None
@@ -178,6 +187,11 @@ class Overlay:
                 "voice disabled (recorder=%s, stt=%s)",
                 self.recorder.available, self.transcriber.available,
             )
+        tts_ok = self.speaker is not None and self.speaker.available
+        self._eval("setTtsAvailable", tts_ok)
+        self._eval("setTTSEnabled", self._tts_enabled)
+        if not tts_ok:
+            log.info("TTS disabled (speaker unavailable)")
         # pywebview only wires up real per-pixel transparency on EdgeChromium if
         # the window is shown (not created with hidden=True) — see the "hack to
         # make transparent window work" in its winforms backend. So we start
@@ -338,6 +352,9 @@ class Overlay:
     # ── Input handling ────────────────────────────────────────────────────────
 
     def _submit(self, text: str) -> None:
+        # Barge-in: never let JARVIS talk over a new request.
+        if self.speaker is not None:
+            self.speaker.stop()
         self._append_message("user", text)
         self._eval("startAssistantMessage")
         self.set_status(STATUS_THINKING)
@@ -351,12 +368,26 @@ class Overlay:
             # half-formed answer fill in token by token is exactly what we don't
             # want here.
             reply = self.claude.send(text)
+            # Start speaking as the reply reveals (Speaker cleans markdown and
+            # plays on its own thread, so this doesn't block the UI update).
+            if self._tts_enabled and self.speaker is not None:
+                self.speaker.speak(reply)
             self._eval("finishAssistantMessage", reply)
             self.set_status(STATUS_DONE)
             self._set_state("idle")
             self._eval("setInputsEnabled", True)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _toggle_tts(self) -> None:
+        """Flip whether JARVIS reads replies aloud; stop any speech when muting."""
+        if self.speaker is None or not self.speaker.available:
+            return
+        self._tts_enabled = not self._tts_enabled
+        if not self._tts_enabled:
+            self.speaker.stop()
+        self._eval("setTTSEnabled", self._tts_enabled)
+        log.info("TTS %s", "on" if self._tts_enabled else "off")
 
     # ── Voice ─────────────────────────────────────────────────────────────────
 
@@ -369,6 +400,9 @@ class Overlay:
     def _start_recording(self) -> None:
         if not self.recorder.available or self._recording:
             return
+        # Stop any in-progress speech so it doesn't bleed into the mic.
+        if self.speaker is not None:
+            self.speaker.stop()
         if self.recorder.start():
             self._recording = True
             self.set_status(STATUS_LISTENING)

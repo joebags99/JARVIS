@@ -107,6 +107,28 @@ class Config:
         default_factory=lambda: _get("AUDIO_INPUT_DEVICE", "")
     )
 
+    # ── Text-to-speech (optional) ────────────────────────────────────────────
+    # Read replies aloud. Off by default; toggled at runtime via the speaker
+    # button or the tray. Engine: "edge" (free neural, online) | "system"
+    # (pyttsx3, offline/robotic) | "elevenlabs" (premium, needs an API key).
+    tts_enabled: bool = field(
+        default_factory=lambda: _get("TTS_ENABLED").lower() in ("true", "1", "yes")
+    )
+    tts_engine: str = field(default_factory=lambda: _get("TTS_ENGINE", "edge"))
+    # Engine-specific voice id/name. Blank → the backend's own default
+    # (edge: en-GB-RyanNeural, system: OS default, elevenlabs: ELEVENLABS_VOICE_ID).
+    tts_voice: str = field(default_factory=lambda: _get("TTS_VOICE"))
+    # pyttsx3 speaking rate (words per minute); ignored by the other engines.
+    tts_rate: int = field(default_factory=lambda: _get_int("TTS_RATE", 175))
+    # ElevenLabs (only used when tts_engine == "elevenlabs").
+    elevenlabs_api_key: str = field(default_factory=lambda: _get("ELEVENLABS_API_KEY"))
+    elevenlabs_voice_id: str = field(
+        default_factory=lambda: _get("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
+    )
+    elevenlabs_model: str = field(
+        default_factory=lambda: _get("ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+    )
+
     # Google Calendar
     google_credentials_path: str = field(
         default_factory=lambda: _get("GOOGLE_CREDENTIALS_PATH", "credentials.json")

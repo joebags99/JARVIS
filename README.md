@@ -19,6 +19,9 @@ calendars, and meeting notes.
   (`#0f0f0f` + cyan `#00bcd4`). Closes on `Esc` or click-away.
 - **Type or talk** — push-to-talk voice via local `faster-whisper` (no audio
   ever leaves your machine; transcription is free and offline).
+- **Talk back (optional)** — JARVIS can read replies aloud, off by default and
+  toggled live with the speaker button or the tray. Pick your engine: free
+  neural `edge-tts`, fully-offline `pyttsx3`, or premium ElevenLabs.
 - **Context-aware** — assembles a system prompt from your `context/*.md` files,
   Google + Outlook calendars (next 7 days), recent `notes/`, and the date/time.
 - **Meal prep** — plan dinners two weeks at a time in conversation (with real
@@ -151,6 +154,22 @@ email"). Ask things like "any unread from Sam this week across my inboxes?" or
 > that the tokens are cached and it's silent. If a window picks the wrong Google
 > login, delete that account's file under `tokens/google_mail/` and try again.
 
+### 7d. (Optional) Spoken replies (TTS)
+JARVIS can read answers aloud. It's **off by default** — turn it on live with the
+speaker button in the overlay or the **Speak Replies** tray item, or start it on
+with `TTS_ENABLED=true`. Choose an engine with `TTS_ENGINE` and install just what
+it needs:
+- **`edge`** (default) — free, natural neural voices via `edge-tts`. Needs
+  `edge-tts` + `miniaudio` and an internet connection. Note the reply text is
+  sent to Microsoft (unlike the fully-local speech-to-text).
+- **`system`** — fully offline via `pyttsx3` and your OS voices. Private and
+  free, but a more robotic voice. Nothing leaves your machine.
+- **`elevenlabs`** — premium, most expressive. Set `ELEVENLABS_API_KEY` (and
+  optionally `ELEVENLABS_VOICE_ID`); uses only `requests`.
+
+Speech stops automatically when you send a new message or start the mic, so
+JARVIS never talks over you.
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
@@ -205,6 +224,10 @@ notes from the 16th and add any action items to Todoist."
 | `JARVIS_MAX_CONTEXT_CHARS` | Hard cap on assembled context (default 32000). |
 | `JARVIS_TIMEZONE` | IANA zone override for calendar events (blank = auto-detect). |
 | `WHISPER_MODEL` | `tiny` / `base` / `small` / `medium`. |
+| `TTS_ENABLED` | `true` to start with spoken replies on (toggle live anytime). Default off. |
+| `TTS_ENGINE` | `edge` (free neural) / `system` (offline pyttsx3) / `elevenlabs` (premium). |
+| `TTS_VOICE` | Engine-specific voice (blank = engine default). |
+| `ELEVENLABS_API_KEY` | Required only when `TTS_ENGINE=elevenlabs`. |
 | `GOOGLE_CREDENTIALS_PATH` | Path to Google OAuth `credentials.json`. |
 | `OUTLOOK_CLIENT_ID` / `_TENANT_ID` / `_CLIENT_SECRET` | Azure app registration. |
 | `OUTLOOK_ICS_URL` | Published calendar ICS link — no-Azure fallback, busy/free only. |
@@ -241,6 +264,10 @@ git status --ignored
 **Voice button is disabled.** Either `sounddevice`/`faster-whisper` aren't
 installed or no microphone was detected. Text input always works. On first voice
 use, the Whisper model downloads automatically (this can take a minute).
+
+**Speaker button is greyed out.** TTS deps aren't installed or the engine isn't
+configured. For `edge`, install `edge-tts` + `miniaudio`; for `system`, install
+`pyttsx3`; for `elevenlabs`, set `ELEVENLABS_API_KEY`. Text replies always work.
 
 **Calendar shows nothing.** Calendars are optional and skip silently when not
 configured. Check `logs/jarvis.log` for auth details.

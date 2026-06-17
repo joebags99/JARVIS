@@ -596,3 +596,9 @@ body.has-messages #hud {
   background: var(--error);
   color: var(--text);
 }
+
+/* Speaker toggle lit while TTS is on. */
+#speak-btn.active {
+  color: var(--accent);
+  box-shadow: 0 0 10px rgba(0, 229, 255, 0.45), 0 0 1px var(--accent) inset;
+}

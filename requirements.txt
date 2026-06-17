@@ -15,6 +15,13 @@ scipy>=1.11.0
 numpy>=1.24.0
 faster-whisper>=1.0.0
 
+# ── Text-to-speech (optional — only what your chosen TTS_ENGINE needs) ──
+# edge  → edge-tts + miniaudio (free neural, online).  system → pyttsx3 (offline).
+# elevenlabs needs no extra package (uses requests, already above).
+edge-tts>=6.1.0
+miniaudio>=1.59
+pyttsx3>=2.90
+
 # ── Notes ingestion ──────────────────────────────────────────
 watchdog>=4.0.0
 

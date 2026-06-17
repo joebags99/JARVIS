@@ -7,6 +7,7 @@ const statusEl = document.getElementById("status");
 const entry = document.getElementById("entry");
 const sendBtn = document.getElementById("send-btn");
 const micBtn = document.getElementById("mic-btn");
+const speakBtn = document.getElementById("speak-btn");
 const clearBtn = document.getElementById("clear-btn");
 const closeBtn = document.getElementById("close-btn");
 const header = document.getElementById("header");
@@ -249,6 +250,17 @@ function setVoiceAvailable(available) {
   micBtn.disabled = !available;
 }
 
+// Speaker (TTS) toggle — filled speaker + cyan glow when on, muted when off.
+function setTTSEnabled(enabled) {
+  speakBtn.classList.toggle("active", enabled);
+  speakBtn.innerHTML = enabled ? "&#128266;" : "&#128263;";
+  speakBtn.title = enabled ? "Speaking replies (click to mute)" : "Speak replies";
+}
+
+function setTtsAvailable(available) {
+  speakBtn.disabled = !available;
+}
+
 // ── Input handling ───────────────────────────────────────────────────────
 
 function autoResize() {
@@ -273,6 +285,7 @@ entry.addEventListener("keydown", (e) => {
 });
 sendBtn.addEventListener("click", sendMessage);
 micBtn.addEventListener("click", () => callApi("toggle_recording"));
+speakBtn.addEventListener("click", () => callApi("toggle_tts"));
 clearBtn.addEventListener("click", () => callApi("clear_chat"));
 closeBtn.addEventListener("click", () => callApi("close_overlay"));
 
