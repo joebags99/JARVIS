@@ -34,7 +34,7 @@ _MEAL_MAX_TOKENS = 4096
 # budget rather than running a malformed call. Output is billed per token
 # actually generated, so a high ceiling costs nothing on normal short replies.
 _MAX_TOKENS_CEILING = 8192
-MAX_TOOL_ROUNDS = 8  # safety cap on local tool_use <-> tool_result round trips
+MAX_TOOL_ROUNDS = 16  # safety cap on local tool_use <-> tool_result round trips
 
 _MONARCH_MCP_URL = "https://api.monarch.com/mcp"
 _MCP_BETA = "mcp-client-2025-04-04"
@@ -1293,14 +1293,13 @@ class ClaudeClient:
                 max_tokens=MAX_TOKENS,
                 system=system_prompt,
                 tools=TOOLS,
-                # A local tool_use always forces the API to stop the turn (it
-                # needs a client-supplied tool_result before continuing). If the
-                # model also requested the remote Monarch MCP tool in that same
-                # turn, the server never gets to resolve/pair it before the stop,
-                # leaving a dangling mcp_tool_use block that breaks the next
-                # call. Disabling parallel tool use keeps local and MCP tool
-                # calls on separate rounds instead.
-                tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+                # Allow parallel tool use so the model can batch several actions
+                # (e.g. one note + six to-dos) into a single round instead of
+                # burning one round each and exhausting MAX_TOOL_ROUNDS. Only the
+                # Monarch MCP path re-disables this (in _run_turn), where a local
+                # tool_use sharing a turn with an mcp_tool_use leaves a dangling,
+                # unpaired block.
+                tool_choice={"type": "auto"},
             )
             try:
                 return self._run_turn(
@@ -1342,6 +1341,7 @@ class ClaudeClient:
         to roll back and surface.
         """
         full_text = ""
+        last_pretext = ""  # most recent pre-tool narration, kept as a fallback
         stream_fn = self._client.messages.stream
         monarch_attached = False
         if want_monarch and allow_monarch:
@@ -1354,6 +1354,10 @@ class ClaudeClient:
                     "authorization_token": get_monarch_token(),
                 }]
                 base_kwargs["betas"] = [_MCP_BETA]
+                # Keep local and MCP tool calls on separate rounds so a local
+                # tool_use never shares a turn with an mcp_tool_use (which would
+                # leave a dangling, unpaired block).
+                base_kwargs["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
                 stream_fn = self._client.beta.messages.stream
                 monarch_attached = True
                 log.info("using beta endpoint with monarch mcp_servers attached")
@@ -1417,6 +1421,11 @@ class ClaudeClient:
                 # answer comes after the tool result, not before it. Tell the UI
                 # to roll its live stream back to "thinking" so the discarded
                 # text doesn't linger on screen until the next round renders.
+                # Keep the most recent narration, though: if we later exhaust the
+                # round budget and the forced wrap-up comes back empty, it's the
+                # best summary we have of what just happened.
+                if full_text.strip():
+                    last_pretext = full_text
                 if full_text and on_reset:
                     on_reset()
                 full_text = ""
@@ -1470,7 +1479,18 @@ class ClaudeClient:
                     log.info("forced final response after exhausting tool rounds (%d chars)", len(full_text))
                 except Exception as exc:  # noqa: BLE001
                     log.error("forced final response failed: %s", exc)
-                    return "Done — but I couldn't generate a summary. Check your calendar/tasks to confirm."
+                    full_text = ""
+                # The model often goes quiet after a long run of actions (it
+                # already "narrated" in pre-tool text we discarded each round).
+                # Fall back to that last narration, or a generic confirmation,
+                # so the user never gets an empty reply.
+                if not full_text.strip():
+                    full_text = last_pretext.strip() or (
+                        "Done — I've completed those actions. Check your "
+                        "calendar, notes, and to-dos to confirm."
+                    )
+                    if on_delta:
+                        on_delta(full_text)
 
             log.info("response received (%d chars)", len(full_text))
             return full_text
