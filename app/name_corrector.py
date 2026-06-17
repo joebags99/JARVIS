@@ -30,9 +30,62 @@ log = get_logger("names")
 MIN_FUZZY_LEN = 4     # don't fuzzy-match very short tokens
                       # (fuzzy cutoff is CONFIG.name_fuzzy_cutoff)
 
-# Cache: (canonical_names, alias_map). alias_map maps a lowercased variant OR
-# lowercased canonical -> the canonical spelling. None means "not loaded yet".
-_cache: tuple[list[str], dict[str, str]] | None = None
+# Ordinary English words and common given names are never fuzzy-corrected: they
+# are correctly-spelled real words/people, not misspellings of a fantasy name,
+# so "Mark" must stay "Mark" (not become "Marik") in a meeting note. Exact,
+# explicitly-listed variants still apply — this only gates the guessy fuzzy
+# pass. Users can extend it with an "ignore" list in name_corrections.json.
+_COMMON_WORDS = frozenset("""
+about above after again against also always another answer anyone area around
+away back because been before being below best better between both bring call
+came case change come could course current daily date days deal does done down
+during each early else even ever every example feel find first follow form
+found from full give goes going good great group hand have having held help
+here high home hour house however idea info into item just keep kind know last
+late later lead least left less life like line list little long look made make
+many mark mean meet might more most move much must name need never next none
+note nothing only open order other over part past place plan play point present
+problem program provide question quite rather read real really result review
+right room same says school seem seen send sent several should show side since
+some soon sort still such sure take talk team tell than that them then there
+these they thing think this those time today together took toward turn under
+until upon used user very view want week well went were what when where which
+while will with word work would year your
+monday tuesday wednesday thursday friday saturday sunday
+january february march april june july august september october november december
+aaron adam adrian alan albert alex alexander alice amanda amber amy andrea
+andrew angela anna anne anthony april ashley austin barbara becky ben benjamin
+beth bill billy bob bobby brad bradley brandon brenda brian bruce bryan caleb
+cameron carl carol caroline carrie casey catherine charles charlie cheryl chris
+christian christina christine christopher cindy claire clara cody colin connor
+craig crystal dan dana daniel danny darren dave david dawn dean deborah debra
+denise dennis derek diana diane don donald donna doug douglas dylan eddie edward
+elaine eleanor elizabeth ellen emily emma eric erica erin ethan eugene evan
+evelyn frank fred gabriel gary george gerald gina glenn gloria grace greg
+gregory hannah harold harry heather heidi helen henry holly howard ian isaac
+jack jackie jacob jake james jamie jane janet janice jared jason jean jeff
+jeffrey jennifer jenny jeremy jerry jesse jessica jill jimmy joan joanne joel
+john johnny jonathan jordan joseph josh joshua joyce juan judith judy julia
+julie justin kaitlyn karen kari karl kate katherine kathleen kathy katie kayla
+keith kelly kenneth kevin kimberly kyle larry laura lauren laurie lawrence leon
+leonard leslie linda lisa lloyd logan lori louis lucas luke lynn marc marcus
+margaret maria marie marilyn martha martin mary mason matt matthew megan melissa
+michael micheal michelle mike miranda mitchell molly nancy natalie nathan neil
+nicholas nick nicole noah norman olivia oscar pamela patricia patrick paul paula
+peggy peter philip phillip rachel ralph randy raymond rebecca regina renee
+richard ricky robert roberta robin roger ronald rosa russell ruth ryan sam
+samantha samuel sandra sara sarah scott sean seth shane shannon sharon shawn
+sheila shirley sophia stacey stanley stephanie stephen steve steven susan tammy
+tanya taylor teresa terry theresa thomas timothy tina todd tommy tony tracy
+travis trevor troy tyler valerie vanessa victor victoria vincent virginia walter
+wanda warren wayne wendy william willie zachary
+""".split())
+
+# Cache: (canonical_names, alias_map, fuzzy_stoplist). alias_map maps a
+# lowercased variant OR lowercased canonical -> the canonical spelling.
+# fuzzy_stoplist is _COMMON_WORDS plus the user's "ignore" list (lowercased).
+# None means "not loaded yet".
+_cache: tuple[list[str], dict[str, str], frozenset[str]] | None = None
 
 
 def reload() -> None:
@@ -41,7 +94,7 @@ def reload() -> None:
     _cache = None
 
 
-def _load() -> tuple[list[str], dict[str, str]]:
+def _load() -> tuple[list[str], dict[str, str], frozenset[str]]:
     global _cache
     if _cache is not None:
         return _cache
@@ -49,6 +102,7 @@ def _load() -> tuple[list[str], dict[str, str]]:
     path = ROOT_DIR / CONFIG.name_corrections_file
     canon: list[str] = []
     aliases: dict[str, str] = {}
+    extra_ignore: set[str] = set()
     if path.exists():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -63,17 +117,24 @@ def _load() -> tuple[list[str], dict[str, str]]:
                     variant = str(variant).strip()
                     if variant:
                         aliases[variant.lower()] = canonical
+            for word in data.get("ignore", []) or []:
+                word = str(word).strip().lower()
+                if word:
+                    extra_ignore.add(word)
             log.info("loaded %d canonical name(s) for correction", len(canon))
         except Exception as exc:  # noqa: BLE001
             log.warning("could not read %s: %s", path.name, exc)
 
-    _cache = (canon, aliases)
+    # An explicitly-listed variant should still win over the stoplist, so never
+    # let a known alias block its own fuzzy fallback.
+    stoplist = frozenset((_COMMON_WORDS | extra_ignore) - set(aliases))
+    _cache = (canon, aliases, stoplist)
     return _cache
 
 
 def hotwords() -> str:
     """Space-joined canonical names (+ variants) to bias Whisper. "" if none."""
-    canon, aliases = _load()
+    canon, aliases, _ = _load()
     if not canon:
         return ""
     # Include variants too — they're real tokens the model might lean toward.
@@ -91,7 +152,7 @@ def normalize_names(text: str) -> str:
     """Correct known/likely-misspelled names in *text*. Never raises."""
     if not text:
         return text
-    canon, aliases = _load()
+    canon, aliases, stoplist = _load()
     if not aliases:
         return text
 
@@ -119,6 +180,7 @@ def normalize_names(text: str) -> str:
                 len(token) < MIN_FUZZY_LEN
                 or not token[:1].isupper()
                 or low in aliases          # already canonical/known variant
+                or low in stoplist         # ordinary word/common name — leave it
             ):
                 return token
             hit = difflib.get_close_matches(

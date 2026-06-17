@@ -196,9 +196,17 @@ Each canonical spelling lists its known misspellings:
 
 Listed variants are corrected exactly; a conservative fuzzy matcher also catches
 new, unlisted close variants (capitalized, near-exact only — normal prose is left
-alone). The canonical names are also fed to Whisper as hints so transcription
-gets them right more often to begin with. Edit the file and hit **Reload Context**
-(tray) to apply changes without restarting. The file is gitignored.
+alone). Ordinary English words and common first names are never auto-corrected, so
+"Mark" stays "Mark" instead of becoming "Marik"; add your own exceptions (coworkers,
+terms close to a fantasy name) under an optional `"ignore"` list:
+
+```json
+{ "names": { "Marik": ["Marikh"] }, "ignore": ["Sharyl", "Daedabyte"] }
+```
+
+The canonical names are also fed to Whisper as hints so transcription gets them
+right more often to begin with. Edit the file and hit **Reload Context** (tray) to
+apply changes without restarting. The file is gitignored.
 
 ### 8. Add your personal context
 ```bash
