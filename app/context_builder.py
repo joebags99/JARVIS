@@ -26,10 +26,21 @@ from pathlib import Path
 
 from .config import CONFIG, CONTEXT_DIR, ROOT_DIR
 from .logging_setup import get_logger
+from .persona import PERSONA
 
 log = get_logger("context")
 
 PROFILE_FILENAME = "profile.md"
+PERSONA_FILENAME = "persona.md"
+
+# Fallback voice when the user hasn't written their own context/persona.md.
+DEFAULT_PERSONA = (
+    "You are JARVIS from the Iron Man films: an unflappable, hyper-competent "
+    "British AI butler. You are precise and efficient, address the user as "
+    '"Sir" where it fits, and carry a dry, understated wit. You never ramble, '
+    "never grovel, and never invent facts; when you don't know something you say "
+    "so plainly. The voice dials below fine-tune this baseline."
+)
 
 
 class ContextBuilder:
@@ -68,10 +79,13 @@ class ContextBuilder:
             return "(No profile.md found in /context. Add one to personalize JARVIS.)"
         return profile
 
+    def _persona_section(self) -> str:
+        return self.static_context.get(PERSONA_FILENAME, "").strip() or DEFAULT_PERSONA
+
     def _other_context_section(self) -> str:
         parts = []
         for name, body in self.static_context.items():
-            if name == PROFILE_FILENAME or not body:
+            if name in (PROFILE_FILENAME, PERSONA_FILENAME) or not body:
                 continue
             title = Path(name).stem.replace("_", " ").replace("-", " ").title()
             parts.append(f"### {title}\n{body}")
@@ -117,12 +131,12 @@ class ContextBuilder:
         name = CONFIG.user_name
         stable_sections = [
             (
-                f"You are JARVIS, a personal AI assistant for {name}. You are smart, "
-                "concise, and proactive. You have full awareness of the user's "
-                "schedule, roles, and notes — but you fetch data on demand using "
-                "tools rather than loading everything upfront. Only call a tool when "
-                "the question actually needs that data."
+                f"You are JARVIS, a personal AI assistant for {name}. You have full "
+                "awareness of the user's schedule, roles, and notes — but you fetch "
+                "data on demand using tools rather than loading everything upfront. "
+                "Only call a tool when the question actually needs that data."
             ),
+            f"## Your Persona & Voice\n{self._persona_section()}",
             f"## Who You Are Assisting\n{self._profile_section()}",
         ]
 
@@ -141,13 +155,18 @@ class ContextBuilder:
         )
 
         stable_text = self._truncate("\n\n".join(stable_sections))
-        # Volatile: date/time changes every minute, so it must sit *after* the
-        # cache breakpoint or it would invalidate the cached prefix each minute.
-        datetime_text = f"## Today's Date & Time\n{self._datetime_section()}"
+        # Volatile: both the date/time (changes every minute) and the voice dials
+        # (the user can nudge them mid-conversation) must sit *after* the cache
+        # breakpoint, or they'd invalidate the large cached prefix on every tick
+        # or tweak.
+        volatile_text = (
+            f"## Today's Date & Time\n{self._datetime_section()}\n\n"
+            f"## Voice Dials (current)\n{PERSONA.render()}"
+        )
 
         log.info(
             "assembled system prompt (%d stable + %d volatile chars)",
-            len(stable_text), len(datetime_text),
+            len(stable_text), len(volatile_text),
         )
         return [
             {
@@ -155,7 +174,7 @@ class ContextBuilder:
                 "text": stable_text,
                 "cache_control": {"type": "ephemeral"},
             },
-            {"type": "text", "text": datetime_text},
+            {"type": "text", "text": volatile_text},
         ]
 
     def _truncate(self, prompt: str) -> str:

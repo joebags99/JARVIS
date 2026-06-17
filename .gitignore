@@ -22,6 +22,9 @@ knowledge_pools.json
 # Meal-prep cycles (your dinner plans/shopping lists)
 meal_plans.json
 
+# JARVIS voice-dial defaults (persisted personality tweaks)
+persona_dials.json
+
 # Fantasy/proper-name corrections glossary (your character names)
 name_corrections.json
 

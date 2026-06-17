@@ -625,6 +625,59 @@ TOOLS = [
         },
     },
     {
+        "name": "set_personality",
+        "description": (
+            "Adjust how you (JARVIS) speak by changing one of your voice dials, "
+            "each 0-100. Call this whenever the user asks you to change your tone or "
+            "personality — e.g. 'turn up the sarcasm', 'humor down 15%', 'max "
+            "formality', 'be more concise', 'stop calling me Sir', 'reset your "
+            "personality'. Dials: brevity (terseness), formality (how refined and "
+            "butler-like, e.g. saying 'Sir'), humor (jokes/levity), sarcasm (dry "
+            "wit), proactivity (anticipating needs / volunteering suggestions). The "
+            "current value of each dial is shown in the Voice Dials section of your "
+            "system prompt — use it to resolve relative requests: for 'down 15%' "
+            "pass change_by:-15, for 'a bit more' pass a small positive change_by, "
+            "for an explicit level pass set_to. Changes apply to this session only "
+            "unless persist is true. To restore every dial to its default, pass "
+            "dial:'reset'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dial": {
+                    "type": "string",
+                    "enum": [
+                        "brevity", "formality", "humor", "sarcasm",
+                        "proactivity", "reset",
+                    ],
+                    "description": "Which dial to change, or 'reset' to restore all defaults.",
+                },
+                "set_to": {
+                    "type": "integer",
+                    "description": (
+                        "Absolute new value 0-100. Use for explicit levels: 'max "
+                        "formality' -> 100, 'no sarcasm' -> 0, 'set humor to 10' -> 10."
+                    ),
+                },
+                "change_by": {
+                    "type": "integer",
+                    "description": (
+                        "Relative change in points, e.g. -15 for 'humor down 15%', "
+                        "+20 for 'a lot more sarcasm'. Ignored when set_to is given."
+                    ),
+                },
+                "persist": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, save as the new default for future sessions too. "
+                        "Default false — applies to the current session only."
+                    ),
+                },
+            },
+            "required": ["dial"],
+        },
+    },
+    {
         "name": "load_knowledge_pool",
         "description": (
             "Load content from a named Google Docs knowledge pool to help answer the "
@@ -860,6 +913,14 @@ def _execute_tool(name: str, input_data: dict) -> str:
             dinner_time=input_data.get("dinner_time") or meal_prep.DEFAULT_DINNER_TIME,
             lunch_time=input_data.get("lunch_time") or meal_prep.DEFAULT_LUNCH_TIME,
         )
+    if name == "set_personality":
+        from .persona import PERSONA
+        return PERSONA.adjust(
+            dial=input_data["dial"],
+            set_to=input_data.get("set_to"),
+            change_by=input_data.get("change_by"),
+            persist=bool(input_data.get("persist", False)),
+        )
     if name == "load_knowledge_pool":
         import json
         from .config import ROOT_DIR
@@ -1037,6 +1098,10 @@ class ClaudeClient:
         self.history.clear()
         self._monarch_active = False
         self._meal_active = False
+        # Voice-dial tweaks are scoped to a conversation ("...for this convo"),
+        # so a fresh session restores the saved defaults.
+        from .persona import PERSONA
+        PERSONA.reset()
         log.info("session history cleared")
 
     def reload_context(self) -> None:

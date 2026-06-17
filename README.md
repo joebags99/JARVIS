@@ -25,6 +25,12 @@ calendars, and meeting notes.
 - **Name corrections** — a glossary of your fantasy/proper names fixes Whisper's
   (and your typos') misspellings, and biases transcription toward the right
   spelling. "Cailynn" → "Kailin" everywhere it matters.
+- **Personality & voice** — a dedicated `context/persona.md` doc defines exactly
+  how JARVIS talks (movie-accurate, "Sir", short and dry by default), plus five
+  live **voice dials** — brevity, formality, humor, sarcasm, proactivity — you
+  can nudge mid-conversation: *"turn humor down 15%"*, *"max formality"*,
+  *"reset your personality"*. Tweaks last the session; ask him to remember one
+  and it sticks.
 - **Context-aware** — assembles a system prompt from your `context/*.md` files,
   Google + Outlook calendars (next 7 days), recent `notes/`, and the date/time.
 - **Meal prep** — plan dinners two weeks at a time in conversation (with real
@@ -201,6 +207,25 @@ cp context/profile.example.md context/profile.md
 Edit `context/profile.md` with your roles, jobs, and preferences. Add any other
 `.md` files to `context/` and they're automatically included. (All real
 `context/*.md` files are gitignored.)
+
+### 8b. (Optional) Tailor JARVIS's personality
+```bash
+cp context/persona.example.md context/persona.md
+```
+`persona.md` is the *character* doc — how JARVIS talks, separate from
+`profile.md` (which is about you). Skip it and he uses a movie-accurate default.
+
+Five **voice dials** (0–100) fine-tune him live, no file edit needed — just say:
+
+- *"Turn the sarcasm up to 70."*
+- *"Humor down 15% for this convo."*
+- *"Max brevity — just the facts."* / *"Stop calling me Sir."*
+- *"Reset your personality."*
+
+Dials are `brevity`, `formality`, `humor`, `sarcasm`, `proactivity`. Changes
+apply to the current session; ask him to *remember* one and it persists. To set
+the defaults directly, `cp persona_dials.example.json persona_dials.json` and
+edit the numbers (both gitignored).
 
 ### 9. Run it
 ```bash
