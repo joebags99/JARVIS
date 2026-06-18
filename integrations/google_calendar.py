@@ -75,34 +75,32 @@ def _user_tz() -> dt.tzinfo:
 def _start_end(iso: str, force_timezone: bool = False) -> dict:
     """Build a start/end dict for the Calendar API from an ISO date/datetime.
 
-    The model is asked to pass the user's local wall-clock time, but it's
-    unreliable about timezones — it often sends a naive time, or worse stamps a
-    local time with 'Z'/+00:00 without actually converting it (that's the
-    "10pm shows as 6pm" bug: 22:00 read as UTC = 18:00 Eastern). So we treat a
-    naive OR UTC-stamped time as the user's *local wall-clock* time and attach
-    the real local offset/zone ourselves. A genuine non-UTC offset (an explicit
-    "10pm Pacific") is honored as given.
+    The time the model passes is ALWAYS treated as the user's local wall-clock
+    time, and JARVIS attaches the user's zone itself — any offset the model put
+    on it is ignored. The model is too unreliable about timezones for a
+    single-user assistant: a naive time would default to UTC, and it sometimes
+    stamps a local time with an offset or 'Z' it never actually converted. Both
+    made "10pm" land at 6pm Eastern (22:00 read as UTC = 18:00 ET). Stripping to
+    the wall clock and re-localizing kills every variant of that bug.
 
-    Google also requires a timeZone on recurring events, so for those we emit
-    the wall-clock time plus an IANA timeZone (its recommended form).
+    (Set JARVIS_TIMEZONE if the user isn't in the machine's local zone.)
+
+    Google requires a timeZone on recurring events, so for those we emit the
+    wall-clock time plus an IANA timeZone (its recommended form).
     """
     if len(iso) == 10:
         return {"date": iso}
 
-    parsed = dt.datetime.fromisoformat(iso)
-    # A naive time, or a UTC offset the model almost certainly didn't mean, is
-    # reinterpreted as the user's local wall-clock time.
-    if parsed.tzinfo is None or parsed.utcoffset() == dt.timedelta(0):
-        wall = parsed.replace(tzinfo=None)
-        if force_timezone:  # recurring → wall time + IANA zone
-            return {"dateTime": wall.isoformat(), "timeZone": _default_timezone()}
-        local = wall.replace(tzinfo=_user_tz())
-        return {"dateTime": local.isoformat()}
+    # Keep only the wall-clock components; the user means their local time.
+    # (Normalize a trailing 'Z' so fromisoformat works on Python < 3.11 too.)
+    raw = iso.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    wall = dt.datetime.fromisoformat(raw).replace(tzinfo=None)
 
-    # Already carries a real (non-UTC) offset — trust it.
-    if force_timezone:
-        return {"dateTime": iso, "timeZone": _default_timezone()}
-    return {"dateTime": iso}
+    if force_timezone:  # recurring → wall time + IANA zone
+        return {"dateTime": wall.isoformat(), "timeZone": _default_timezone()}
+    return {"dateTime": wall.replace(tzinfo=_user_tz()).isoformat()}
 
 
 def _derive_end_iso(target: dict, new_start_iso: str) -> str:
@@ -395,6 +393,12 @@ def create_event(
             "start": _start_end(start_iso, force_timezone=bool(rrule)),
             "end": _start_end(end_iso, force_timezone=bool(rrule)),
         }
+        # Surface exactly what the model passed vs. what we send Google, so a
+        # lingering time-zone mismatch is diagnosable from the log.
+        log.info(
+            "create_event times: model start=%r end=%r -> %s / %s (tz=%s)",
+            start_iso, end_iso, body["start"], body["end"], _user_tz(),
+        )
         if description:
             body["description"] = description
         if location:
@@ -558,6 +562,13 @@ def update_event(
 
         if not patch:
             return "Error: no fields to update were specified."
+
+        if "start" in patch or "end" in patch:
+            log.info(
+                "update_event times: model start=%r end=%r -> %s / %s (tz=%s)",
+                new_start_iso, new_end_iso,
+                patch.get("start"), patch.get("end"), _user_tz(),
+            )
 
         # PATCH with the same body is idempotent — re-applying yields the same
         # result, so a retry is safe.
