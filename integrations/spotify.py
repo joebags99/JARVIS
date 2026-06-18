@@ -13,6 +13,9 @@ Transient API failures are retried with the same write-safe backoff as Todoist.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import time
 
 import requests
@@ -91,7 +94,11 @@ def _no_device() -> str:
 
 
 def _active_device_id() -> str | None:
-    """The active device id, or the first available one, or None."""
+    """The active device id, or the first available one, or None.
+
+    A device only appears here if Spotify is *running* somewhere — but it need
+    not be actively playing; an idle open app still counts and can be played to.
+    """
     devices = _request("GET", "/me/player/devices").json().get("devices", [])
     if not devices:
         return None
@@ -99,6 +106,41 @@ def _active_device_id() -> str | None:
         if device.get("is_active"):
             return device.get("id")
     return devices[0].get("id")
+
+
+def _launch_spotify(uri: str | None = None) -> None:
+    """Open the local Spotify app (optionally to a content URI) via the OS.
+
+    The Web API can't cold-start Spotify, but JARVIS runs on the user's machine,
+    so it can launch the desktop app — which then registers as a device we can
+    play to. Best-effort; never raises.
+    """
+    target = uri or "spotify:"
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(target)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", target])
+        else:
+            subprocess.Popen(["xdg-open", target])
+        log.info("launched Spotify app (%s)", target)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not launch Spotify app: %s", exc)
+
+
+def _wake_device(launch_uri: str | None = None, timeout: float = 10.0) -> str | None:
+    """Launch the Spotify app and wait for a playable device to appear."""
+    _launch_spotify(launch_uri)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(1.0)
+        try:
+            device_id = _active_device_id()
+        except Exception:  # noqa: BLE001
+            device_id = None
+        if device_id:
+            return device_id
+    return None
 
 
 def play_music(query: str, kind: str = "track") -> str:
@@ -110,10 +152,8 @@ def play_music(query: str, kind: str = "track") -> str:
         kind = "track"
 
     try:
-        device_id = _active_device_id()
-        if not device_id:
-            return _no_device()
-
+        # Resolve the item first so we have a URI to launch the app with if no
+        # device is open yet.
         results = _request(
             "GET", "/search", params={"q": query, "type": kind, "limit": 1}
         ).json()
@@ -121,20 +161,32 @@ def play_music(query: str, kind: str = "track") -> str:
         if not items:
             return f"Couldn't find a {kind} matching '{query}' on Spotify."
         item = items[0]
+        uri = item["uri"]
         name = item.get("name", "(unknown)")
         artists = ", ".join(a.get("name", "") for a in item.get("artists", []) if a)
 
         if kind == "track":
-            body = {"uris": [item["uri"]]}
+            body = {"uris": [uri]}
             label = name + (f" by {artists}" if artists else "")
         else:
-            body = {"context_uri": item["uri"]}
+            body = {"context_uri": uri}
             if kind == "album":
                 label = f"the album {name}" + (f" by {artists}" if artists else "")
             elif kind == "artist":
                 label = f"{name} (artist mix)"
             else:
                 label = f"the playlist {name}"
+
+        # If Spotify isn't open anywhere, launch the local app and wait for it to
+        # register as a device, rather than giving up.
+        device_id = _active_device_id()
+        if not device_id:
+            device_id = _wake_device(uri)
+        if not device_id:
+            return (
+                f"Spotify wasn't running, so I opened it — {label} should start "
+                "in a moment. If it doesn't, press play once and ask me again."
+            )
 
         _request("PUT", "/me/player/play", params={"device_id": device_id}, json=body)
         log.info("spotify playing %s: %s", kind, label)

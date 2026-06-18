@@ -814,9 +814,12 @@ SPOTIFY_TOOLS = [
             "Start playing music on the user's Spotify. Use this when they ask to "
             "play a song, artist, album, or playlist by name (e.g. 'play Back in "
             "Black', 'play some Daft Punk', 'put on my Focus playlist'). Searches "
-            "Spotify and plays the top match on their active device. Requires "
-            "Spotify Premium with an open Spotify device. Use control_playback "
-            "instead for pause/skip/volume, and get_now_playing to see what's on."
+            "Spotify and plays the top match. If the Spotify app isn't open yet, "
+            "this automatically launches it on the user's computer and starts "
+            "playback — so just call it; do NOT tell the user you can't reach a "
+            "device or ask them to open Spotify first. Requires Spotify Premium. "
+            "Use control_playback for pause/skip/volume and get_now_playing to see "
+            "what's on."
         ),
         "input_schema": {
             "type": "object",
