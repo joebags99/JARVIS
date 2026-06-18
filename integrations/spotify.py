@@ -14,6 +14,7 @@ Transient API failures are retried with the same write-safe backoff as Todoist.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -143,8 +144,61 @@ def _wake_device(launch_uri: str | None = None, timeout: float = 10.0) -> str | 
     return None
 
 
+# Matches a Spotify link or URI, e.g. "spotify:track:ID" or
+# "https://open.spotify.com/track/ID?si=...". Lets the user paste a link.
+_REF_RE = re.compile(
+    r"(?:open\.spotify\.com/|spotify:)(track|album|artist|playlist)[/:]([A-Za-z0-9]+)"
+)
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9 ]", " ", (text or "").lower()).split())
+
+
+def _parse_ref(query: str) -> tuple[str, str] | None:
+    """Return (kind, id) if *query* is/contains a Spotify link or URI, else None."""
+    m = _REF_RE.search(query or "")
+    return (m.group(1), m.group(2)) if m else None
+
+
+def _build_play(kind: str, item: dict) -> tuple[str, dict, str]:
+    """Return (uri, play-body, human label) for a track/album/artist/playlist."""
+    uri = item["uri"]
+    name = item.get("name", "(unknown)")
+    artists = ", ".join(a.get("name", "") for a in item.get("artists", []) if a)
+    if kind == "track":
+        return uri, {"uris": [uri]}, name + (f" by {artists}" if artists else "")
+    body = {"context_uri": uri}
+    if kind == "album":
+        label = f"the album {name}" + (f" by {artists}" if artists else "")
+    elif kind == "artist":
+        label = f"{name} (artist mix)"
+    else:
+        label = f"the playlist {name}"
+    return uri, body, label
+
+
+def _search_item(query: str, kind: str) -> dict | None:
+    """Find the best match. For tracks, prefer an exact title match over the
+    top (popularity-ranked) hit, so 'Back in Black' doesn't return the artist's
+    most-streamed song instead."""
+    limit = 5 if kind == "track" else 1
+    results = _request(
+        "GET", "/search", params={"q": query, "type": kind, "limit": limit}
+    ).json()
+    items = (results.get(_KIND_TYPES[kind]) or {}).get("items") or []
+    if not items:
+        return None
+    if kind == "track":
+        wanted = _norm(query)
+        for item in items:
+            if _norm(item.get("name", "")) == wanted:
+                return item
+    return items[0]
+
+
 def play_music(query: str, kind: str = "track") -> str:
-    """Search Spotify for *query* and play the top match. Never raises."""
+    """Play a Spotify track/album/artist/playlist by name, link, or URI. Never raises."""
     if not CONFIG.spotify_available:
         return _not_configured()
     kind = (kind or "track").lower()
@@ -152,30 +206,16 @@ def play_music(query: str, kind: str = "track") -> str:
         kind = "track"
 
     try:
-        # Resolve the item first so we have a URI to launch the app with if no
-        # device is open yet.
-        results = _request(
-            "GET", "/search", params={"q": query, "type": kind, "limit": 1}
-        ).json()
-        items = (results.get(_KIND_TYPES[kind]) or {}).get("items") or []
-        if not items:
-            return f"Couldn't find a {kind} matching '{query}' on Spotify."
-        item = items[0]
-        uri = item["uri"]
-        name = item.get("name", "(unknown)")
-        artists = ", ".join(a.get("name", "") for a in item.get("artists", []) if a)
-
-        if kind == "track":
-            body = {"uris": [uri]}
-            label = name + (f" by {artists}" if artists else "")
+        # A pasted Spotify link/URI plays exactly that item — no search guessing.
+        ref = _parse_ref(query)
+        if ref:
+            kind, ref_id = ref
+            item = _request("GET", f"/{kind}s/{ref_id}").json()
         else:
-            body = {"context_uri": uri}
-            if kind == "album":
-                label = f"the album {name}" + (f" by {artists}" if artists else "")
-            elif kind == "artist":
-                label = f"{name} (artist mix)"
-            else:
-                label = f"the playlist {name}"
+            item = _search_item(query, kind)
+            if not item:
+                return f"Couldn't find a {kind} matching '{query}' on Spotify."
+        uri, body, label = _build_play(kind, item)
 
         # If Spotify isn't open anywhere, launch the local app and wait for it to
         # register as a device, rather than giving up.

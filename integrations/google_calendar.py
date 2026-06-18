@@ -15,6 +15,7 @@ import datetime as dt
 import inspect
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from app.config import ROOT_DIR, CONFIG
 from app.logging_setup import get_logger
@@ -51,22 +52,55 @@ def _default_timezone() -> str:
     return _cached_timezone
 
 
+def _user_tz() -> dt.tzinfo:
+    """The user's timezone as a (DST-aware) tzinfo for localizing naive times.
+
+    JARVIS_TIMEZONE override → the system's local zone (tzlocal) → the current
+    local fixed offset. Used to turn a bare wall-clock time the model gives
+    (e.g. '22:00:00' for "10pm") into a properly offset time.
+    """
+    name = CONFIG.jarvis_timezone
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("invalid JARVIS_TIMEZONE %r: %s", name, exc)
+    try:
+        from tzlocal import get_localzone
+        return get_localzone()
+    except Exception:  # noqa: BLE001
+        return dt.datetime.now().astimezone().tzinfo or dt.timezone.utc
+
+
 def _start_end(iso: str, force_timezone: bool = False) -> dict:
     """Build a start/end dict for the Calendar API from an ISO date/datetime.
 
-    Claude's tool schema asks it to always include a UTC offset, but it
-    doesn't reliably comply — a naive dateTime makes Google reject the
-    request with "Missing time zone definition". Attach a timeZone field
-    deterministically rather than trusting the LLM to format it correctly.
+    The model is asked to pass the user's local wall-clock time, but it's
+    unreliable about timezones — it often sends a naive time, or worse stamps a
+    local time with 'Z'/+00:00 without actually converting it (that's the
+    "10pm shows as 6pm" bug: 22:00 read as UTC = 18:00 Eastern). So we treat a
+    naive OR UTC-stamped time as the user's *local wall-clock* time and attach
+    the real local offset/zone ourselves. A genuine non-UTC offset (an explicit
+    "10pm Pacific") is honored as given.
 
-    Google also requires timeZone unconditionally on recurring events,
-    even when dateTime already carries a UTC offset — pass
-    force_timezone=True for those (see create_event's rrule handling).
+    Google also requires a timeZone on recurring events, so for those we emit
+    the wall-clock time plus an IANA timeZone (its recommended form).
     """
     if len(iso) == 10:
         return {"date": iso}
+
     parsed = dt.datetime.fromisoformat(iso)
-    if force_timezone or parsed.tzinfo is None:
+    # A naive time, or a UTC offset the model almost certainly didn't mean, is
+    # reinterpreted as the user's local wall-clock time.
+    if parsed.tzinfo is None or parsed.utcoffset() == dt.timedelta(0):
+        wall = parsed.replace(tzinfo=None)
+        if force_timezone:  # recurring → wall time + IANA zone
+            return {"dateTime": wall.isoformat(), "timeZone": _default_timezone()}
+        local = wall.replace(tzinfo=_user_tz())
+        return {"dateTime": local.isoformat()}
+
+    # Already carries a real (non-UTC) offset — trust it.
+    if force_timezone:
         return {"dateTime": iso, "timeZone": _default_timezone()}
     return {"dateTime": iso}
 

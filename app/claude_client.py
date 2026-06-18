@@ -268,11 +268,18 @@ TOOLS = [
                 },
                 "new_start": {
                     "type": "string",
-                    "description": "New start as ISO 8601 with timezone offset (omit to keep current).",
+                    "description": (
+                        "New start as the user's LOCAL wall-clock time in ISO 8601 "
+                        "with no timezone offset and no 'Z' (e.g. '2026-06-15T22:00:00'). "
+                        "Don't convert to UTC. Omit to keep current."
+                    ),
                 },
                 "new_end": {
                     "type": "string",
-                    "description": "New end as ISO 8601 with timezone offset (omit to keep current).",
+                    "description": (
+                        "New end as the user's LOCAL wall-clock time in ISO 8601 with "
+                        "no offset. Omit to keep current."
+                    ),
                 },
                 "new_description": {
                     "type": "string",
@@ -294,7 +301,9 @@ TOOLS = [
             "tags show the account and calendar name, e.g. '[Google/personal/Bills]' "
             "means account_name='personal', calendar_name='Bills'. "
             "Use existing events to infer appropriate timing when the user doesn't "
-            "give exact times. Always include timezone offset in start/end."
+            "give exact times. Pass times as the user's LOCAL wall-clock time and "
+            "do NOT convert to UTC or append 'Z' — JARVIS attaches the user's "
+            "timezone itself."
         ),
         "input_schema": {
             "type": "object",
@@ -320,16 +329,19 @@ TOOLS = [
                 "start": {
                     "type": "string",
                     "description": (
-                        "Start as ISO 8601 with timezone offset, "
-                        "e.g. '2026-06-15T14:00:00-05:00'. "
+                        "Start as the user's LOCAL wall-clock time in ISO 8601 with "
+                        "NO timezone offset and no 'Z' — e.g. 10pm is "
+                        "'2026-06-15T22:00:00'. Don't convert to UTC. Only add an "
+                        "offset if the user explicitly names a different timezone. "
                         "For all-day events use 'YYYY-MM-DD'."
                     ),
                 },
                 "end": {
                     "type": "string",
                     "description": (
-                        "End as ISO 8601 with timezone offset. "
-                        "Default to 1 hour after start for unspecified durations."
+                        "End as the user's LOCAL wall-clock time in ISO 8601 with no "
+                        "offset (e.g. '2026-06-15T23:00:00'). Default to 1 hour "
+                        "after start for unspecified durations."
                     ),
                 },
                 "description": {
@@ -813,8 +825,10 @@ SPOTIFY_TOOLS = [
         "description": (
             "Start playing music on the user's Spotify. Use this when they ask to "
             "play a song, artist, album, or playlist by name (e.g. 'play Back in "
-            "Black', 'play some Daft Punk', 'put on my Focus playlist'). Searches "
-            "Spotify and plays the top match. If the Spotify app isn't open yet, "
+            "Black', 'play some Daft Punk', 'put on my Focus playlist'). You can "
+            "also pass a Spotify link or URI the user pasted to play that exact "
+            "item. Plays the best match — exact song titles are preferred over an "
+            "artist's most-streamed track. If the Spotify app isn't open yet, "
             "this automatically launches it on the user's computer and starts "
             "playback — so just call it; do NOT tell the user you can't reach a "
             "device or ask them to open Spotify first. Requires Spotify Premium. "
@@ -886,7 +900,9 @@ if CONFIG.spotify_available:
 # Saying the specific incantation "Hey Jarvis, what on the calendar for today?"
 # maxes humor + sarcasm for that one reply and cues up Back in Black. Gated on
 # the "hey jarvis" prefix so ordinary calendar questions stay normal.
-_EASTER_EGG_SONG = "Back in Black AC/DC"
+# Pin the exact track by URI so search ranking can't substitute the artist's
+# most-streamed song (a bare "Back in Black AC/DC" search returned Thunderstruck).
+_EASTER_EGG_SONG = "spotify:track:08mG3Y1vljYA6bvDt4Wqkj"  # AC/DC — Back in Black
 
 
 def _is_easter_egg(message: str) -> bool:
