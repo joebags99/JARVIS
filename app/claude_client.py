@@ -15,6 +15,8 @@ Tool use flow:
 
 from __future__ import annotations
 
+import re
+import threading
 from typing import Callable
 
 from .config import CONFIG
@@ -802,6 +804,93 @@ if CONFIG.gmail_available:
     TOOLS = TOOLS + EMAIL_TOOLS
 
 
+# Spotify tools are only surfaced when Spotify is configured (SPOTIFY_ENABLED +
+# a client id). Appended at import time so the cached tool prefix stays constant
+# for a given install.
+SPOTIFY_TOOLS = [
+    {
+        "name": "play_music",
+        "description": (
+            "Start playing music on the user's Spotify. Use this when they ask to "
+            "play a song, artist, album, or playlist by name (e.g. 'play Back in "
+            "Black', 'play some Daft Punk', 'put on my Focus playlist'). Searches "
+            "Spotify and plays the top match on their active device. Requires "
+            "Spotify Premium with an open Spotify device. Use control_playback "
+            "instead for pause/skip/volume, and get_now_playing to see what's on."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to play, e.g. 'Back in Black', 'Daft Punk', 'Focus'.",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["track", "album", "artist", "playlist"],
+                    "description": (
+                        "What to search for. Default 'track'. Use 'artist' for "
+                        "'play some <artist>', 'playlist' for a named playlist, "
+                        "'album' for a full album."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "control_playback",
+        "description": (
+            "Control current Spotify playback: pause, resume, skip to the next or "
+            "previous track, toggle shuffle, or set the volume. Use this for "
+            "transport and volume requests rather than play_music (which starts "
+            "something new)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "pause", "resume", "next", "previous",
+                        "shuffle_on", "shuffle_off", "volume",
+                    ],
+                    "description": "The playback action to perform.",
+                },
+                "volume_percent": {
+                    "type": "integer",
+                    "description": "0-100 volume level. Required only when action is 'volume'.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "get_now_playing",
+        "description": (
+            "Report what's currently playing on the user's Spotify (track and "
+            "artist), or that nothing is playing."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+]
+
+if CONFIG.spotify_available:
+    TOOLS = TOOLS + SPOTIFY_TOOLS
+
+
+# ── Easter egg ──────────────────────────────────────────────────────────────
+# Saying the specific incantation "Hey Jarvis, what on the calendar for today?"
+# maxes humor + sarcasm for that one reply and cues up Back in Black. Gated on
+# the "hey jarvis" prefix so ordinary calendar questions stay normal.
+_EASTER_EGG_SONG = "Back in Black AC/DC"
+
+
+def _is_easter_egg(message: str) -> bool:
+    norm = " ".join(re.sub(r"[^a-z0-9 ]", " ", (message or "").lower()).split())
+    return "hey jarvis" in norm and "calendar" in norm and "today" in norm
+
+
 def _execute_tool(name: str, input_data: dict) -> str:
     """Dispatch a tool call and return a result string."""
     if name == "get_calendar_events":
@@ -841,6 +930,19 @@ def _execute_tool(name: str, input_data: dict) -> str:
         return weather.get_weather(
             input_data.get("location"), days=int(input_data.get("days") or 1)
         )
+    if name == "play_music":
+        from integrations import spotify
+        return spotify.play_music(
+            input_data["query"], kind=input_data.get("kind") or "track"
+        )
+    if name == "control_playback":
+        from integrations import spotify
+        return spotify.control_playback(
+            input_data["action"], volume_percent=input_data.get("volume_percent")
+        )
+    if name == "get_now_playing":
+        from integrations import spotify
+        return spotify.now_playing()
     if name == "recall_session_history":
         import datetime as dt
         from integrations import notes_watcher
@@ -1093,6 +1195,9 @@ class ClaudeClient:
         self._monarch_active = False
         # Same stickiness for meal-prep conversations and the web search tool.
         self._meal_active = False
+        # The "Hey Jarvis, what on the calendar for today?" gag fires once per
+        # session so it stays a surprise rather than replaying every time.
+        self._easter_egg_fired = False
         self._init_client()
 
     def _init_client(self) -> None:
@@ -1127,6 +1232,7 @@ class ClaudeClient:
         self.history.clear()
         self._monarch_active = False
         self._meal_active = False
+        self._easter_egg_fired = False  # re-arm the gag for the new session
         # Voice-dial tweaks are scoped to a conversation ("...for this convo"),
         # so a fresh session restores the saved defaults.
         from .persona import PERSONA
@@ -1255,6 +1361,63 @@ class ClaudeClient:
         if not self.ready:
             return self._init_error or "Claude client is not available."
 
+        # Fire the easter egg (if the phrase was said) before the prompt is
+        # built, so the boosted dials land in this turn — then restore them once
+        # the one snarky reply is done.
+        egg_restore = self._maybe_fire_easter_egg(user_message)
+        try:
+            return self._run_send(user_message, on_delta, on_reset)
+        finally:
+            if egg_restore:
+                egg_restore()
+
+    def _maybe_fire_easter_egg(self, message: str):
+        """If the secret phrase was said, max humor+sarcasm and cue Back in Black.
+
+        Returns a restore callable that undoes the dial boost after this one
+        reply, or ``None`` when not triggered. Fires at most once per session.
+        """
+        if (
+            self._easter_egg_fired
+            or not CONFIG.spotify_available
+            or not _is_easter_egg(message)
+        ):
+            return None
+        self._easter_egg_fired = True
+        from .persona import PERSONA
+
+        saved = {
+            "humor": PERSONA.dials.get("humor"),
+            "sarcasm": PERSONA.dials.get("sarcasm"),
+        }
+        PERSONA.adjust("humor", set_to=100)
+        PERSONA.adjust("sarcasm", set_to=100)
+        log.info("easter egg: humor+sarcasm -> 100, cueing %s", _EASTER_EGG_SONG)
+
+        def _play() -> None:
+            try:
+                from integrations import spotify
+                spotify.play_track_query(_EASTER_EGG_SONG)
+            except Exception as exc:  # noqa: BLE001
+                log.error("easter egg playback failed: %s", exc)
+
+        threading.Thread(target=_play, daemon=True).start()
+
+        def _restore() -> None:
+            for dial, value in saved.items():
+                if value is not None:
+                    PERSONA.adjust(dial, set_to=value)
+            log.info("easter egg dials restored")
+
+        return _restore
+
+    def _run_send(
+        self,
+        user_message: str,
+        on_delta: Callable[[str], None] | None = None,
+        on_reset: Callable[[], None] | None = None,
+    ) -> str:
+        """Core send: history compaction, prompt build, the bounded tool loop."""
         self._compact_history()
         history_snapshot = len(self.history)
         self.history.append({"role": "user", "content": user_message})

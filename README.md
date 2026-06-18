@@ -42,6 +42,9 @@ calendars, and meeting notes.
   Open-Meteo (no API key needed); set `JARVIS_LOCATION` for a default.
 - **Email** (optional) — read and summarize recent Gmail, and draft replies for
   you to review. JARVIS never sends mail on its own; it only saves drafts.
+- **Music** (optional) — control Spotify by voice or chat: play a song, artist,
+  album, or playlist, pause/skip, shuffle, set volume, and ask what's playing.
+  Requires Spotify Premium. (There's also a hidden incantation… 🎸)
 - **Cross-session memory** — when you close a longer chat, JARVIS saves a short
   recap and can recall it later ("pick up where we left off").
 - **Smooth replies** — an animated "thinking" indicator while JARVIS composes,
@@ -207,6 +210,25 @@ terms close to a fantasy name) under an optional `"ignore"` list:
 The canonical names are also fed to Whisper as hints so transcription gets them
 right more often to begin with. Edit the file and hit **Reload Context** (tray) to
 apply changes without restarting. The file is gitignored.
+
+### 7f. (Optional) Spotify music
+Let JARVIS play and control music. **Requires Spotify Premium** and an open
+Spotify device (the desktop/phone app running) — the Web API can only control
+playback under those conditions.
+1. Create an app in the
+   [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
+2. In its settings, add this **Redirect URI** exactly — it must be the loopback
+   IP, not `localhost`, which Spotify now rejects:
+   `http://127.0.0.1:9433/callback`
+3. Copy the app's **Client ID** into `.env` as `SPOTIFY_CLIENT_ID` (no client
+   secret needed — JARVIS uses PKCE), and set `SPOTIFY_ENABLED=true`.
+4. The first music request opens a browser once to authorize; the token caches
+   to `tokens/spotify_oauth.json` (gitignored) and refreshes silently after.
+
+Then just ask: "play Back in Black", "play some Daft Punk", "put on my Focus
+playlist", "pause", "skip", "set the volume to 30", "shuffle on", "what's
+playing?". And there may be a certain phrase that summons a certain AC/DC song
+with… maximum attitude. 🎸
 
 ### 8. Add your personal context
 ```bash

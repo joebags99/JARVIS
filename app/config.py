@@ -175,6 +175,14 @@ class Config:
         default_factory=lambda: _get("MONARCH_ENABLED").lower() in ("true", "1", "yes")
     )
 
+    # Spotify — Web API playback control via OAuth (Authorization Code + PKCE,
+    # so only the client id is needed). Requires Spotify Premium and an open
+    # Spotify device to control playback. First music request opens a browser.
+    spotify_enabled: bool = field(
+        default_factory=lambda: _get("SPOTIFY_ENABLED").lower() in ("true", "1", "yes")
+    )
+    spotify_client_id: str = field(default_factory=lambda: _get("SPOTIFY_CLIENT_ID"))
+
     # Todoist — personal API token, no OAuth.
     todoist_api_key: str = field(default_factory=lambda: _get("TODOIST_API_KEY"))
 
@@ -234,6 +242,15 @@ class Config:
     def gmail_available(self) -> bool:
         """Gmail is usable only if opted in AND Google credentials exist on disk."""
         return self.gmail_enabled and self.google_enabled
+
+    @property
+    def spotify_available(self) -> bool:
+        """Spotify is usable when opted in AND a client id is configured.
+
+        The token need not exist yet — the first music request runs the browser
+        OAuth flow, same as Monarch.
+        """
+        return self.spotify_enabled and bool(self.spotify_client_id)
 
     @property
     def gmail_accounts_resolved(self) -> list[str]:
