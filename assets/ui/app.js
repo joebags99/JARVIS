@@ -438,6 +438,7 @@ function renderDials(dials) {
 }
 
 async function openDials() {
+  closeSettings();
   const dials = await callApiAsync("get_dials");
   renderDials(dials);
   dialsPanel.classList.remove("hidden");
@@ -466,6 +467,115 @@ dialsSave.addEventListener("click", async () => {
   renderDials(await callApiAsync("save_dials_default"));
   dialsSave.classList.add("flash");
   setTimeout(() => dialsSave.classList.remove("flash"), 600);
+});
+
+// ── Settings panel ─────────────────────────────────────────────────────────
+// System status (read-only) + editable note/task categories. Edits go straight
+// to Python (saved to jarvis_config.json); the model's tools pick up new
+// categories on restart.
+
+const settingsBtn = document.getElementById("settings-btn");
+const settingsPanel = document.getElementById("settings-panel");
+const settingsSave = document.getElementById("settings-save");
+const settingsClose = document.getElementById("settings-close");
+const catsList = document.getElementById("cats-list");
+const catsAddInput = document.getElementById("cats-add-input");
+const catsAddBtn = document.getElementById("cats-add-btn");
+const diagList = document.getElementById("diag-list");
+
+function addCategoryRow(name) {
+  const row = document.createElement("div");
+  row.className = "cat-row";
+  const input = document.createElement("input");
+  input.className = "cat-input";
+  input.type = "text";
+  input.value = name;
+  const remove = document.createElement("button");
+  remove.className = "cat-remove";
+  remove.title = "Remove";
+  remove.innerHTML = "&#10005;";
+  remove.addEventListener("click", () => row.remove());
+  row.appendChild(input);
+  row.appendChild(remove);
+  catsList.appendChild(row);
+}
+
+function collectCategories() {
+  return [...catsList.querySelectorAll(".cat-input")]
+    .map((i) => i.value.trim())
+    .filter(Boolean);
+}
+
+function renderDiagnostics(diags) {
+  diagList.innerHTML = "";
+  if (!Array.isArray(diags)) return;
+  for (const d of diags) {
+    const row = document.createElement("div");
+    row.className = "diag-row";
+    const badge = document.createElement("span");
+    badge.className = "diag-badge" + (d.ok ? " on" : "");
+    badge.textContent = d.ok ? "ON" : "off";
+    const name = document.createElement("span");
+    name.className = "diag-name";
+    name.textContent = d.name;
+    const detail = document.createElement("span");
+    detail.className = "diag-detail";
+    detail.textContent = d.detail;
+    row.append(badge, name, detail);
+    diagList.appendChild(row);
+  }
+}
+
+function applySettings(s) {
+  if (!s) return;
+  catsList.innerHTML = "";
+  (s.categories || []).forEach(addCategoryRow);
+  renderDiagnostics(s.diagnostics);
+  if (s.error) setStatus(`Settings: ${s.error}`);
+}
+
+async function openSettings() {
+  closeDials();
+  applySettings(await callApiAsync("get_settings"));
+  settingsPanel.classList.remove("hidden");
+  settingsPanel.setAttribute("aria-hidden", "false");
+}
+
+function closeSettings() {
+  settingsPanel.classList.add("hidden");
+  settingsPanel.setAttribute("aria-hidden", "true");
+}
+
+function toggleSettings() {
+  if (settingsPanel.classList.contains("hidden")) {
+    openSettings();
+  } else {
+    closeSettings();
+  }
+}
+
+settingsBtn.addEventListener("click", toggleSettings);
+settingsClose.addEventListener("click", closeSettings);
+catsAddBtn.addEventListener("click", () => {
+  const v = catsAddInput.value.trim();
+  if (!v) return;
+  addCategoryRow(v);
+  catsAddInput.value = "";
+  catsAddInput.focus();
+});
+catsAddInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    catsAddBtn.click();
+  }
+});
+settingsSave.addEventListener("click", async () => {
+  const res = await callApiAsync("save_categories", collectCategories());
+  applySettings(res);
+  if (!res || !res.error) {
+    settingsSave.classList.add("flash");
+    setTimeout(() => settingsSave.classList.remove("flash"), 600);
+  }
 });
 
 // ── Window dragging (frameless window — no native title bar) ──────────────

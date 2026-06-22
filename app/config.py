@@ -7,6 +7,7 @@ on disk in gitignored files; this module just reads it.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,6 +37,10 @@ for _d in (CONTEXT_DIR, NOTES_DIR, LOGS_DIR, ASSETS_DIR):
 # JARVIS_CATEGORIES env var (comma-separated); kept here as the back-compat
 # default for the original single-user setup.
 DEFAULT_CATEGORIES = ["Daedabyte", "General", "Brightpoint", "DnD"]
+
+# Panel-editable overrides written by the in-app settings panel. Gitignored,
+# same convention as persona_dials.json; values here win over the .env defaults.
+USER_CONFIG_FILE = ROOT_DIR / "jarvis_config.json"
 
 
 # ── UI color palette (from the spec) ─────────────────────────────────────────
@@ -79,6 +84,37 @@ def _get_list(name: str, default: list[str]) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _read_user_config() -> dict:
+    """Read the gitignored jarvis_config.json. Returns {} if absent or unreadable."""
+    if not USER_CONFIG_FILE.exists():
+        return {}
+    try:
+        data = json.loads(USER_CONFIG_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _clean_categories(categories: list[str]) -> list[str]:
+    """Strip blanks and case-insensitive duplicates, preserving order."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for c in categories or []:
+        name = str(c).strip()
+        if name and name.lower() not in seen:
+            cleaned.append(name)
+            seen.add(name.lower())
+    return cleaned
+
+
+def _resolve_categories() -> list[str]:
+    """Categories from jarvis_config.json, else JARVIS_CATEGORIES, else defaults."""
+    saved = _clean_categories(_read_user_config().get("categories") or [])
+    if saved:
+        return saved
+    return _get_list("JARVIS_CATEGORIES", list(DEFAULT_CATEGORIES))
+
+
 @dataclass
 class Config:
     """Resolved runtime configuration."""
@@ -98,11 +134,9 @@ class Config:
     # App
     user_name: str = field(default_factory=lambda: _get("JARVIS_USER_NAME", "User"))
     # Note/task categories — the named buckets notes and Todoist tasks file into.
-    # Configurable per-user (comma-separated) so the categories aren't baked into
-    # code; falls back to the original set for backward compatibility.
-    categories: list[str] = field(
-        default_factory=lambda: _get_list("JARVIS_CATEGORIES", list(DEFAULT_CATEGORIES))
-    )
+    # Resolved from jarvis_config.json (settings panel) → JARVIS_CATEGORIES env →
+    # the back-compat defaults, so categories aren't baked into code.
+    categories: list[str] = field(default_factory=_resolve_categories)
     window_position: str = field(
         default_factory=lambda: _get("JARVIS_WINDOW_POSITION", "top-right")
     )
@@ -262,6 +296,29 @@ class Config:
     def gmail_accounts_resolved(self) -> list[str]:
         """Gmail account names, falling back to the calendar's GOOGLE_ACCOUNTS."""
         return self.gmail_accounts or self.google_accounts
+
+    def save_categories(self, categories: list[str]) -> list[str]:
+        """Validate, persist, and apply a new category set (settings panel).
+
+        Strips blanks and case-insensitive duplicates and requires at least one
+        category. Writes the result to jarvis_config.json, updates the in-memory
+        value, and creates any new notes/<category>/ folders. The model's tool
+        enums are built at import, so a restart is needed for JARVIS's tools to
+        advertise the new set; notes resolution uses this value live. Raises
+        ValueError if no valid category remains.
+        """
+        cleaned = _clean_categories(categories)
+        if not cleaned:
+            raise ValueError("At least one category is required.")
+        data = _read_user_config()
+        data["categories"] = cleaned
+        USER_CONFIG_FILE.write_text(
+            json.dumps(data, indent=2) + "\n", encoding="utf-8"
+        )
+        self.categories = cleaned
+        for name in cleaned:
+            (NOTES_DIR / name).mkdir(parents=True, exist_ok=True)
+        return cleaned
 
     def diagnostics(self) -> list[tuple[str, bool, str]]:
         """Readiness of each integration as ``(name, ok, detail)`` rows.

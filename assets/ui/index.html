@@ -15,6 +15,7 @@
         J A R V I S
       </div>
       <div id="header-actions">
+        <button id="settings-btn" class="icon-btn" title="Settings">&#9881;</button>
         <button id="dials-btn" class="icon-btn" title="Voice dials">&#127899;</button>
         <button id="clear-btn" class="icon-btn" title="Clear chat">&#8634;</button>
         <button id="close-btn" class="icon-btn" title="Close">&#10005;</button>
@@ -32,6 +33,31 @@
         </div>
       </div>
       <div id="dials-list"></div>
+    </div>
+
+    <!-- Settings: system status (read-only) + editable note/task categories. -->
+    <div id="settings-panel" class="hidden" aria-hidden="true">
+      <div id="settings-head">
+        <span class="dials-title">Settings</span>
+        <div class="dials-head-actions">
+          <button id="settings-save" class="dials-link" title="Save categories">Save</button>
+          <button id="settings-close" class="dials-link" title="Close">&#10005;</button>
+        </div>
+      </div>
+      <div id="settings-body">
+        <div class="settings-label">Note &amp; Task Categories</div>
+        <div id="cats-list"></div>
+        <div id="cats-add-row">
+          <input id="cats-add-input" type="text" placeholder="Add a category&hellip;" />
+          <button id="cats-add-btn" class="dials-link">Add</button>
+        </div>
+        <div class="settings-hint">
+          Saved to jarvis_config.json. New categories apply to JARVIS&rsquo;s
+          tools after a restart.
+        </div>
+        <div class="settings-label">Integrations</div>
+        <div id="diag-list"></div>
+      </div>
     </div>
 
     <div id="transcript">

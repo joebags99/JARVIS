@@ -28,6 +28,9 @@ persona_dials.json
 # Fantasy/proper-name corrections glossary (your character names)
 name_corrections.json
 
+# Settings-panel overrides (your categories, etc.)
+jarvis_config.json
+
 # Everything in /context except the committed example templates.
 context/*
 !context/*.example.md
