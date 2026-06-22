@@ -31,11 +31,11 @@ TRAY_ICON_PATH = ASSETS_DIR / "tray_icon.png"
 for _d in (CONTEXT_DIR, NOTES_DIR, LOGS_DIR, ASSETS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
-# Notes are split into per-category subfolders so separate work streams never
-# mix (mirrors integrations/notes_watcher.py's CATEGORIES — duplicated here,
-# not imported, to avoid a circular import with that module).
-for _cat in ("Daedabyte", "General", "Brightpoint", "DnD"):
-    (NOTES_DIR / _cat).mkdir(parents=True, exist_ok=True)
+# Default note/task categories (work/personal "streams"). Each maps 1:1 to a
+# notes/<category>/ subfolder and a Todoist project. Override per-user via the
+# JARVIS_CATEGORIES env var (comma-separated); kept here as the back-compat
+# default for the original single-user setup.
+DEFAULT_CATEGORIES = ["Daedabyte", "General", "Brightpoint", "DnD"]
 
 
 # ── UI color palette (from the spec) ─────────────────────────────────────────
@@ -97,6 +97,12 @@ class Config:
 
     # App
     user_name: str = field(default_factory=lambda: _get("JARVIS_USER_NAME", "User"))
+    # Note/task categories — the named buckets notes and Todoist tasks file into.
+    # Configurable per-user (comma-separated) so the categories aren't baked into
+    # code; falls back to the original set for backward compatibility.
+    categories: list[str] = field(
+        default_factory=lambda: _get_list("JARVIS_CATEGORIES", list(DEFAULT_CATEGORIES))
+    )
     window_position: str = field(
         default_factory=lambda: _get("JARVIS_WINDOW_POSITION", "top-right")
     )
@@ -290,3 +296,9 @@ class Config:
 
 # Singleton-ish config used across the app.
 CONFIG = Config()
+
+# Notes are split into per-category subfolders so separate work streams never
+# mix. Created from CONFIG.categories (configurable via JARVIS_CATEGORIES); done
+# after CONFIG exists so the set is whatever the user configured.
+for _cat in CONFIG.categories:
+    (NOTES_DIR / _cat).mkdir(parents=True, exist_ok=True)

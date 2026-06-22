@@ -45,6 +45,21 @@ def test_execute_unknown_tool():
     assert tr.execute_tool("does_not_exist", {}) == "Unknown tool: does_not_exist"
 
 
+def test_category_enums_match_config():
+    """The note/task category enums are derived from CONFIG.categories."""
+    from app.config import CONFIG
+
+    specs = {t["name"]: t for t in tr.api_tools()}
+    for name, prop in (
+        ("get_recent_notes", "category"),
+        ("create_note", "category"),
+        ("create_todo", "category"),
+        ("update_todo", "new_category"),
+    ):
+        enum = specs[name]["input_schema"]["properties"][prop]["enum"]
+        assert enum == CONFIG.categories
+
+
 def test_availability_gating(monkeypatch):
     sentinel = tr.Tool(
         name="_temp_test_tool",

@@ -24,6 +24,7 @@ def main() -> int:
     log.info("Integration readiness:")
     for name, ok, detail in CONFIG.diagnostics():
         log.info("  [%s] %-24s %s", "ON " if ok else "off", name, detail)
+    log.info("  Categories: %s", ", ".join(CONFIG.categories))
 
     if not CONFIG.has_anthropic_key:
         log.warning(

@@ -25,6 +25,27 @@ from .logging_setup import get_logger
 
 log = get_logger("tools")
 
+# Note/task categories come from the user's config so the note + todo tools
+# aren't hardcoded to one person's set. Built at import — the tool specs are
+# registered once — so changing JARVIS_CATEGORIES takes effect on restart.
+_CATEGORIES = list(CONFIG.categories)
+_CAT_EXAMPLE = _CATEGORIES[0] if _CATEGORIES else "Work"
+
+
+def _category_phrase() -> str:
+    """Render the category list for prose, e.g. 'A, B, and C'."""
+    cats = _CATEGORIES
+    if not cats:
+        return ""
+    if len(cats) == 1:
+        return cats[0]
+    if len(cats) == 2:
+        return f"{cats[0]} and {cats[1]}"
+    return ", ".join(cats[:-1]) + ", and " + cats[-1]
+
+
+_CAT_PHRASE = _category_phrase()
+
 
 @dataclass(frozen=True)
 class Tool:
@@ -350,7 +371,7 @@ register(Tool(
     name="get_recent_notes",
     description=(
         "Load recent meeting notes from one category of the user's notes folder "
-        "— Daedabyte, Brightpoint, DnD, and General are kept in fully separate "
+        f"— {_CAT_PHRASE} are kept in fully separate "
         "subfolders and must never be mixed or merged together in a single "
         "answer. Call this when the user asks about recent meetings, wants to "
         "reference notes, asks what was discussed or decided, or asks about "
@@ -363,7 +384,7 @@ register(Tool(
         "properties": {
             "category": {
                 "type": "string",
-                "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
+                "enum": list(_CATEGORIES),
                 "description": "Which notes stream to read. Ask the user if unclear — never guess.",
             },
         },
@@ -376,7 +397,7 @@ register(Tool(
     name="create_note",
     description=(
         "Save a new meeting/conversation note to one category of the user's "
-        "notes folder — Daedabyte, Brightpoint, DnD, and General are kept in "
+        f"notes folder — {_CAT_PHRASE} are kept in "
         "fully separate subfolders and must never be mixed. Use this when the "
         "user asks you to log, save, or write down a note about something (e.g. "
         "'make a note about my meeting with Sam on the 16th') instead of just "
@@ -391,7 +412,7 @@ register(Tool(
         "properties": {
             "category": {
                 "type": "string",
-                "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
+                "enum": list(_CATEGORIES),
                 "description": "Which notes stream this belongs to. Ask the user if unclear — never guess.",
             },
             "content": {
@@ -653,7 +674,7 @@ register(Tool(
                 "description": (
                     "Todoist filter query, e.g. 'today', 'overdue | today', "
                     "'tomorrow', a specific date like 'June 20', or a category "
-                    "like '#Daedabyte'. Defaults to overdue + today's tasks."
+                    f"like '#{_CAT_EXAMPLE}'. Defaults to overdue + today's tasks."
                 ),
             },
         },
@@ -683,7 +704,7 @@ register(Tool(
             },
             "category": {
                 "type": "string",
-                "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
+                "enum": list(_CATEGORIES),
                 "description": "Which category/project this task belongs to.",
             },
             "due_string": {
@@ -785,7 +806,7 @@ register(Tool(
             },
             "new_category": {
                 "type": "string",
-                "enum": ["Daedabyte", "General", "Brightpoint", "DnD"],
+                "enum": list(_CATEGORIES),
                 "description": "New category/project (omit to keep current).",
             },
         },
