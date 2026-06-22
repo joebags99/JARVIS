@@ -77,6 +77,13 @@ def _get_float(name: str, default: float) -> float:
         return default
 
 
+def _get_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("true", "1", "yes", "on")
+
+
 def _get_list(name: str, default: list[str]) -> list[str]:
     raw = os.getenv(name, "").strip()
     if not raw:
@@ -208,6 +215,27 @@ class Config:
     knowledge_pools_file: str = field(
         default_factory=lambda: _get("KNOWLEDGE_POOLS_FILE", "knowledge_pools.json")
     )
+
+    # ── Proactivity (optional, off by default) ───────────────────────────────
+    # Master switch for the background scheduler (scheduled briefing, meeting
+    # alerts, important-email pings). Nothing proactive runs unless this is true.
+    proactive_enabled: bool = field(
+        default_factory=lambda: _get_bool("JARVIS_PROACTIVE_ENABLED")
+    )
+    # Daily-briefing auto-trigger time as "HH:MM" (24h). Blank = no auto-briefing.
+    briefing_time: str = field(default_factory=lambda: _get("JARVIS_BRIEFING_TIME"))
+    # Quiet-hours window "HH:MM-HH:MM" during which meeting/email alerts are
+    # suppressed (the scheduled briefing still fires). Blank = no quiet hours.
+    quiet_hours: str = field(default_factory=lambda: _get("JARVIS_QUIET_HOURS"))
+    # Meeting "starts soon" alerts + how many minutes ahead to fire them.
+    meeting_alerts: bool = field(default_factory=lambda: _get_bool("JARVIS_MEETING_ALERTS"))
+    meeting_lead_min: int = field(
+        default_factory=lambda: _get_int("JARVIS_MEETING_LEAD_MIN", 15)
+    )
+    # Important-email pings (requires Gmail configured).
+    email_alerts: bool = field(default_factory=lambda: _get_bool("JARVIS_EMAIL_ALERTS"))
+    # Speak proactive notifications aloud (in addition to the tray balloon).
+    proactive_speak: bool = field(default_factory=lambda: _get_bool("JARVIS_PROACTIVE_SPEAK"))
 
     # Monarch Money — connects via official MCP server using OAuth.
     # Set MONARCH_ENABLED=true; a browser opens on first use for authorization.
@@ -348,6 +376,9 @@ class Config:
              else "set SPOTIFY_ENABLED=true + SPOTIFY_CLIENT_ID"),
             ("Monarch Money", self.monarch_enabled,
              "enabled (MCP)" if self.monarch_enabled else "set MONARCH_ENABLED=true"),
+            ("Proactive", self.proactive_enabled,
+             "scheduler on" if self.proactive_enabled
+             else "set JARVIS_PROACTIVE_ENABLED=true"),
         ]
 
 

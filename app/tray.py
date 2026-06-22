@@ -80,6 +80,22 @@ class Tray:
         self._thread.start()
         log.info("system tray started")
 
+    def notify(self, title: str, message: str) -> bool:
+        """Show a desktop balloon via the tray icon. Returns True if delivered.
+
+        ``pystray`` only implements notifications on some backends (Windows
+        balloons work); on others ``notify`` raises, so this is best-effort and
+        the caller falls back to logging.
+        """
+        if self._icon is None:
+            return False
+        try:
+            self._icon.notify(message, title)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.debug("tray notify unavailable: %s", exc)
+            return False
+
     def set_state(self, state: str) -> None:
         """Swap the tray icon to reflect idle/listening/thinking."""
         if self._icon is None:
