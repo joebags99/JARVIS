@@ -121,6 +121,29 @@ class _JSApi:
     def toggle_tts(self) -> None:
         self._overlay._toggle_tts()
 
+    # ── Voice dials (adjusted directly in the UI — no LLM round-trip) ─────────
+    def get_dials(self) -> list[dict]:
+        from .persona import PERSONA
+        return PERSONA.state()
+
+    def set_dial(self, name: str, value: int) -> list[dict]:
+        from .persona import PERSONA
+        PERSONA.adjust(name, set_to=int(value))
+        log.info("dial %s set to %s via UI", name, value)
+        return PERSONA.state()
+
+    def reset_dials(self) -> list[dict]:
+        from .persona import PERSONA
+        PERSONA.reset()
+        log.info("voice dials reset to defaults via UI")
+        return PERSONA.state()
+
+    def save_dials_default(self) -> list[dict]:
+        from .persona import PERSONA
+        PERSONA.persist_current()
+        log.info("voice dials saved as defaults via UI")
+        return PERSONA.state()
+
 
 class Overlay:
     def __init__(
@@ -165,6 +188,11 @@ class Overlay:
             transparent=True,
             background_color="#0f0f0f",
             resizable=False,
+            # pywebview makes the WHOLE frameless window a drag region by
+            # default, which hijacks click-drag in the transcript (so text can't
+            # be selected) and moves the window instead. We do our own dragging
+            # from the header via move_window, so disable the blanket behavior.
+            easy_drag=False,
         )
         self.window.events.loaded += self._on_loaded
 

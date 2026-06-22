@@ -15,9 +15,11 @@ import datetime as dt
 import inspect
 from dataclasses import dataclass
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from app.config import ROOT_DIR, CONFIG
 from app.logging_setup import get_logger
+from integrations import google_api
 
 log = get_logger("google_cal")
 
@@ -50,24 +52,55 @@ def _default_timezone() -> str:
     return _cached_timezone
 
 
+def _user_tz() -> dt.tzinfo:
+    """The user's timezone as a (DST-aware) tzinfo for localizing naive times.
+
+    JARVIS_TIMEZONE override → the system's local zone (tzlocal) → the current
+    local fixed offset. Used to turn a bare wall-clock time the model gives
+    (e.g. '22:00:00' for "10pm") into a properly offset time.
+    """
+    name = CONFIG.jarvis_timezone
+    if name:
+        try:
+            return ZoneInfo(name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("invalid JARVIS_TIMEZONE %r: %s", name, exc)
+    try:
+        from tzlocal import get_localzone
+        return get_localzone()
+    except Exception:  # noqa: BLE001
+        return dt.datetime.now().astimezone().tzinfo or dt.timezone.utc
+
+
 def _start_end(iso: str, force_timezone: bool = False) -> dict:
     """Build a start/end dict for the Calendar API from an ISO date/datetime.
 
-    Claude's tool schema asks it to always include a UTC offset, but it
-    doesn't reliably comply — a naive dateTime makes Google reject the
-    request with "Missing time zone definition". Attach a timeZone field
-    deterministically rather than trusting the LLM to format it correctly.
+    The time the model passes is ALWAYS treated as the user's local wall-clock
+    time, and JARVIS attaches the user's zone itself — any offset the model put
+    on it is ignored. The model is too unreliable about timezones for a
+    single-user assistant: a naive time would default to UTC, and it sometimes
+    stamps a local time with an offset or 'Z' it never actually converted. Both
+    made "10pm" land at 6pm Eastern (22:00 read as UTC = 18:00 ET). Stripping to
+    the wall clock and re-localizing kills every variant of that bug.
 
-    Google also requires timeZone unconditionally on recurring events,
-    even when dateTime already carries a UTC offset — pass
-    force_timezone=True for those (see create_event's rrule handling).
+    (Set JARVIS_TIMEZONE if the user isn't in the machine's local zone.)
+
+    Google requires a timeZone on recurring events, so for those we emit the
+    wall-clock time plus an IANA timeZone (its recommended form).
     """
     if len(iso) == 10:
         return {"date": iso}
-    parsed = dt.datetime.fromisoformat(iso)
-    if force_timezone or parsed.tzinfo is None:
-        return {"dateTime": iso, "timeZone": _default_timezone()}
-    return {"dateTime": iso}
+
+    # Keep only the wall-clock components; the user means their local time.
+    # (Normalize a trailing 'Z' so fromisoformat works on Python < 3.11 too.)
+    raw = iso.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    wall = dt.datetime.fromisoformat(raw).replace(tzinfo=None)
+
+    if force_timezone:  # recurring → wall time + IANA zone
+        return {"dateTime": wall.isoformat(), "timeZone": _default_timezone()}
+    return {"dateTime": wall.replace(tzinfo=_user_tz()).isoformat()}
 
 
 def _derive_end_iso(target: dict, new_start_iso: str) -> str:
@@ -220,7 +253,9 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
         try:
             service = build("calendar", "v3", credentials=creds, cache_discovery=False)
 
-            cal_list = service.calendarList().list().execute()
+            cal_list = google_api.execute(
+                service.calendarList().list(), label="calendar.calendarList.list"
+            )
             calendars = cal_list.get("items", [])
             log.info("[%s] found %d calendars", account_name, len(calendars))
 
@@ -230,17 +265,16 @@ def get_events(days: int = 7, max_events: int = 20) -> list[CalEvent]:
                 cal_name = cal.get("summary", cal_id)
                 source = f"Google/{account_name}/{cal_name}"
                 try:
-                    result = (
-                        service.events()
-                        .list(
+                    result = google_api.execute(
+                        service.events().list(
                             calendarId=cal_id,
                             timeMin=now.isoformat(),
                             timeMax=end.isoformat(),
                             singleEvents=True,
                             orderBy="startTime",
                             maxResults=max_events,
-                        )
-                        .execute()
+                        ),
+                        label="calendar.events.list",
                     )
                     fetched = []
                     for item in result.get("items", []):
@@ -331,7 +365,9 @@ def create_event(
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
 
         # Resolve calendar name → ID (exact match first, then partial).
-        cal_list = service.calendarList().list().execute()
+        cal_list = google_api.execute(
+            service.calendarList().list(), label="calendar.calendarList.list"
+        )
         cal_id: str | None = None
         matched_name = calendar_name
         for cal in cal_list.get("items", []):
@@ -357,6 +393,12 @@ def create_event(
             "start": _start_end(start_iso, force_timezone=bool(rrule)),
             "end": _start_end(end_iso, force_timezone=bool(rrule)),
         }
+        # Surface exactly what the model passed vs. what we send Google, so a
+        # lingering time-zone mismatch is diagnosable from the log.
+        log.info(
+            "create_event times: model start=%r end=%r -> %s / %s (tz=%s)",
+            start_iso, end_iso, body["start"], body["end"], _user_tz(),
+        )
         if description:
             body["description"] = description
         if location:
@@ -364,7 +406,11 @@ def create_event(
         if rrule:
             body["recurrence"] = [rrule]
 
-        created = service.events().insert(calendarId=cal_id, body=body).execute()
+        created = google_api.execute(
+            service.events().insert(calendarId=cal_id, body=body),
+            idempotent=False,  # creating twice would duplicate the event
+            label="calendar.events.insert",
+        )
         recur_note = ""
         if rrule:
             unit = {"DAILY": "day", "WEEKLY": "week", "MONTHLY": "month", "YEARLY": "year"}.get(
@@ -426,7 +472,9 @@ def update_event(
         service = build("calendar", "v3", credentials=creds, cache_discovery=False)
 
         # Resolve calendar name → ID.
-        cal_list = service.calendarList().list().execute()
+        cal_list = google_api.execute(
+            service.calendarList().list(), label="calendar.calendarList.list"
+        )
         cal_id: str | None = None
         matched_cal_name = calendar_name
         for cal in cal_list.get("items", []):
@@ -449,13 +497,16 @@ def update_event(
 
         # Search a wide window so we catch recent and upcoming events.
         now = dt.datetime.now(dt.timezone.utc)
-        result = service.events().list(
-            calendarId=cal_id,
-            timeMin=(now - dt.timedelta(days=7)).isoformat(),
-            timeMax=(now + dt.timedelta(days=90)).isoformat(),
-            singleEvents=True,
-            q=event_summary,
-        ).execute()
+        result = google_api.execute(
+            service.events().list(
+                calendarId=cal_id,
+                timeMin=(now - dt.timedelta(days=7)).isoformat(),
+                timeMax=(now + dt.timedelta(days=90)).isoformat(),
+                singleEvents=True,
+                q=event_summary,
+            ),
+            label="calendar.events.list",
+        )
 
         matches = [
             item for item in result.get("items", [])
@@ -512,11 +563,23 @@ def update_event(
         if not patch:
             return "Error: no fields to update were specified."
 
-        service.events().patch(
-            calendarId=cal_id,
-            eventId=target["id"],
-            body=patch,
-        ).execute()
+        if "start" in patch or "end" in patch:
+            log.info(
+                "update_event times: model start=%r end=%r -> %s / %s (tz=%s)",
+                new_start_iso, new_end_iso,
+                patch.get("start"), patch.get("end"), _user_tz(),
+            )
+
+        # PATCH with the same body is idempotent — re-applying yields the same
+        # result, so a retry is safe.
+        google_api.execute(
+            service.events().patch(
+                calendarId=cal_id,
+                eventId=target["id"],
+                body=patch,
+            ),
+            label="calendar.events.patch",
+        )
 
         display_name = new_summary or target.get("summary", event_summary)
         log.info(

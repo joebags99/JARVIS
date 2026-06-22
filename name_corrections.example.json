@@ -1,8 +1,10 @@
 {
   "_comment": "Copy to name_corrections.json (gitignored) to fix misheard/misspelled proper names. Each canonical spelling maps to a list of known variants; a conservative fuzzy matcher also catches new close variants. Used to correct voice + typed input and to bias Whisper.",
+  "_ignore_comment": "Optional: words the fuzzy matcher must NEVER auto-correct. Common English words and common first names are already protected (so 'Mark' won't become 'Marik'); add anything specific to you here — e.g. coworkers or terms close to a fantasy name.",
   "names": {
     "Kailin": ["Cailynn", "Caelyn", "Kaylin"],
     "Edwin": ["Edwinn"],
     "Adaria": ["Ederia", "Adria"]
-  }
+  },
+  "ignore": ["Sharyl", "Daedabyte"]
 }

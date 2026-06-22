@@ -25,6 +25,12 @@ calendars, and meeting notes.
 - **Name corrections** — a glossary of your fantasy/proper names fixes Whisper's
   (and your typos') misspellings, and biases transcription toward the right
   spelling. "Cailynn" → "Kailin" everywhere it matters.
+- **Personality & voice** — a dedicated `context/persona.md` doc defines exactly
+  how JARVIS talks (movie-accurate, "Sir", short and dry by default), plus five
+  live **voice dials** — brevity, formality, humor, sarcasm, proactivity — you
+  can nudge mid-conversation: *"turn humor down 15%"*, *"max formality"*,
+  *"reset your personality"*. Tweaks last the session; ask him to remember one
+  and it sticks.
 - **Context-aware** — assembles a system prompt from your `context/*.md` files,
   Google + Outlook calendars (next 7 days), recent `notes/`, and the date/time.
 - **Meal prep** — plan dinners two weeks at a time in conversation (with real
@@ -36,6 +42,9 @@ calendars, and meeting notes.
   Open-Meteo (no API key needed); set `JARVIS_LOCATION` for a default.
 - **Email** (optional) — read and summarize recent Gmail, and draft replies for
   you to review. JARVIS never sends mail on its own; it only saves drafts.
+- **Music** (optional) — control Spotify by voice or chat: play a song, artist,
+  album, or playlist, pause/skip, shuffle, set volume, and ask what's playing.
+  Requires Spotify Premium. (There's also a hidden incantation… 🎸)
 - **Cross-session memory** — when you close a longer chat, JARVIS saves a short
   recap and can recall it later ("pick up where we left off").
 - **Smooth replies** — an animated "thinking" indicator while JARVIS composes,
@@ -190,9 +199,36 @@ Each canonical spelling lists its known misspellings:
 
 Listed variants are corrected exactly; a conservative fuzzy matcher also catches
 new, unlisted close variants (capitalized, near-exact only — normal prose is left
-alone). The canonical names are also fed to Whisper as hints so transcription
-gets them right more often to begin with. Edit the file and hit **Reload Context**
-(tray) to apply changes without restarting. The file is gitignored.
+alone). Ordinary English words and common first names are never auto-corrected, so
+"Mark" stays "Mark" instead of becoming "Marik"; add your own exceptions (coworkers,
+terms close to a fantasy name) under an optional `"ignore"` list:
+
+```json
+{ "names": { "Marik": ["Marikh"] }, "ignore": ["Sharyl", "Daedabyte"] }
+```
+
+The canonical names are also fed to Whisper as hints so transcription gets them
+right more often to begin with. Edit the file and hit **Reload Context** (tray) to
+apply changes without restarting. The file is gitignored.
+
+### 7f. (Optional) Spotify music
+Let JARVIS play and control music. **Requires Spotify Premium** and an open
+Spotify device (the desktop/phone app running) — the Web API can only control
+playback under those conditions.
+1. Create an app in the
+   [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
+2. In its settings, add this **Redirect URI** exactly — it must be the loopback
+   IP, not `localhost`, which Spotify now rejects:
+   `http://127.0.0.1:9433/callback`
+3. Copy the app's **Client ID** into `.env` as `SPOTIFY_CLIENT_ID` (no client
+   secret needed — JARVIS uses PKCE), and set `SPOTIFY_ENABLED=true`.
+4. The first music request opens a browser once to authorize; the token caches
+   to `tokens/spotify_oauth.json` (gitignored) and refreshes silently after.
+
+Then just ask: "play Back in Black", "play some Daft Punk", "put on my Focus
+playlist", "pause", "skip", "set the volume to 30", "shuffle on", "what's
+playing?". And there may be a certain phrase that summons a certain AC/DC song
+with… maximum attitude. 🎸
 
 ### 8. Add your personal context
 ```bash
@@ -201,6 +237,27 @@ cp context/profile.example.md context/profile.md
 Edit `context/profile.md` with your roles, jobs, and preferences. Add any other
 `.md` files to `context/` and they're automatically included. (All real
 `context/*.md` files are gitignored.)
+
+### 8b. (Optional) Tailor JARVIS's personality
+```bash
+cp context/persona.example.md context/persona.md
+```
+`persona.md` is the *character* doc — how JARVIS talks, separate from
+`profile.md` (which is about you). Skip it and he uses a movie-accurate default.
+
+Five **voice dials** (0–100) fine-tune him live. Two ways to change them:
+
+- **Sliders** — click the 🎛 button in the overlay header for a panel of
+  sliders, with **Save** (make current values your defaults) and **Reset**.
+  Adjusting a slider talks straight to Python — no model call, so it costs
+  zero tokens.
+- **Just ask** — *"turn the sarcasm up to 70"*, *"humor down 15% for this
+  convo"*, *"max brevity"*, *"stop calling me Sir"*, *"reset your personality"*.
+
+Dials are `brevity`, `formality`, `humor`, `sarcasm`, `proactivity`. Changes
+apply to the current session unless you Save them (or ask him to *remember*).
+To set the defaults directly, `cp persona_dials.example.json persona_dials.json`
+and edit the numbers (both gitignored).
 
 ### 9. Run it
 ```bash

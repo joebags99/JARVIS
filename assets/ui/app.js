@@ -28,6 +28,15 @@ function callApi(method, ...args) {
   }
 }
 
+// Like callApi but returns the Python method's value (pywebview resolves a
+// promise). Used by the voice-dials panel to read/refresh state.
+function callApiAsync(method, ...args) {
+  if (window.pywebview && window.pywebview.api) {
+    return window.pywebview.api[method](...args);
+  }
+  return Promise.resolve(null);
+}
+
 // ── Markdown (mirrors app/overlay.py's previous tkinter renderer) ──────────
 
 function escapeHtml(s) {
@@ -149,6 +158,63 @@ function setUserName(name) {
   userName = name;
 }
 
+// ── Copy-to-clipboard (for grabbing emails, drafts, etc.) ──────────────────
+
+const COPY_ICON = "&#128203;"; // 📋
+const CHECK_ICON = "&#10003;"; // ✓
+
+async function copyText(text, btn) {
+  let ok = false;
+  // Async Clipboard API works in the embedded WebView under a user gesture.
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch (_) {
+    /* fall through to legacy path */
+  }
+  if (!ok) {
+    // Legacy fallback for webviews without async clipboard access.
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+    } catch (_) {
+      /* nothing more we can do */
+    }
+  }
+  if (btn) {
+    btn.classList.add("copied");
+    btn.innerHTML = ok ? CHECK_ICON : "&#33;"; // ✓ or ! on failure
+    btn.title = ok ? "Copied!" : "Copy failed";
+    setTimeout(() => {
+      btn.classList.remove("copied");
+      btn.innerHTML = COPY_ICON;
+      btn.title = "Copy";
+    }, 1200);
+  }
+}
+
+// Add a hover-reveal copy button that grabs the message's clean visible text
+// (innerText strips markdown markers, so pasted emails/drafts come out tidy).
+function attachCopyButton(wrap, contentEl) {
+  const btn = document.createElement("button");
+  btn.className = "msg-copy";
+  btn.title = "Copy";
+  btn.innerHTML = COPY_ICON;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    copyText(contentEl.innerText, btn);
+  });
+  wrap.appendChild(btn);
+}
+
 function addMessage(role, label, text) {
   document.body.classList.add("has-messages");
 
@@ -168,6 +234,10 @@ function addMessage(role, label, text) {
     content.textContent = text;
   }
   wrap.appendChild(content);
+
+  if (role !== "system") {
+    attachCopyButton(wrap, content);
+  }
 
   transcript.appendChild(wrap);
   scrollToBottom();
@@ -204,6 +274,7 @@ function finishAssistantMessage(fullText) {
 
   el.classList.remove("thinking");
   el.innerHTML = renderMarkdown(fullText);
+  attachCopyButton(el.parentElement, el);
 
   const blocks = Array.from(el.children);
   blocks.forEach((block, i) => {
@@ -220,6 +291,10 @@ function finishAssistantMessage(fullText) {
 function clearTranscript() {
   transcript.querySelectorAll(".msg").forEach((el) => el.remove());
   document.body.classList.remove("has-messages");
+  // A session reset restores the default dials; refresh the panel if it's open.
+  if (dialsPanel && !dialsPanel.classList.contains("hidden")) {
+    callApiAsync("get_dials").then(renderDials);
+  }
 }
 
 function resetEntry() {
@@ -289,6 +364,110 @@ speakBtn.addEventListener("click", () => callApi("toggle_tts"));
 clearBtn.addEventListener("click", () => callApi("clear_chat"));
 closeBtn.addEventListener("click", () => callApi("close_overlay"));
 
+// ── Voice dials panel ──────────────────────────────────────────────────────
+// Sliders mutate JARVIS's persona directly through Python (no model call, so
+// no tokens). The next message just picks up the new values.
+
+const dialsBtn = document.getElementById("dials-btn");
+const dialsPanel = document.getElementById("dials-panel");
+const dialsList = document.getElementById("dials-list");
+const dialsSave = document.getElementById("dials-save");
+const dialsReset = document.getElementById("dials-reset");
+const dialsClose = document.getElementById("dials-close");
+
+function renderDials(dials) {
+  if (!Array.isArray(dials)) return;
+  dialsList.innerHTML = "";
+  for (const d of dials) {
+    const row = document.createElement("div");
+    row.className = "dial-row";
+    row.dataset.key = d.key;
+    row.innerHTML = `
+      <div class="dial-top">
+        <span class="dial-name">${escapeHtml(d.label)}</span>
+        <span class="dial-value">${d.value}</span>
+      </div>
+      <input class="dial-range" type="range" min="0" max="100" step="5" value="${d.value}" />
+      <div class="dial-desc">${escapeHtml(d.description)}</div>`;
+    const range = row.querySelector(".dial-range");
+    const valEl = row.querySelector(".dial-value");
+
+    // Native range dragging breaks under `user-select: none` in the embedded
+    // WebView (a click registers, a drag doesn't), so drive the thumb ourselves
+    // with pointer capture — reliable regardless of that quirk.
+    const valueFromX = (clientX) => {
+      const rect = range.getBoundingClientRect();
+      const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      return Math.round((pct * 100) / 5) * 5;
+    };
+    const preview = (v) => {
+      range.value = v;
+      valEl.textContent = v;
+    };
+    const commit = async (v) =>
+      renderDials(await callApiAsync("set_dial", d.key, v));
+
+    let dragging = false;
+    range.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      range.setPointerCapture(e.pointerId);
+      preview(valueFromX(e.clientX));
+      range.focus(); // preventDefault below would otherwise suppress focus
+      e.preventDefault();
+    });
+    range.addEventListener("pointermove", (e) => {
+      if (dragging) preview(valueFromX(e.clientX));
+    });
+    const finishDrag = (e) => {
+      if (!dragging) return;
+      dragging = false;
+      try {
+        range.releasePointerCapture(e.pointerId);
+      } catch (_) {}
+      commit(parseInt(range.value, 10));
+    };
+    range.addEventListener("pointerup", finishDrag);
+    range.addEventListener("pointercancel", finishDrag);
+    // Keyboard (arrow keys) still works through the native events.
+    range.addEventListener("input", () => {
+      valEl.textContent = range.value;
+    });
+    range.addEventListener("change", () => commit(parseInt(range.value, 10)));
+    dialsList.appendChild(row);
+  }
+}
+
+async function openDials() {
+  const dials = await callApiAsync("get_dials");
+  renderDials(dials);
+  dialsPanel.classList.remove("hidden");
+  dialsPanel.setAttribute("aria-hidden", "false");
+}
+
+function closeDials() {
+  dialsPanel.classList.add("hidden");
+  dialsPanel.setAttribute("aria-hidden", "true");
+}
+
+function toggleDials() {
+  if (dialsPanel.classList.contains("hidden")) {
+    openDials();
+  } else {
+    closeDials();
+  }
+}
+
+dialsBtn.addEventListener("click", toggleDials);
+dialsClose.addEventListener("click", closeDials);
+dialsReset.addEventListener("click", async () => {
+  renderDials(await callApiAsync("reset_dials"));
+});
+dialsSave.addEventListener("click", async () => {
+  renderDials(await callApiAsync("save_dials_default"));
+  dialsSave.classList.add("flash");
+  setTimeout(() => dialsSave.classList.remove("flash"), 600);
+});
+
 // ── Window dragging (frameless window — no native title bar) ──────────────
 
 let dragging = false;
@@ -342,9 +521,22 @@ const particles = (() => {
     listening: "207, 102, 121",
     done: "76, 175, 121",
   };
+  // Target overall pace per mode. Idle stays gently in motion (never 0) so the
+  // field keeps drifting while you type or read; thinking is fast and busy.
+  const TARGET_SPEED = {
+    idle: 0.8,
+    thinking: 2.6,
+    listening: 1.9,
+    done: 0.8,
+  };
+  const BASE_DRIFT = 0.28; // min per-particle velocity → idle never freezes
 
   let mode = "idle";
   let points = [];
+  // Eased global speed so mode changes glide instead of snapping — when JARVIS
+  // finishes a reply the field smoothly winds down from its energetic
+  // "thinking" pace to a slow idle drift rather than stopping dead.
+  let speed = TARGET_SPEED.idle;
 
   function resize() {
     const app = document.getElementById("app");
@@ -374,7 +566,10 @@ const particles = (() => {
     const cx = canvas.width / 2;
     const cy = canvas.height / 2;
     const color = COLORS[mode] || COLORS.idle;
-    const speedMul = mode === "thinking" ? 2.5 : mode === "listening" ? 1.8 : 1;
+
+    // Ease the global pace toward this mode's target so transitions are smooth.
+    const target = TARGET_SPEED[mode] ?? TARGET_SPEED.idle;
+    speed += (target - speed) * 0.05;
 
     for (const p of points) {
       if (mode === "thinking") {
@@ -386,12 +581,24 @@ const particles = (() => {
       } else if (mode === "listening") {
         p.vx += (Math.random() - 0.5) * 0.04;
         p.vy += (Math.random() - 0.5) * 0.04;
+      } else {
+        // Idle: a faint random wander keeps the drift alive and organic.
+        p.vx += (Math.random() - 0.5) * 0.012;
+        p.vy += (Math.random() - 0.5) * 0.012;
       }
 
-      p.x += p.vx * speedMul;
-      p.y += p.vy * speedMul;
+      // Light damping reins in the thinking-swirl buildup, but a velocity floor
+      // means particles keep drifting at idle instead of decaying to a halt.
       p.vx *= 0.97;
       p.vy *= 0.97;
+      const mag = Math.hypot(p.vx, p.vy) || 0.0001;
+      if (mag < BASE_DRIFT) {
+        p.vx = (p.vx / mag) * BASE_DRIFT;
+        p.vy = (p.vy / mag) * BASE_DRIFT;
+      }
+
+      p.x += p.vx * speed;
+      p.y += p.vy * speed;
 
       if (p.x < 0) p.x = canvas.width;
       if (p.x > canvas.width) p.x = 0;

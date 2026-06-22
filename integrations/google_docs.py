@@ -13,6 +13,7 @@ import inspect
 
 from app.config import ROOT_DIR, CONFIG
 from app.logging_setup import get_logger
+from integrations import google_api
 
 log = get_logger("google_docs")
 
@@ -131,17 +132,19 @@ def fetch_doc_content(
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
         if mime_type is None:
-            meta = service.files().get(fileId=doc_id, fields="mimeType").execute()
+            meta = google_api.execute(
+                service.files().get(fileId=doc_id, fields="mimeType"),
+                label="drive.files.get",
+            )
             mime_type = meta.get("mimeType", "")
 
         export_type = _EXPORT_MIME.get(mime_type)
         if export_type is None:
             return f"[Unsupported file type: {mime_type}]"
 
-        content = (
-            service.files()
-            .export_media(fileId=doc_id, mimeType=export_type)
-            .execute()
+        content = google_api.execute(
+            service.files().export_media(fileId=doc_id, mimeType=export_type),
+            label="drive.files.export",
         )
         text = content.decode("utf-8").strip()
         if len(text) > max_chars:
@@ -172,12 +175,15 @@ def list_folder_files(
             f"and ({_SUPPORTED_MIMES}) "
             "and trashed=false"
         )
-        result = service.files().list(
-            q=query,
-            fields="files(id, name, mimeType, modifiedTime)",
-            orderBy="modifiedTime desc",
-            pageSize=max_files,
-        ).execute()
+        result = google_api.execute(
+            service.files().list(
+                q=query,
+                fields="files(id, name, mimeType, modifiedTime)",
+                orderBy="modifiedTime desc",
+                pageSize=max_files,
+            ),
+            label="drive.files.list",
+        )
         return result.get("files", [])
     except Exception as exc:  # noqa: BLE001
         log.error("list_folder_files failed for folder %s: %s", folder_id, exc)

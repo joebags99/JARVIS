@@ -23,6 +23,7 @@ from email.mime.text import MIMEText
 
 from app.config import ROOT_DIR, CONFIG
 from app.logging_setup import get_logger
+from integrations import google_api
 
 log = get_logger("gmail")
 
@@ -116,19 +117,19 @@ def _list_one(account: str, q: str, max_results: int) -> tuple[list[str], str | 
 
     try:
         service = build("gmail", "v1", credentials=creds, cache_discovery=False)
-        listing = (
+        listing = google_api.execute(
             service.users().messages()
-            .list(userId="me", q=q, maxResults=max(1, min(max_results, 25)))
-            .execute()
+            .list(userId="me", q=q, maxResults=max(1, min(max_results, 25))),
+            label="gmail.messages.list",
         )
         message_ids = [m["id"] for m in listing.get("messages", [])]
         blocks = []
         for mid in message_ids:
-            msg = (
+            msg = google_api.execute(
                 service.users().messages()
                 .get(userId="me", id=mid, format="metadata",
-                     metadataHeaders=["From", "Subject", "Date"])
-                .execute()
+                     metadataHeaders=["From", "Subject", "Date"]),
+                label="gmail.messages.get",
             )
             headers = msg.get("payload", {}).get("headers", [])
             sender = _header(headers, "From")
@@ -247,10 +248,11 @@ def create_draft(
         if cc:
             message["cc"] = cc
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        draft = (
+        draft = google_api.execute(
             service.users().drafts()
-            .create(userId="me", body={"message": {"raw": raw}})
-            .execute()
+            .create(userId="me", body={"message": {"raw": raw}}),
+            idempotent=False,  # creating twice would leave a duplicate draft
+            label="gmail.drafts.create",
         )
         log.info("[%s] created draft to %s (id=%s)", account, to, draft.get("id"))
         return (

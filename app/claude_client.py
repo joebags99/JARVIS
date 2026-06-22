@@ -15,6 +15,8 @@ Tool use flow:
 
 from __future__ import annotations
 
+import re
+import threading
 from typing import Callable
 
 from .config import CONFIG
@@ -23,12 +25,18 @@ from .logging_setup import get_logger
 
 log = get_logger("claude")
 
-MAX_TOKENS = 1024
+MAX_TOKENS = 2048
 # Meal-plan tool calls carry 14 dinners with recipe text plus a shopping
 # list — easily several times MAX_TOKENS — so they get a bigger budget for
 # that turn instead of risking a truncated, invalid tool_use JSON payload.
 _MEAL_MAX_TOKENS = 4096
-MAX_TOOL_ROUNDS = 8  # safety cap on local tool_use <-> tool_result round trips
+# If a round still hits the output cap *while emitting a tool_use*, its JSON
+# arguments are truncated and would fail to execute (e.g. a half-written
+# create_note loses its 'content'). We re-run that round once with this larger
+# budget rather than running a malformed call. Output is billed per token
+# actually generated, so a high ceiling costs nothing on normal short replies.
+_MAX_TOKENS_CEILING = 8192
+MAX_TOOL_ROUNDS = 16  # safety cap on local tool_use <-> tool_result round trips
 
 _MONARCH_MCP_URL = "https://api.monarch.com/mcp"
 _MCP_BETA = "mcp-client-2025-04-04"
@@ -169,10 +177,13 @@ TOOLS = [
     {
         "name": "get_weather",
         "description": (
-            "Get current weather and today's forecast for a location. Call this "
+            "Get current weather plus a daily forecast for a location. Call this "
             "when the user asks about the weather, whether to bring a jacket, "
             "outdoor plans, or as part of a daily briefing. If the user names a "
-            "city use it; otherwise omit location to use their default."
+            "city use it; otherwise omit location to use their default. For "
+            "tomorrow, the weekend, or any future day, set days to cover from "
+            "today through that day (use today's date in your system prompt to "
+            "count — e.g. if today is Wednesday, the weekend needs days≈4)."
         ),
         "input_schema": {
             "type": "object",
@@ -182,6 +193,14 @@ TOOLS = [
                     "description": (
                         "City/place to look up, e.g. 'Chicago, IL'. Omit to use "
                         "the user's configured default location."
+                    ),
+                },
+                "days": {
+                    "type": "integer",
+                    "description": (
+                        "Number of forecast days to return, today through that many "
+                        "days ahead (1-16). Default 1 (today only). Increase it when "
+                        "the user asks about tomorrow or an extended/weekend outlook."
                     ),
                 },
             },
@@ -249,11 +268,18 @@ TOOLS = [
                 },
                 "new_start": {
                     "type": "string",
-                    "description": "New start as ISO 8601 with timezone offset (omit to keep current).",
+                    "description": (
+                        "New start as the user's LOCAL wall-clock time in ISO 8601 "
+                        "with no timezone offset and no 'Z' (e.g. '2026-06-15T22:00:00'). "
+                        "Don't convert to UTC. Omit to keep current."
+                    ),
                 },
                 "new_end": {
                     "type": "string",
-                    "description": "New end as ISO 8601 with timezone offset (omit to keep current).",
+                    "description": (
+                        "New end as the user's LOCAL wall-clock time in ISO 8601 with "
+                        "no offset. Omit to keep current."
+                    ),
                 },
                 "new_description": {
                     "type": "string",
@@ -275,7 +301,9 @@ TOOLS = [
             "tags show the account and calendar name, e.g. '[Google/personal/Bills]' "
             "means account_name='personal', calendar_name='Bills'. "
             "Use existing events to infer appropriate timing when the user doesn't "
-            "give exact times. Always include timezone offset in start/end."
+            "give exact times. Pass times as the user's LOCAL wall-clock time and "
+            "do NOT convert to UTC or append 'Z' — JARVIS attaches the user's "
+            "timezone itself."
         ),
         "input_schema": {
             "type": "object",
@@ -301,16 +329,19 @@ TOOLS = [
                 "start": {
                     "type": "string",
                     "description": (
-                        "Start as ISO 8601 with timezone offset, "
-                        "e.g. '2026-06-15T14:00:00-05:00'. "
+                        "Start as the user's LOCAL wall-clock time in ISO 8601 with "
+                        "NO timezone offset and no 'Z' — e.g. 10pm is "
+                        "'2026-06-15T22:00:00'. Don't convert to UTC. Only add an "
+                        "offset if the user explicitly names a different timezone. "
                         "For all-day events use 'YYYY-MM-DD'."
                     ),
                 },
                 "end": {
                     "type": "string",
                     "description": (
-                        "End as ISO 8601 with timezone offset. "
-                        "Default to 1 hour after start for unspecified durations."
+                        "End as the user's LOCAL wall-clock time in ISO 8601 with no "
+                        "offset (e.g. '2026-06-15T23:00:00'). Default to 1 hour "
+                        "after start for unspecified durations."
                     ),
                 },
                 "description": {
@@ -625,6 +656,59 @@ TOOLS = [
         },
     },
     {
+        "name": "set_personality",
+        "description": (
+            "Adjust how you (JARVIS) speak by changing one of your voice dials, "
+            "each 0-100. Call this whenever the user asks you to change your tone or "
+            "personality — e.g. 'turn up the sarcasm', 'humor down 15%', 'max "
+            "formality', 'be more concise', 'stop calling me Sir', 'reset your "
+            "personality'. Dials: brevity (terseness), formality (how refined and "
+            "butler-like, e.g. saying 'Sir'), humor (jokes/levity), sarcasm (dry "
+            "wit), proactivity (anticipating needs / volunteering suggestions). The "
+            "current value of each dial is shown in the Voice Dials section of your "
+            "system prompt — use it to resolve relative requests: for 'down 15%' "
+            "pass change_by:-15, for 'a bit more' pass a small positive change_by, "
+            "for an explicit level pass set_to. Changes apply to this session only "
+            "unless persist is true. To restore every dial to its default, pass "
+            "dial:'reset'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "dial": {
+                    "type": "string",
+                    "enum": [
+                        "brevity", "formality", "humor", "sarcasm",
+                        "proactivity", "reset",
+                    ],
+                    "description": "Which dial to change, or 'reset' to restore all defaults.",
+                },
+                "set_to": {
+                    "type": "integer",
+                    "description": (
+                        "Absolute new value 0-100. Use for explicit levels: 'max "
+                        "formality' -> 100, 'no sarcasm' -> 0, 'set humor to 10' -> 10."
+                    ),
+                },
+                "change_by": {
+                    "type": "integer",
+                    "description": (
+                        "Relative change in points, e.g. -15 for 'humor down 15%', "
+                        "+20 for 'a lot more sarcasm'. Ignored when set_to is given."
+                    ),
+                },
+                "persist": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, save as the new default for future sessions too. "
+                        "Default false — applies to the current session only."
+                    ),
+                },
+            },
+            "required": ["dial"],
+        },
+    },
+    {
         "name": "load_knowledge_pool",
         "description": (
             "Load content from a named Google Docs knowledge pool to help answer the "
@@ -732,6 +816,100 @@ if CONFIG.gmail_available:
     TOOLS = TOOLS + EMAIL_TOOLS
 
 
+# Spotify tools are only surfaced when Spotify is configured (SPOTIFY_ENABLED +
+# a client id). Appended at import time so the cached tool prefix stays constant
+# for a given install.
+SPOTIFY_TOOLS = [
+    {
+        "name": "play_music",
+        "description": (
+            "Start playing music on the user's Spotify. Use this when they ask to "
+            "play a song, artist, album, or playlist by name (e.g. 'play Back in "
+            "Black', 'play some Daft Punk', 'put on my Focus playlist'). You can "
+            "also pass a Spotify link or URI the user pasted to play that exact "
+            "item. Plays the best match — exact song titles are preferred over an "
+            "artist's most-streamed track. If the Spotify app isn't open yet, "
+            "this automatically launches it on the user's computer and starts "
+            "playback — so just call it; do NOT tell the user you can't reach a "
+            "device or ask them to open Spotify first. Requires Spotify Premium. "
+            "Use control_playback for pause/skip/volume and get_now_playing to see "
+            "what's on."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to play, e.g. 'Back in Black', 'Daft Punk', 'Focus'.",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["track", "album", "artist", "playlist"],
+                    "description": (
+                        "What to search for. Default 'track'. Use 'artist' for "
+                        "'play some <artist>', 'playlist' for a named playlist, "
+                        "'album' for a full album."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "control_playback",
+        "description": (
+            "Control current Spotify playback: pause, resume, skip to the next or "
+            "previous track, toggle shuffle, or set the volume. Use this for "
+            "transport and volume requests rather than play_music (which starts "
+            "something new)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "pause", "resume", "next", "previous",
+                        "shuffle_on", "shuffle_off", "volume",
+                    ],
+                    "description": "The playback action to perform.",
+                },
+                "volume_percent": {
+                    "type": "integer",
+                    "description": "0-100 volume level. Required only when action is 'volume'.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "get_now_playing",
+        "description": (
+            "Report what's currently playing on the user's Spotify (track and "
+            "artist), or that nothing is playing."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+]
+
+if CONFIG.spotify_available:
+    TOOLS = TOOLS + SPOTIFY_TOOLS
+
+
+# ── Easter egg ──────────────────────────────────────────────────────────────
+# Saying the specific incantation "Hey Jarvis, what on the calendar for today?"
+# maxes humor + sarcasm for that one reply and cues up Back in Black. Gated on
+# the "hey jarvis" prefix so ordinary calendar questions stay normal.
+# Pin the exact track by URI so search ranking can't substitute the artist's
+# most-streamed song (a bare "Back in Black AC/DC" search returned Thunderstruck).
+_EASTER_EGG_SONG = "spotify:track:08mG3Y1vljYA6bvDt4Wqkj"  # AC/DC — Back in Black
+
+
+def _is_easter_egg(message: str) -> bool:
+    norm = " ".join(re.sub(r"[^a-z0-9 ]", " ", (message or "").lower()).split())
+    return "hey jarvis" in norm and "calendar" in norm and "today" in norm
+
+
 def _execute_tool(name: str, input_data: dict) -> str:
     """Dispatch a tool call and return a result string."""
     if name == "get_calendar_events":
@@ -768,7 +946,22 @@ def _execute_tool(name: str, input_data: dict) -> str:
         return "\n\n".join(blocks)
     if name == "get_weather":
         from integrations import weather
-        return weather.get_weather(input_data.get("location"))
+        return weather.get_weather(
+            input_data.get("location"), days=int(input_data.get("days") or 1)
+        )
+    if name == "play_music":
+        from integrations import spotify
+        return spotify.play_music(
+            input_data["query"], kind=input_data.get("kind") or "track"
+        )
+    if name == "control_playback":
+        from integrations import spotify
+        return spotify.control_playback(
+            input_data["action"], volume_percent=input_data.get("volume_percent")
+        )
+    if name == "get_now_playing":
+        from integrations import spotify
+        return spotify.now_playing()
     if name == "recall_session_history":
         import datetime as dt
         from integrations import notes_watcher
@@ -784,9 +977,19 @@ def _execute_tool(name: str, input_data: dict) -> str:
         return "\n\n".join(blocks)
     if name == "create_note":
         from integrations import notes_watcher
+        category = (input_data.get("category") or "").strip()
+        content = (input_data.get("content") or "").strip()
+        missing = [
+            f for f, v in (("category", category), ("content", content)) if not v
+        ]
+        if missing:
+            return (
+                f"Error: create_note is missing required field(s): "
+                f"{', '.join(missing)}. Provide them and call it once more."
+            )
         return notes_watcher.create_note(
-            category=input_data["category"],
-            content=input_data["content"],
+            category=category,
+            content=content,
             title=input_data.get("title"),
             date=input_data.get("date"),
         )
@@ -860,6 +1063,14 @@ def _execute_tool(name: str, input_data: dict) -> str:
             dinner_time=input_data.get("dinner_time") or meal_prep.DEFAULT_DINNER_TIME,
             lunch_time=input_data.get("lunch_time") or meal_prep.DEFAULT_LUNCH_TIME,
         )
+    if name == "set_personality":
+        from .persona import PERSONA
+        return PERSONA.adjust(
+            dial=input_data["dial"],
+            set_to=input_data.get("set_to"),
+            change_by=input_data.get("change_by"),
+            persist=bool(input_data.get("persist", False)),
+        )
     if name == "load_knowledge_pool":
         import json
         from .config import ROOT_DIR
@@ -925,6 +1136,67 @@ def _block_to_dict(block) -> dict:
     return block.model_dump()
 
 
+def _with_message_cache_breakpoint(messages: list[dict]) -> list[dict]:
+    """Return ``messages`` with an ephemeral cache breakpoint on the final block.
+
+    Prompt caching is a prefix match over ``tools → system → messages``. The
+    tools+system prefix already carries its own breakpoint, but the *messages*
+    array is otherwise re-billed as fresh input on every request. A single
+    ``send()`` can fire up to MAX_TOOL_ROUNDS API calls, each re-sending the
+    whole (and growing) history; follow-up turns in a session re-send it again.
+
+    Marking the last block moves the breakpoint to the end of the conversation
+    each round. The previous request's breakpoint is now a prefix of this one,
+    so the API serves that span from cache (a ~10x cheaper read) and only the
+    newest turn is written fresh — the standard incremental multi-turn pattern.
+
+    The stored history is never mutated: only a shallow copy down to the last
+    block is made, so cache_control markers never accumulate or persist.
+    """
+    if not messages:
+        return messages
+    last = dict(messages[-1])
+    content = last.get("content")
+    breakpoint = {"type": "ephemeral"}
+    if isinstance(content, str):
+        if not content:
+            return messages  # empty text block would be rejected by the API
+        last["content"] = [
+            {"type": "text", "text": content, "cache_control": breakpoint}
+        ]
+    elif isinstance(content, list) and content:
+        new_content = list(content)
+        block = dict(new_content[-1])
+        block["cache_control"] = breakpoint
+        new_content[-1] = block
+        last["content"] = new_content
+    else:
+        return messages  # nothing markable (e.g. empty content list)
+    return messages[:-1] + [last]
+
+
+class _MonarchUnavailable(Exception):
+    """Internal signal that the Monarch MCP server couldn't be reached this turn.
+
+    Raised from the per-turn helper so ``send`` can retry once with the MCP
+    server detached instead of failing the whole answer."""
+
+
+def _is_mcp_connection_error(exc: Exception) -> bool:
+    """True for the transient 400 the API raises when it can't reach an MCP server.
+
+    Monarch's hosted MCP server occasionally goes unavailable/unresponsive; the
+    API surfaces that as ``invalid_request_error`` with a "Connection error
+    while communicating with MCP server" message. That's not a problem with the
+    request itself, so it's worth retrying the turn without the MCP server
+    attached rather than failing the whole answer.
+    """
+    msg = str(exc).lower()
+    return "mcp server" in msg and (
+        "connection error" in msg or "unavailable" in msg or "unresponsive" in msg
+    )
+
+
 # ── Client ────────────────────────────────────────────────────────────────────
 
 class ClaudeClient:
@@ -942,6 +1214,9 @@ class ClaudeClient:
         self._monarch_active = False
         # Same stickiness for meal-prep conversations and the web search tool.
         self._meal_active = False
+        # The "Hey Jarvis, what on the calendar for today?" gag fires once per
+        # session so it stays a surprise rather than replaying every time.
+        self._easter_egg_fired = False
         self._init_client()
 
     def _init_client(self) -> None:
@@ -976,6 +1251,11 @@ class ClaudeClient:
         self.history.clear()
         self._monarch_active = False
         self._meal_active = False
+        self._easter_egg_fired = False  # re-arm the gag for the new session
+        # Voice-dial tweaks are scoped to a conversation ("...for this convo"),
+        # so a fresh session restores the saved defaults.
+        from .persona import PERSONA
+        PERSONA.reset()
         log.info("session history cleared")
 
     def reload_context(self) -> None:
@@ -1100,80 +1380,184 @@ class ClaudeClient:
         if not self.ready:
             return self._init_error or "Claude client is not available."
 
+        # Fire the easter egg (if the phrase was said) before the prompt is
+        # built, so the boosted dials land in this turn — then restore them once
+        # the one snarky reply is done.
+        egg_restore = self._maybe_fire_easter_egg(user_message)
+        try:
+            return self._run_send(user_message, on_delta, on_reset)
+        finally:
+            if egg_restore:
+                egg_restore()
+
+    def _maybe_fire_easter_egg(self, message: str):
+        """If the secret phrase was said, max humor+sarcasm and cue Back in Black.
+
+        Returns a restore callable that undoes the dial boost after this one
+        reply, or ``None`` when not triggered. Fires at most once per session.
+        """
+        if (
+            self._easter_egg_fired
+            or not CONFIG.spotify_available
+            or not _is_easter_egg(message)
+        ):
+            return None
+        self._easter_egg_fired = True
+        from .persona import PERSONA
+
+        saved = {
+            "humor": PERSONA.dials.get("humor"),
+            "sarcasm": PERSONA.dials.get("sarcasm"),
+        }
+        PERSONA.adjust("humor", set_to=100)
+        PERSONA.adjust("sarcasm", set_to=100)
+        log.info("easter egg: humor+sarcasm -> 100, cueing %s", _EASTER_EGG_SONG)
+
+        def _play() -> None:
+            try:
+                from integrations import spotify
+                spotify.play_track_query(_EASTER_EGG_SONG)
+            except Exception as exc:  # noqa: BLE001
+                log.error("easter egg playback failed: %s", exc)
+
+        threading.Thread(target=_play, daemon=True).start()
+
+        def _restore() -> None:
+            for dial, value in saved.items():
+                if value is not None:
+                    PERSONA.adjust(dial, set_to=value)
+            log.info("easter egg dials restored")
+
+        return _restore
+
+    def _run_send(
+        self,
+        user_message: str,
+        on_delta: Callable[[str], None] | None = None,
+        on_reset: Callable[[], None] | None = None,
+    ) -> str:
+        """Core send: history compaction, prompt build, the bounded tool loop."""
         self._compact_history()
         history_snapshot = len(self.history)
         self.history.append({"role": "user", "content": user_message})
         system_prompt = self.context.build_system_prompt()
 
-        full_text = ""
-        try:
-            # ── Build API kwargs; add Monarch MCP server when enabled. These are
-            # reused on every round of the loop below, so local tools and the
-            # Monarch MCP tool stay available across sequential tool rounds.
+        # The Monarch MCP path needs parallel tool use DISABLED (so a local
+        # tool_use and an mcp_tool_use never land in the same turn and leave
+        # a dangling block); the web-search path needs it ENABLED (the API
+        # rejects disable_parallel_tool_use alongside that programmatic
+        # server tool). Those requirements are mutually exclusive, so at
+        # most one may attach per turn. Both flags stay sticky for the
+        # session, so we pick per-turn by the *current* message's topic:
+        # finance wins a finance message, meal wins a meal message, and a
+        # neutral follow-up favors Monarch's parallel-safe path.
+        fin_now = _looks_financial(user_message)
+        meal_now = _looks_meal_related(user_message)
+        if fin_now:
+            self._monarch_active = True
+        if meal_now:
+            self._meal_active = True
+
+        want_monarch = CONFIG.monarch_enabled and (
+            fin_now or (self._monarch_active and not meal_now)
+        )
+        want_web = meal_now or (self._meal_active and not fin_now)
+        if want_monarch and want_web:
+            want_web = False  # can't share a turn — keep the MCP-safe path
+
+        # If Monarch's hosted MCP server is unreachable mid-turn the API rejects
+        # the whole request; rather than fail the answer we retry once with the
+        # MCP server detached, so the user still gets a (finance-less) reply.
+        allow_monarch = True
+        while True:
             base_kwargs: dict = dict(
                 model=CONFIG.anthropic_model,
                 max_tokens=MAX_TOKENS,
                 system=system_prompt,
                 tools=TOOLS,
-                # A local tool_use always forces the API to stop the turn (it
-                # needs a client-supplied tool_result before continuing). If the
-                # model also requested the remote Monarch MCP tool in that same
-                # turn, the server never gets to resolve/pair it before the stop,
-                # leaving a dangling mcp_tool_use block that breaks the next
-                # call. Disabling parallel tool use keeps local and MCP tool
-                # calls on separate rounds instead.
-                tool_choice={"type": "auto", "disable_parallel_tool_use": True},
+                # Allow parallel tool use so the model can batch several actions
+                # (e.g. one note + six to-dos) into a single round instead of
+                # burning one round each and exhausting MAX_TOOL_ROUNDS. Only the
+                # Monarch MCP path re-disables this (in _run_turn), where a local
+                # tool_use sharing a turn with an mcp_tool_use leaves a dangling,
+                # unpaired block.
+                tool_choice={"type": "auto"},
             )
-            stream_fn = self._client.messages.stream
+            try:
+                return self._run_turn(
+                    base_kwargs, want_monarch, want_web, allow_monarch,
+                    on_delta, on_reset,
+                )
+            except _MonarchUnavailable as exc:
+                log.warning(
+                    "Monarch MCP server unreachable; retrying without finance data: %s",
+                    exc.__cause__,
+                )
+                del self.history[history_snapshot + 1:]  # keep the user message
+                allow_monarch = False
+                continue
+            except Exception as exc:  # noqa: BLE001
+                log.error("Claude API call failed: %s", exc)
+                # Roll back the entire failed turn (the user message plus any
+                # partial assistant/tool_result exchanges already appended this
+                # round) so a dangling tool_use can never linger into the next
+                # request — truncating to the pre-turn length handles that
+                # regardless of which round the failure happened in.
+                del self.history[history_snapshot:]
+                return f"⚠️ Error contacting Claude: {exc}"
 
-            # The Monarch MCP path needs parallel tool use DISABLED (so a local
-            # tool_use and an mcp_tool_use never land in the same turn and leave
-            # a dangling block); the web-search path needs it ENABLED (the API
-            # rejects disable_parallel_tool_use alongside that programmatic
-            # server tool). Those requirements are mutually exclusive, so at
-            # most one may attach per turn. Both flags stay sticky for the
-            # session, so we pick per-turn by the *current* message's topic:
-            # finance wins a finance message, meal wins a meal message, and a
-            # neutral follow-up favors Monarch's parallel-safe path.
-            fin_now = _looks_financial(user_message)
-            meal_now = _looks_meal_related(user_message)
-            if fin_now:
-                self._monarch_active = True
-            if meal_now:
-                self._meal_active = True
+    def _run_turn(
+        self,
+        base_kwargs: dict,
+        want_monarch: bool,
+        want_web: bool,
+        allow_monarch: bool,
+        on_delta: Callable[[str], None] | None,
+        on_reset: Callable[[], None] | None,
+    ) -> str:
+        """Run one full tool-use loop and return the assistant's reply.
 
-            want_monarch = CONFIG.monarch_enabled and (
-                fin_now or (self._monarch_active and not meal_now)
-            )
-            want_web = meal_now or (self._meal_active and not fin_now)
-            if want_monarch and want_web:
-                want_web = False  # can't share a turn — keep the MCP-safe path
+        Attaches the Monarch MCP server (or web search) per the want_* flags.
+        Raises ``_MonarchUnavailable`` if the MCP server can't be reached so the
+        caller can retry without it; any other failure propagates for the caller
+        to roll back and surface.
+        """
+        full_text = ""
+        last_pretext = ""  # most recent pre-tool narration, kept as a fallback
+        stream_fn = self._client.messages.stream
+        monarch_attached = False
+        if want_monarch and allow_monarch:
+            try:
+                from integrations.monarch_oauth import get_monarch_token
+                base_kwargs["mcp_servers"] = [{
+                    "type": "url",
+                    "name": "monarch",
+                    "url": _MONARCH_MCP_URL,
+                    "authorization_token": get_monarch_token(),
+                }]
+                base_kwargs["betas"] = [_MCP_BETA]
+                # Keep local and MCP tool calls on separate rounds so a local
+                # tool_use never shares a turn with an mcp_tool_use (which would
+                # leave a dangling, unpaired block).
+                base_kwargs["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
+                stream_fn = self._client.beta.messages.stream
+                monarch_attached = True
+                log.info("using beta endpoint with monarch mcp_servers attached")
+            except Exception as exc:
+                log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
+        elif want_web:
+            base_kwargs["tools"] = TOOLS + [_WEB_SEARCH_TOOL]
+            base_kwargs["tool_choice"] = {"type": "auto"}
+            base_kwargs["max_tokens"] = _MEAL_MAX_TOKENS
+            log.info("web search tool attached (meal-related conversation)")
 
-            if want_monarch:
-                try:
-                    from integrations.monarch_oauth import get_monarch_token
-                    base_kwargs["mcp_servers"] = [{
-                        "type": "url",
-                        "name": "monarch",
-                        "url": _MONARCH_MCP_URL,
-                        "authorization_token": get_monarch_token(),
-                    }]
-                    base_kwargs["betas"] = [_MCP_BETA]
-                    stream_fn = self._client.beta.messages.stream
-                    log.info("using beta endpoint with monarch mcp_servers attached")
-                except Exception as exc:
-                    log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
-            elif want_web:
-                base_kwargs["tools"] = TOOLS + [_WEB_SEARCH_TOOL]
-                base_kwargs["tool_choice"] = {"type": "auto"}
-                base_kwargs["max_tokens"] = _MEAL_MAX_TOKENS
-                log.info("web search tool attached (meal-related conversation)")
-
+        try:
             # ── Bounded tool-use loop: keep tools/mcp_servers attached on every
             # round so local tools (e.g. load_knowledge_pool) and the Monarch
             # MCP tool can both be used for one question, just sequentially.
             for round_num in range(1, MAX_TOOL_ROUNDS + 1):
-                with stream_fn(messages=self.history, **base_kwargs) as stream:
+                messages = _with_message_cache_breakpoint(self.history)
+                with stream_fn(messages=messages, **base_kwargs) as stream:
                     for text in stream.text_stream:
                         full_text += text
                         if on_delta:
@@ -1185,12 +1569,33 @@ class ClaudeClient:
                     round_num, [b.type for b in final_msg.content],
                 )
 
+                tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
+
+                # If the output cap was hit *while emitting a tool_use*, the
+                # tool's JSON arguments are truncated and would fail to execute
+                # (e.g. a long create_note loses its 'content'). Discard this
+                # half-formed attempt and re-run the round with a bigger budget,
+                # rather than running a broken call and looping on the error.
+                if (
+                    tool_uses
+                    and final_msg.stop_reason == "max_tokens"
+                    and base_kwargs.get("max_tokens", MAX_TOKENS) < _MAX_TOKENS_CEILING
+                ):
+                    log.warning(
+                        "round %d truncated mid tool_use (max_tokens); retrying with %d-token budget",
+                        round_num, _MAX_TOKENS_CEILING,
+                    )
+                    base_kwargs["max_tokens"] = _MAX_TOKENS_CEILING
+                    if full_text and on_reset:
+                        on_reset()
+                    full_text = ""
+                    continue
+
                 self.history.append({
                     "role": "assistant",
                     "content": [_block_to_dict(b) for b in final_msg.content],
                 })
 
-                tool_uses = [b for b in final_msg.content if b.type == "tool_use"]
                 if not tool_uses:
                     break
 
@@ -1198,6 +1603,11 @@ class ClaudeClient:
                 # answer comes after the tool result, not before it. Tell the UI
                 # to roll its live stream back to "thinking" so the discarded
                 # text doesn't linger on screen until the next round renders.
+                # Keep the most recent narration, though: if we later exhaust the
+                # round budget and the forced wrap-up comes back empty, it's the
+                # best summary we have of what just happened.
+                if full_text.strip():
+                    last_pretext = full_text
                 if full_text and on_reset:
                     on_reset()
                 full_text = ""
@@ -1237,7 +1647,8 @@ class ClaudeClient:
                     forced_kwargs = dict(base_kwargs)
                     forced_kwargs["tool_choice"] = {"type": "none"}
                     full_text = ""
-                    with stream_fn(messages=self.history, **forced_kwargs) as stream:
+                    messages = _with_message_cache_breakpoint(self.history)
+                    with stream_fn(messages=messages, **forced_kwargs) as stream:
                         for text in stream.text_stream:
                             full_text += text
                             if on_delta:
@@ -1250,17 +1661,26 @@ class ClaudeClient:
                     log.info("forced final response after exhausting tool rounds (%d chars)", len(full_text))
                 except Exception as exc:  # noqa: BLE001
                     log.error("forced final response failed: %s", exc)
-                    return "Done — but I couldn't generate a summary. Check your calendar/tasks to confirm."
+                    full_text = ""
+                # The model often goes quiet after a long run of actions (it
+                # already "narrated" in pre-tool text we discarded each round).
+                # Fall back to that last narration, or a generic confirmation,
+                # so the user never gets an empty reply.
+                if not full_text.strip():
+                    full_text = last_pretext.strip() or (
+                        "Done — I've completed those actions. Check your "
+                        "calendar, notes, and to-dos to confirm."
+                    )
+                    if on_delta:
+                        on_delta(full_text)
 
             log.info("response received (%d chars)", len(full_text))
             return full_text
 
         except Exception as exc:  # noqa: BLE001
-            log.error("Claude API call failed: %s", exc)
-            # Roll back the entire failed turn (the user message plus any
-            # partial assistant/tool_result exchanges already appended this
-            # round) so a dangling tool_use can never linger into the next
-            # request — truncating to the pre-turn length handles that
-            # regardless of which round the failure happened in.
-            del self.history[history_snapshot:]
-            return f"⚠️ Error contacting Claude: {exc}"
+            # A transient Monarch MCP outage is recoverable — signal the caller
+            # to retry without it. Everything else propagates for the caller to
+            # roll back the turn and surface a readable error.
+            if monarch_attached and _is_mcp_connection_error(exc):
+                raise _MonarchUnavailable from exc
+            raise
