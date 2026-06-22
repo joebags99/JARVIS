@@ -384,6 +384,18 @@ class Overlay:
         except Exception as exc:  # noqa: BLE001
             log.error("could not save session summary: %s", exc)
 
+        # Store in long-term memory for relevance-ranked recall, and auto-extract
+        # any durable facts/preferences worth keeping across sessions. Best-effort
+        # — a memory failure must never break session close.
+        try:
+            from .memory import get_memory
+            mem = get_memory()
+            mem.add_session(summary)
+            for fact in self.claude.extract_facts(history):
+                mem.add_fact(fact, source="auto-extracted")
+        except Exception as exc:  # noqa: BLE001
+            log.error("could not store session in long-term memory: %s", exc)
+
     # ── Input handling ────────────────────────────────────────────────────────
 
     def _submit(self, text: str) -> None:

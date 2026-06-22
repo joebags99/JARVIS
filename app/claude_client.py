@@ -122,6 +122,52 @@ def _is_mcp_connection_error(exc: Exception) -> bool:
     )
 
 
+# ── Memory: durable-fact extraction ──────────────────────────────────────────
+_FACT_EXTRACTION_PROMPT = (
+    "From this JARVIS conversation, extract any DURABLE facts or stable "
+    "preferences about the user that are worth remembering for future "
+    'conversations — e.g. "Allergic to shellfish", "Prefers concise answers", '
+    '"Daughter is named Mia", "Works at Daedabyte as CTO". Exclude transient, '
+    "one-off details (today's schedule, this week's tasks, the current "
+    "question). Return ONLY a JSON array of short plain-string facts, e.g. "
+    '["...", "..."]. Return [] if there are no durable facts.'
+)
+
+
+def _history_to_lines(history: list[dict]) -> list[str]:
+    """Flatten a conversation history to 'ROLE: text' lines (text blocks only)."""
+    lines: list[str] = []
+    for m in history:
+        role = m.get("role", "")
+        content = m.get("content", "")
+        if isinstance(content, str) and content.strip():
+            lines.append(f"{role.upper()}: {content.strip()}")
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    t = block.get("text", "").strip()
+                    if t:
+                        lines.append(f"{role.upper()}: {t}")
+    return lines
+
+
+def _parse_fact_list(text: str) -> list[str]:
+    """Best-effort parse of a JSON array of fact strings from model output."""
+    if not text:
+        return []
+    start, end = text.find("["), text.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        return []
+    try:
+        import json
+        data = json.loads(text[start:end + 1])
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item.strip() for item in data if isinstance(item, str) and item.strip()][:20]
+
+
 # ── Client ────────────────────────────────────────────────────────────────────
 
 class ClaudeClient:
@@ -191,19 +237,7 @@ class ClaudeClient:
         if not self.ready or not history:
             return ""
 
-        lines = []
-        for m in history:
-            role = m.get("role", "")
-            content = m.get("content", "")
-            if isinstance(content, str) and content.strip():
-                lines.append(f"{role.upper()}: {content.strip()}")
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        t = block.get("text", "").strip()
-                        if t:
-                            lines.append(f"{role.upper()}: {t}")
-
+        lines = _history_to_lines(history)
         if not lines:
             return ""
 
@@ -225,6 +259,31 @@ class ClaudeClient:
         except Exception as exc:  # noqa: BLE001
             log.error("summarize_session failed: %s", exc)
             return ""
+
+    def extract_facts(self, history: list[dict]) -> list[str]:
+        """Extract durable user facts/preferences from a session. [] on failure."""
+        if not self.ready or not history:
+            return []
+        lines = _history_to_lines(history)
+        if not lines:
+            return []
+        try:
+            response = self._client.messages.create(
+                model=CONFIG.summary_model,
+                max_tokens=400,
+                messages=[{
+                    "role": "user",
+                    "content": _FACT_EXTRACTION_PROMPT + "\n\n" + "\n".join(lines),
+                }],
+            )
+            text = response.content[0].text if response.content else ""
+            facts = _parse_fact_list(text)
+            if facts:
+                log.info("extracted %d durable fact(s) from session", len(facts))
+            return facts
+        except Exception as exc:  # noqa: BLE001
+            log.error("extract_facts failed: %s", exc)
+            return []
 
     def _compact_history(self) -> None:
         """Summarize older turns once history grows long, to bound token cost.

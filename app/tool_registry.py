@@ -154,20 +154,33 @@ def _get_now_playing(input_data: dict) -> str:
     return spotify.now_playing()
 
 
-def _recall_session_history(input_data: dict) -> str:
-    import datetime as dt
-
-    from integrations import notes_watcher
-    summaries = notes_watcher.read_recent_session_summaries(
-        int(input_data.get("limit") or 3)
-    )
-    if not summaries:
-        return "(No past session summaries yet.)"
+def _recall(input_data: dict) -> str:
+    from .memory import get_memory
+    query = (input_data.get("query") or "").strip()
+    limit = int(input_data.get("limit") or 5)
+    items = get_memory().search(query, limit=limit)
+    if not items:
+        return (
+            "(No relevant long-term memories found.)" if query
+            else "(No long-term memories yet.)"
+        )
     blocks = []
-    for note in summaries:
-        modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d %H:%M")
-        blocks.append(f"### {note.path.name} (saved {modified})\n{note.content}")
+    for it in items:
+        tag = "Fact" if it.kind == "fact" else "Session"
+        when = (it.created_at or "")[:10]
+        blocks.append(f"[{tag} · {when}] {it.content}")
     return "\n\n".join(blocks)
+
+
+def _remember(input_data: dict) -> str:
+    from .memory import get_memory
+    content = (input_data.get("content") or "").strip()
+    if not content:
+        return "Error: remember needs a non-empty 'content' string."
+    rid = get_memory().add_fact(content, source="remember-tool")
+    if rid is None:
+        return "Sorry, I couldn't save that to memory."
+    return f"Noted — I'll remember that: {content}"
 
 
 def _create_note(input_data: dict) -> str:
@@ -469,27 +482,62 @@ register(Tool(
 ))
 
 register(Tool(
-    name="recall_session_history",
+    name="recall",
     description=(
-        "Recall summaries of recent past JARVIS conversations. JARVIS auto-saves "
-        "a short summary whenever a session with several exchanges is closed, so "
-        "this is your cross-session memory. Call it when the user refers back to "
-        "an earlier conversation — 'what did we decide last time', 'pick up where "
-        "we left off', 'what were we talking about yesterday' — or when earlier "
-        "context would clearly help. This is separate from meeting notes; use "
-        "get_recent_notes for those."
+        "Search JARVIS's long-term memory — durable facts about the user plus "
+        "summaries of past conversations — for anything relevant to the current "
+        "question. Call it when the user refers back to an earlier conversation "
+        "('what did we decide last time', 'pick up where we left off', 'what were "
+        "we talking about yesterday'), asks what you know or remember about "
+        "something, or when past context would clearly help. Pass a query of key "
+        "terms to rank results by relevance; omit it to get the most recent "
+        "memories. This is cross-session memory, separate from meeting notes (use "
+        "get_recent_notes for those)."
     ),
     input_schema={
         "type": "object",
         "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "Key terms to search memory for, e.g. 'kitchen remodel budget'. "
+                    "Omit to return the most recent memories instead."
+                ),
+            },
             "limit": {
                 "type": "integer",
-                "description": "How many recent session summaries to load. Default 3.",
+                "description": "Max memories to return. Default 5.",
             },
         },
         "required": [],
     },
-    handler=_recall_session_history,
+    handler=_recall,
+))
+
+register(Tool(
+    name="remember",
+    description=(
+        "Save a durable fact or stable preference about the user to long-term "
+        "memory so it's available in future conversations — e.g. the user says "
+        "'remember that I'm allergic to shellfish', 'my anniversary is June 3', "
+        "'I prefer short answers'. Use it for lasting facts, NOT transient details "
+        "like today's schedule or this week's tasks. Keep each fact short and "
+        "self-contained."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": (
+                    "The fact or preference to remember, as a short self-contained "
+                    "statement, e.g. 'Allergic to shellfish'."
+                ),
+            },
+        },
+        "required": ["content"],
+    },
+    handler=_remember,
 ))
 
 register(Tool(

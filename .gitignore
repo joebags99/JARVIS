@@ -31,6 +31,12 @@ name_corrections.json
 # Settings-panel overrides (your categories, etc.)
 jarvis_config.json
 
+# Long-term memory store (your facts + past session summaries)
+memory.db
+memory.db-journal
+memory.db-wal
+memory.db-shm
+
 # Everything in /context except the committed example templates.
 context/*
 !context/*.example.md

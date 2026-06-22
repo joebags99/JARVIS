@@ -26,6 +26,15 @@ def main() -> int:
         log.info("  [%s] %-24s %s", "ON " if ok else "off", name, detail)
     log.info("  Categories: %s", ", ".join(CONFIG.categories))
 
+    # Long-term memory store (SQLite). Import any legacy session summaries once.
+    try:
+        from app.memory import get_memory
+        mem = get_memory()
+        mem.import_legacy_sessions()
+        log.info("  Memory: %d item(s)", mem.count())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("memory init failed: %s", exc)
+
     if not CONFIG.has_anthropic_key:
         log.warning(
             "No ANTHROPIC_API_KEY configured — JARVIS will start but show an "
