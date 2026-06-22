@@ -23,61 +23,35 @@ import requests
 
 from app.config import CONFIG
 from app.logging_setup import get_logger
+from integrations import _http
 
 log = get_logger("spotify")
 
 _API = "https://api.spotify.com/v1"
 
-# Same write-safe retry policy as integrations/todoist.py: 502/503/504/429 mean
-# the request wasn't applied (safe to retry, even for a non-idempotent skip); an
-# ambiguous 500 or a timeout is only retried on reads.
-_RETRY_STATUSES = {429, 500, 502, 503, 504}
-_MAX_ATTEMPTS = 3
-_BACKOFF_BASE = 0.5  # seconds → 0.5s, 1.0s between attempts
-
 _KIND_TYPES = {"track": "tracks", "album": "albums", "artist": "artists", "playlist": "playlists"}
 
 
 def _request(method: str, path: str, **kwargs) -> requests.Response:
-    """Spotify Web API call with bearer auth, timeout, and transient retries."""
+    """Spotify Web API call with bearer auth, timeout, and transient retries.
+
+    Uses the shared write-safe policy and honors Spotify's ``Retry-After`` hint
+    on a 429. Unlike Todoist, a bare ``ConnectionError`` is only retried on reads
+    (a non-idempotent skip/next must not fire twice).
+    """
     from integrations import spotify_oauth
 
     url = path if path.startswith("http") else f"{_API}{path}"
-    kwargs.setdefault("timeout", 15)
     headers = kwargs.pop("headers", None) or {}
     headers["Authorization"] = f"Bearer {spotify_oauth.get_spotify_token()}"
     kwargs["headers"] = headers
-    is_get = method.upper() == "GET"
-
-    last_exc: Exception | None = None
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
-        delay = _BACKOFF_BASE * (2 ** (attempt - 1))
-        try:
-            resp = requests.request(method, url, **kwargs)
-            resp.raise_for_status()
-            return resp
-        except requests.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else None
-            retryable = status in _RETRY_STATUSES and (status != 500 or is_get)
-            if not retryable or attempt == _MAX_ATTEMPTS:
-                raise
-            last_exc = exc
-            if status == 429:  # honor Spotify's rate-limit backoff hint
-                retry_after = (exc.response.headers or {}).get("Retry-After", "")
-                if str(retry_after).isdigit():
-                    delay = max(delay, int(retry_after))
-        except (requests.Timeout, requests.ConnectionError) as exc:
-            if not is_get or attempt == _MAX_ATTEMPTS:
-                raise
-            last_exc = exc
-
-        log.warning(
-            "Spotify %s %s failed (attempt %d/%d: %s); retrying in %.1fs",
-            method, path, attempt, _MAX_ATTEMPTS, last_exc, delay,
-        )
-        time.sleep(delay)
-
-    raise last_exc  # pragma: no cover — loop always returns or raises above
+    return _http.request_with_retries(
+        method, url,
+        label="Spotify",
+        honor_retry_after=True,
+        logger=log,
+        **kwargs,
+    )
 
 
 def _not_configured() -> str:

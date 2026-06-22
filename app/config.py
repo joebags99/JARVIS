@@ -257,6 +257,36 @@ class Config:
         """Gmail account names, falling back to the calendar's GOOGLE_ACCOUNTS."""
         return self.gmail_accounts or self.google_accounts
 
+    def diagnostics(self) -> list[tuple[str, bool, str]]:
+        """Readiness of each integration as ``(name, ok, detail)`` rows.
+
+        Used for the startup self-check so a misconfigured integration is visible
+        in the logs at launch instead of only surfacing when a tool is first
+        called. ``detail`` explains what's missing (or, when ok, how it's set).
+        """
+        return [
+            ("Anthropic API", self.has_anthropic_key,
+             "required — set ANTHROPIC_API_KEY in .env" if not self.has_anthropic_key
+             else f"model={self.anthropic_model}"),
+            ("Google (calendar/docs)", self.google_enabled,
+             f"accounts={','.join(self.google_accounts)}" if self.google_enabled
+             else f"missing {self.google_credentials_path}"),
+            ("Gmail", self.gmail_available,
+             f"accounts={','.join(self.gmail_accounts_resolved)}" if self.gmail_available
+             else "set GMAIL_ENABLED=true + Google credentials"),
+            ("Outlook (Graph)", self.outlook_enabled,
+             "via Azure app" if self.outlook_enabled else "set OUTLOOK_CLIENT_ID"),
+            ("Outlook (ICS)", self.outlook_ics_enabled,
+             "published feed" if self.outlook_ics_enabled else "set OUTLOOK_ICS_URL"),
+            ("Todoist", self.todoist_enabled,
+             "token set" if self.todoist_enabled else "set TODOIST_API_KEY"),
+            ("Spotify", self.spotify_available,
+             "client id set" if self.spotify_available
+             else "set SPOTIFY_ENABLED=true + SPOTIFY_CLIENT_ID"),
+            ("Monarch Money", self.monarch_enabled,
+             "enabled (MCP)" if self.monarch_enabled else "set MONARCH_ENABLED=true"),
+        ]
+
 
 # Singleton-ish config used across the app.
 CONFIG = Config()

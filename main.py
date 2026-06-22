@@ -19,6 +19,12 @@ def main() -> int:
     log.info("─" * 50)
     log.info("JARVIS starting up (user=%s)", CONFIG.user_name)
 
+    # Startup self-check: log which integrations are live vs. misconfigured, so a
+    # missing token/flag is visible at launch instead of only when first used.
+    log.info("Integration readiness:")
+    for name, ok, detail in CONFIG.diagnostics():
+        log.info("  [%s] %-24s %s", "ON " if ok else "off", name, detail)
+
     if not CONFIG.has_anthropic_key:
         log.warning(
             "No ANTHROPIC_API_KEY configured — JARVIS will start but show an "

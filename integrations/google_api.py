@@ -14,15 +14,9 @@ import ssl
 import time
 
 from app.logging_setup import get_logger
+from integrations import _http
 
 log = get_logger("google_api")
-
-# 502/503/504 (gateway/unavailable) and 429 (rate limit) mean the request wasn't
-# applied → safe to retry even for writes. 500 is ambiguous for a write (it may
-# have taken effect), so it's only retried for idempotent calls.
-_RETRY_STATUSES = {429, 500, 502, 503, 504}
-_MAX_ATTEMPTS = 3
-_BACKOFF_BASE = 0.5  # seconds → 0.5s, 1.0s between attempts
 
 # Network-level failures before a response arrived.
 _TRANSIENT_NET = (
@@ -56,13 +50,13 @@ def execute(request, *, idempotent: bool = True, label: str = "google api"):
     403/404…) always raise immediately.
     """
     last_exc: Exception | None = None
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
+    for attempt in range(1, _http.MAX_ATTEMPTS + 1):
         try:
             return request.execute()
         except Exception as exc:  # noqa: BLE001
             status = _status_of(exc)
             if status is not None:
-                retryable = status in _RETRY_STATUSES and (status != 500 or idempotent)
+                retryable = _http.should_retry_status(status, idempotent)
             elif isinstance(exc, _TRANSIENT_NET):
                 # A drop before a response: safe to retry reads; for a write it
                 # may already have landed, so don't risk a duplicate.
@@ -70,14 +64,14 @@ def execute(request, *, idempotent: bool = True, label: str = "google api"):
             else:
                 retryable = False  # programming/auth/other error → surface it
 
-            if not retryable or attempt == _MAX_ATTEMPTS:
+            if not retryable or attempt == _http.MAX_ATTEMPTS:
                 raise
             last_exc = exc
 
-        delay = _BACKOFF_BASE * (2 ** (attempt - 1))
+        delay = _http.backoff_delay(attempt)
         log.warning(
             "%s failed (attempt %d/%d: %s); retrying in %.1fs",
-            label, attempt, _MAX_ATTEMPTS, last_exc, delay,
+            label, attempt, _http.MAX_ATTEMPTS, last_exc, delay,
         )
         time.sleep(delay)
 

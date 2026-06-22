@@ -1,0 +1,19 @@
+# Tooling configuration for JARVIS (lint + tests).
+#
+# Runtime dependencies live in requirements.txt; this file intentionally has no
+# [project] table so it doesn't compete with that file as the install source.
+# It only configures the developer tools (ruff, pytest).
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# Lint rule set is left at ruff's default (pyflakes + a curated pycodestyle
+# subset), which the codebase already passes. Tightening it (import sorting,
+# bugbear, pyupgrade) is tracked as a later cleanup so this gate stays green.
+
+[tool.pytest.ini_options]
+# Put the repo root on sys.path so `import app` / `import integrations` resolve
+# without an installed package.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"

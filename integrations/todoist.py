@@ -20,13 +20,13 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-import time
 
 import parsedatetime
 import requests
 
 from app.config import CONFIG
 from app.logging_setup import get_logger
+from integrations import _http
 
 log = get_logger("todoist")
 
@@ -66,59 +66,24 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {CONFIG.todoist_api_key}"}
 
 
-# Transient HTTP statuses worth retrying. 502/503/504 (gateway/unavailable) and
-# 429 (rate limit) mean the request almost certainly wasn't applied, so they're
-# safe to retry even for writes. 500 is ambiguous for a write (it may have taken
-# effect), so it's only retried on GETs to avoid creating duplicate tasks.
-_RETRY_STATUSES = {429, 500, 502, 503, 504}
-_MAX_ATTEMPTS = 3
-_BACKOFF_BASE = 0.5  # seconds → 0.5s, 1.0s between attempts
-
-
 def _request(method: str, path: str, **kwargs) -> requests.Response:
     """HTTP to the Todoist API with auth, timeout, and transient-failure retries.
 
     Todoist occasionally returns a brief 503/502 or drops a connection; rather
-    than fail the user's command on a momentary blip, retry a couple of times
-    with exponential backoff. Non-transient errors (400/401/404…) raise at once.
+    than fail the user's command on a momentary blip, the shared policy retries
+    a couple of times with exponential backoff. A bare ``ConnectionError`` never
+    reached the server, so it's always safe to retry (even for a write); other
+    non-transient errors (400/401/404…) raise at once.
     """
     url = path if path.startswith("http") else f"{BASE}{path}"
-    kwargs.setdefault("timeout", 15)
     kwargs.setdefault("headers", _headers())
-    is_get = method.upper() == "GET"
-
-    last_exc: Exception | None = None
-    for attempt in range(1, _MAX_ATTEMPTS + 1):
-        try:
-            resp = requests.request(method, url, **kwargs)
-            resp.raise_for_status()
-            return resp
-        except requests.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else None
-            retryable = status in _RETRY_STATUSES and (status != 500 or is_get)
-            if not retryable or attempt == _MAX_ATTEMPTS:
-                raise
-            last_exc = exc
-        except requests.Timeout as exc:
-            # A write may have been applied server-side before timing out, so
-            # don't risk a duplicate — only retry timeouts on GETs.
-            if not is_get or attempt == _MAX_ATTEMPTS:
-                raise
-            last_exc = exc
-        except requests.ConnectionError as exc:
-            # Never reached the server → always safe to retry.
-            if attempt == _MAX_ATTEMPTS:
-                raise
-            last_exc = exc
-
-        delay = _BACKOFF_BASE * (2 ** (attempt - 1))
-        log.warning(
-            "Todoist %s %s failed (attempt %d/%d: %s); retrying in %.1fs",
-            method, path, attempt, _MAX_ATTEMPTS, last_exc, delay,
-        )
-        time.sleep(delay)
-
-    raise last_exc  # pragma: no cover — loop always returns or raises above
+    return _http.request_with_retries(
+        method, url,
+        label="Todoist",
+        always_retry_connection_error=True,
+        logger=log,
+        **kwargs,
+    )
 
 
 def _results(resp: requests.Response) -> list[dict]:
