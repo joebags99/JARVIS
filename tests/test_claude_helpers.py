@@ -35,6 +35,23 @@ def test_parse_fact_list():
     assert cc._parse_fact_list('["ok", 3, "", "  trim  "]') == ["ok", "trim"]
 
 
+def test_is_transient_api_error():
+    class _Status(Exception):
+        def __init__(self, code):
+            self.status_code = code
+            super().__init__("api error")
+
+    assert cc._is_transient_api_error(_Status(529))   # overloaded
+    assert cc._is_transient_api_error(_Status(429))   # rate limit
+    assert cc._is_transient_api_error(_Status(503))
+    assert not cc._is_transient_api_error(_Status(400))
+    assert not cc._is_transient_api_error(_Status(404))
+    # message-based detection when no status_code is exposed
+    assert cc._is_transient_api_error(Exception("Overloaded"))
+    assert cc._is_transient_api_error(Exception("rate limit exceeded"))
+    assert not cc._is_transient_api_error(ValueError("bad input"))
+
+
 def test_history_to_lines_text_blocks_only():
     hist = [
         {"role": "user", "content": "hello"},

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from typing import Callable
 
 from . import history
@@ -39,6 +40,15 @@ _MEAL_MAX_TOKENS = 4096
 # actually generated, so a high ceiling costs nothing on normal short replies.
 _MAX_TOKENS_CEILING = 8192
 MAX_TOOL_ROUNDS = 16  # safety cap on local tool_use <-> tool_result round trips
+
+# Transient Anthropic API failures (529 overloaded, 429 rate-limit, 5xx) are
+# server-side blips, not bad requests, so the turn is retried with backoff on top
+# of the SDK's own quick retries — a brief overload then self-heals instead of
+# failing the user's request. Only retried before any tool has run this turn (see
+# _run_send), so a retry can never re-fire a tool's side effect.
+_MAX_API_RETRIES = 2
+_API_RETRY_BACKOFF = 2.0  # seconds → 2s, 4s
+_TRANSIENT_API_STATUSES = frozenset({429, 500, 503, 529})
 
 _MONARCH_MCP_URL = "https://api.monarch.com/mcp"
 _MCP_BETA = "mcp-client-2025-04-04"
@@ -120,6 +130,20 @@ def _is_mcp_connection_error(exc: Exception) -> bool:
     return "mcp server" in msg and (
         "connection error" in msg or "unavailable" in msg or "unresponsive" in msg
     )
+
+
+def _is_transient_api_error(exc: Exception) -> bool:
+    """True for a transient Anthropic API failure (overload / rate-limit / 5xx).
+
+    These are server-side blips worth retrying, distinct from a malformed request
+    (400/401/404). Detected by HTTP status when the SDK exposes one, else by the
+    overloaded/rate-limit keywords in the message.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status in _TRANSIENT_API_STATUSES:
+        return True
+    msg = str(exc).lower()
+    return "overloaded" in msg or "rate limit" in msg or "rate_limit" in msg
 
 
 # ── Memory: durable-fact extraction ──────────────────────────────────────────
@@ -403,6 +427,7 @@ class ClaudeClient:
         # the whole request; rather than fail the answer we retry once with the
         # MCP server detached, so the user still gets a (finance-less) reply.
         allow_monarch = True
+        transient_attempts = 0
         while True:
             base_kwargs: dict = dict(
                 model=CONFIG.anthropic_model,
@@ -431,6 +456,27 @@ class ClaudeClient:
                 allow_monarch = False
                 continue
             except Exception as exc:  # noqa: BLE001
+                # A transient overload/rate-limit before any tool has executed
+                # this turn (history still holds only the user message) is safe
+                # to retry with backoff — no tool side effect can be duplicated.
+                if (
+                    _is_transient_api_error(exc)
+                    and transient_attempts < _MAX_API_RETRIES
+                    and len(self.history) == history_snapshot + 1
+                ):
+                    transient_attempts += 1
+                    delay = _API_RETRY_BACKOFF * (2 ** (transient_attempts - 1))
+                    log.warning(
+                        "transient Claude API error (attempt %d/%d: %s); retrying in %.1fs",
+                        transient_attempts, _MAX_API_RETRIES, exc, delay,
+                    )
+                    if on_reset:
+                        try:
+                            on_reset()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    time.sleep(delay)
+                    continue
                 log.error("Claude API call failed: %s", exc)
                 # Roll back the entire failed turn (the user message plus any
                 # partial assistant/tool_result exchanges already appended this
