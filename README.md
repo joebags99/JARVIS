@@ -272,6 +272,22 @@ gitignored.
 > prefers appending for logs, but if you want a hands-off zone, keep those notes in
 > a separate vault.
 
+**Verify it first — token-free.** A small management CLI lets you check the wiring
+and preview the import **without spending any Claude tokens** (it never calls the
+API). From the repo root:
+
+```bash
+python -m app.vault_cli check            # config + scaffold + what would import
+python -m app.vault_cli migrate --dry-run  # preview the conversion (writes nothing)
+python -m app.vault_cli migrate          # do the import (idempotent; copies, never moves)
+python -m app.vault_cli search "budget"  # confirm retrieval works
+python -m app.vault_cli list [folder]    # browse the vault
+```
+
+`check` and `migrate --dry-run` are read-only previews — start there. The same
+migration also runs automatically the first time you launch JARVIS with the vault
+enabled, so the CLI is optional; it just lets you look before you leap.
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md

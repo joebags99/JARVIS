@@ -452,6 +452,69 @@ def _copy_into(src: Path, dest: Path) -> bool:
         return False
 
 
+def _legacy_note_targets(notes_dir: Path):
+    """Yield ``(src, dest_relative)`` for each legacy ``notes/`` markdown file.
+
+    Shared by the live migration and its dry-run preview so the two can never
+    drift. Root-level ``session_*.md`` summaries land in ``Sessions/``; files in a
+    ``notes/<category>/`` subfolder go to ``Imported/<category>/``; anything else
+    at the notes root goes to ``Imported/``.
+    """
+    notes_dir = Path(notes_dir)
+    if not notes_dir.exists():
+        return
+    for md in sorted(notes_dir.rglob(f"*{NOTE_EXT}")):
+        relparts = md.relative_to(notes_dir).parts
+        if md.parent == notes_dir and md.name.startswith("session_"):
+            yield md, f"Sessions/{md.name}"
+        elif len(relparts) > 1:  # notes/<category>/<file>
+            yield md, f"Imported/{relparts[0]}/{md.name}"
+        else:
+            yield md, f"Imported/{md.name}"
+
+
+def _count_legacy_facts(db_path: Path) -> int:
+    """Number of durable facts in a legacy memory.db (0 if absent/unreadable)."""
+    if not Path(db_path).exists():
+        return 0
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=5)
+        try:
+            return conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE kind='fact'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not count legacy facts in %s: %s", db_path, exc)
+        return 0
+
+
+def migration_plan(notes_dir: Path | None = None, memory_db: Path | None = None) -> dict:
+    """Preview what :func:`migrate_legacy` would import — **writes nothing**.
+
+    Powers the token-free ``vault_cli migrate --dry-run`` "look before you leap"
+    check. Does not create the vault folder or the migration marker; it only
+    inspects the legacy sources. Returns a dict with the resolved vault root,
+    whether a migration already ran, the planned note/session copies as
+    ``(src, dest)`` pairs, and the durable-fact count.
+    """
+    vault = CONFIG.obsidian_vault
+    root = vault.expanduser().resolve() if vault else None
+    notes: list[tuple[str, str]] = []
+    sessions: list[tuple[str, str]] = []
+    for src, dest_rel in _legacy_note_targets(notes_dir or NOTES_DIR):
+        bucket = sessions if dest_rel.startswith("Sessions/") else notes
+        bucket.append((str(src), dest_rel))
+    return {
+        "vault_root": str(root) if root else None,
+        "already_migrated": bool(root and (root / _MIGRATION_MARKER).exists()),
+        "notes": notes,
+        "sessions": sessions,
+        "fact_count": _count_legacy_facts(memory_db or MEMORY_DB_PATH),
+    }
+
+
 def migrate_legacy(notes_dir: Path | None = None, memory_db: Path | None = None) -> int:
     """One-time, idempotent, non-destructive import of legacy notes + facts.
 
@@ -468,20 +531,10 @@ def migrate_legacy(notes_dir: Path | None = None, memory_db: Path | None = None)
         return 0
     ensure_scaffold()
 
-    notes_dir = notes_dir or NOTES_DIR
     migrated = 0
-    if notes_dir and Path(notes_dir).exists():
-        notes_dir = Path(notes_dir)
-        for md in sorted(notes_dir.rglob(f"*{NOTE_EXT}")):
-            relparts = md.relative_to(notes_dir).parts
-            if md.parent == notes_dir and md.name.startswith("session_"):
-                dest = root / "Sessions" / md.name
-            elif len(relparts) > 1:  # notes/<category>/<file>
-                dest = root / "Imported" / relparts[0] / md.name
-            else:
-                dest = root / "Imported" / md.name
-            if _copy_into(md, dest):
-                migrated += 1
+    for src, dest_rel in _legacy_note_targets(notes_dir or NOTES_DIR):
+        if _copy_into(src, root / dest_rel):
+            migrated += 1
 
     migrated += _migrate_facts(memory_db or MEMORY_DB_PATH, root)
 

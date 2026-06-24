@@ -167,3 +167,20 @@ def test_migrate_legacy_idempotent_and_nondestructive(vault, tmp_path):
     assert obsidian.migrate_legacy(notes_dir=notes, memory_db=mem_db) == 0
     assert (notes / "Daedabyte" / "2026-01-01_kickoff.md").exists()
     assert mem_db.exists()
+
+
+def test_migration_plan_previews_without_writing(vault, tmp_path):
+    notes = tmp_path / "notes"
+    (notes / "General").mkdir(parents=True)
+    (notes / "General" / "a.md").write_text("x", encoding="utf-8")
+    (notes / "session_2026-01-01_09-00.md").write_text("y", encoding="utf-8")
+    mem_db = tmp_path / "memory.db"
+    Memory(mem_db).add_fact("likes tea")
+
+    plan = obsidian.migration_plan(notes_dir=notes, memory_db=mem_db)
+    assert [d for _, d in plan["notes"]] == ["Imported/General/a.md"]
+    assert [d for _, d in plan["sessions"]] == ["Sessions/session_2026-01-01_09-00.md"]
+    assert plan["fact_count"] == 1
+    assert plan["already_migrated"] is False
+    # A preview writes nothing — no vault folder, marker, or Imported/ created.
+    assert not vault.exists()
