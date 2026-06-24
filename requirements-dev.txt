@@ -1,0 +1,12 @@
+# Developer tooling for the test + lint gate. This intentionally does NOT pull
+# in requirements.txt: the unit tests cover pure logic and only need a handful
+# of light runtime deps, so CI stays fast and avoids the heavy/native packages
+# (pywebview, faster-whisper, …) that the desktop app needs but the tests don't.
+
+pytest>=8,<10
+ruff>=0.6
+
+# Light runtime deps imported directly by the unit tests.
+python-dotenv>=1.0.0
+parsedatetime>=2.6
+requests>=2.31.0

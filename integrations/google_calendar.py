@@ -14,7 +14,6 @@ from __future__ import annotations
 import datetime as dt
 import inspect
 from dataclasses import dataclass
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from app.config import ROOT_DIR, CONFIG

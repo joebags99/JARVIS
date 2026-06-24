@@ -1,10 +1,14 @@
 # ── Core ─────────────────────────────────────────────────────
 # >=0.60.0 needed for the native web_search tool type used by meal prep.
-anthropic>=0.60.0
+# Upper bound: the SDK is still 0.x and can break across minor bumps; the app
+# also relies on beta MCP/web-search shapes, so pin below the next major.
+anthropic>=0.60.0,<1.0
 python-dotenv>=1.0.0
 
 # ── UI / tray ────────────────────────────────────────────────
-pywebview>=5.1
+# Upper bound: pywebview majors change the backend/transparency surface this
+# app pokes at directly (layered windows, evaluate_js), so cap the major.
+pywebview>=5.1,<7
 pythonnet>=3.0.3; sys_platform == 'win32'
 pystray>=0.19.5
 Pillow>=10.2.0
@@ -12,7 +16,8 @@ Pillow>=10.2.0
 # ── Voice input (optional — see README if install fails) ─────
 sounddevice>=0.4.6
 scipy>=1.11.0
-numpy>=1.24.0
+# Upper bound: numpy majors (the 2.0 ABI break) ripple through scipy/whisper.
+numpy>=1.24.0,<3
 faster-whisper>=1.0.0
 
 # ── Text-to-speech (optional — only what your chosen TTS_ENGINE needs) ──

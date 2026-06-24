@@ -7,6 +7,7 @@ on disk in gitignored files; this module just reads it.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,11 +32,15 @@ TRAY_ICON_PATH = ASSETS_DIR / "tray_icon.png"
 for _d in (CONTEXT_DIR, NOTES_DIR, LOGS_DIR, ASSETS_DIR):
     _d.mkdir(parents=True, exist_ok=True)
 
-# Notes are split into per-category subfolders so separate work streams never
-# mix (mirrors integrations/notes_watcher.py's CATEGORIES — duplicated here,
-# not imported, to avoid a circular import with that module).
-for _cat in ("Daedabyte", "General", "Brightpoint", "DnD"):
-    (NOTES_DIR / _cat).mkdir(parents=True, exist_ok=True)
+# Default note/task categories (work/personal "streams"). Each maps 1:1 to a
+# notes/<category>/ subfolder and a Todoist project. Override per-user via the
+# JARVIS_CATEGORIES env var (comma-separated); kept here as the back-compat
+# default for the original single-user setup.
+DEFAULT_CATEGORIES = ["Daedabyte", "General", "Brightpoint", "DnD"]
+
+# Panel-editable overrides written by the in-app settings panel. Gitignored,
+# same convention as persona_dials.json; values here win over the .env defaults.
+USER_CONFIG_FILE = ROOT_DIR / "jarvis_config.json"
 
 
 # ── UI color palette (from the spec) ─────────────────────────────────────────
@@ -72,11 +77,49 @@ def _get_float(name: str, default: float) -> float:
         return default
 
 
+def _get_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("true", "1", "yes", "on")
+
+
 def _get_list(name: str, default: list[str]) -> list[str]:
     raw = os.getenv(name, "").strip()
     if not raw:
         return default
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _read_user_config() -> dict:
+    """Read the gitignored jarvis_config.json. Returns {} if absent or unreadable."""
+    if not USER_CONFIG_FILE.exists():
+        return {}
+    try:
+        data = json.loads(USER_CONFIG_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _clean_categories(categories: list[str]) -> list[str]:
+    """Strip blanks and case-insensitive duplicates, preserving order."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for c in categories or []:
+        name = str(c).strip()
+        if name and name.lower() not in seen:
+            cleaned.append(name)
+            seen.add(name.lower())
+    return cleaned
+
+
+def _resolve_categories() -> list[str]:
+    """Categories from jarvis_config.json, else JARVIS_CATEGORIES, else defaults."""
+    saved = _clean_categories(_read_user_config().get("categories") or [])
+    if saved:
+        return saved
+    return _get_list("JARVIS_CATEGORIES", list(DEFAULT_CATEGORIES))
 
 
 @dataclass
@@ -97,6 +140,10 @@ class Config:
 
     # App
     user_name: str = field(default_factory=lambda: _get("JARVIS_USER_NAME", "User"))
+    # Note/task categories — the named buckets notes and Todoist tasks file into.
+    # Resolved from jarvis_config.json (settings panel) → JARVIS_CATEGORIES env →
+    # the back-compat defaults, so categories aren't baked into code.
+    categories: list[str] = field(default_factory=_resolve_categories)
     window_position: str = field(
         default_factory=lambda: _get("JARVIS_WINDOW_POSITION", "top-right")
     )
@@ -168,6 +215,27 @@ class Config:
     knowledge_pools_file: str = field(
         default_factory=lambda: _get("KNOWLEDGE_POOLS_FILE", "knowledge_pools.json")
     )
+
+    # ── Proactivity (optional, off by default) ───────────────────────────────
+    # Master switch for the background scheduler (scheduled briefing, meeting
+    # alerts, important-email pings). Nothing proactive runs unless this is true.
+    proactive_enabled: bool = field(
+        default_factory=lambda: _get_bool("JARVIS_PROACTIVE_ENABLED")
+    )
+    # Daily-briefing auto-trigger time as "HH:MM" (24h). Blank = no auto-briefing.
+    briefing_time: str = field(default_factory=lambda: _get("JARVIS_BRIEFING_TIME"))
+    # Quiet-hours window "HH:MM-HH:MM" during which meeting/email alerts are
+    # suppressed (the scheduled briefing still fires). Blank = no quiet hours.
+    quiet_hours: str = field(default_factory=lambda: _get("JARVIS_QUIET_HOURS"))
+    # Meeting "starts soon" alerts + how many minutes ahead to fire them.
+    meeting_alerts: bool = field(default_factory=lambda: _get_bool("JARVIS_MEETING_ALERTS"))
+    meeting_lead_min: int = field(
+        default_factory=lambda: _get_int("JARVIS_MEETING_LEAD_MIN", 15)
+    )
+    # Important-email pings (requires Gmail configured).
+    email_alerts: bool = field(default_factory=lambda: _get_bool("JARVIS_EMAIL_ALERTS"))
+    # Speak proactive notifications aloud (in addition to the tray balloon).
+    proactive_speak: bool = field(default_factory=lambda: _get_bool("JARVIS_PROACTIVE_SPEAK"))
 
     # Monarch Money — connects via official MCP server using OAuth.
     # Set MONARCH_ENABLED=true; a browser opens on first use for authorization.
@@ -257,6 +325,68 @@ class Config:
         """Gmail account names, falling back to the calendar's GOOGLE_ACCOUNTS."""
         return self.gmail_accounts or self.google_accounts
 
+    def save_categories(self, categories: list[str]) -> list[str]:
+        """Validate, persist, and apply a new category set (settings panel).
+
+        Strips blanks and case-insensitive duplicates and requires at least one
+        category. Writes the result to jarvis_config.json, updates the in-memory
+        value, and creates any new notes/<category>/ folders. The model's tool
+        enums are built at import, so a restart is needed for JARVIS's tools to
+        advertise the new set; notes resolution uses this value live. Raises
+        ValueError if no valid category remains.
+        """
+        cleaned = _clean_categories(categories)
+        if not cleaned:
+            raise ValueError("At least one category is required.")
+        data = _read_user_config()
+        data["categories"] = cleaned
+        USER_CONFIG_FILE.write_text(
+            json.dumps(data, indent=2) + "\n", encoding="utf-8"
+        )
+        self.categories = cleaned
+        for name in cleaned:
+            (NOTES_DIR / name).mkdir(parents=True, exist_ok=True)
+        return cleaned
+
+    def diagnostics(self) -> list[tuple[str, bool, str]]:
+        """Readiness of each integration as ``(name, ok, detail)`` rows.
+
+        Used for the startup self-check so a misconfigured integration is visible
+        in the logs at launch instead of only surfacing when a tool is first
+        called. ``detail`` explains what's missing (or, when ok, how it's set).
+        """
+        return [
+            ("Anthropic API", self.has_anthropic_key,
+             "required — set ANTHROPIC_API_KEY in .env" if not self.has_anthropic_key
+             else f"model={self.anthropic_model}"),
+            ("Google (calendar/docs)", self.google_enabled,
+             f"accounts={','.join(self.google_accounts)}" if self.google_enabled
+             else f"missing {self.google_credentials_path}"),
+            ("Gmail", self.gmail_available,
+             f"accounts={','.join(self.gmail_accounts_resolved)}" if self.gmail_available
+             else "set GMAIL_ENABLED=true + Google credentials"),
+            ("Outlook (Graph)", self.outlook_enabled,
+             "via Azure app" if self.outlook_enabled else "set OUTLOOK_CLIENT_ID"),
+            ("Outlook (ICS)", self.outlook_ics_enabled,
+             "published feed" if self.outlook_ics_enabled else "set OUTLOOK_ICS_URL"),
+            ("Todoist", self.todoist_enabled,
+             "token set" if self.todoist_enabled else "set TODOIST_API_KEY"),
+            ("Spotify", self.spotify_available,
+             "client id set" if self.spotify_available
+             else "set SPOTIFY_ENABLED=true + SPOTIFY_CLIENT_ID"),
+            ("Monarch Money", self.monarch_enabled,
+             "enabled (MCP)" if self.monarch_enabled else "set MONARCH_ENABLED=true"),
+            ("Proactive", self.proactive_enabled,
+             "scheduler on" if self.proactive_enabled
+             else "set JARVIS_PROACTIVE_ENABLED=true"),
+        ]
+
 
 # Singleton-ish config used across the app.
 CONFIG = Config()
+
+# Notes are split into per-category subfolders so separate work streams never
+# mix. Created from CONFIG.categories (configurable via JARVIS_CATEGORIES); done
+# after CONFIG exists so the set is whatever the user configured.
+for _cat in CONFIG.categories:
+    (NOTES_DIR / _cat).mkdir(parents=True, exist_ok=True)

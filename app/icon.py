@@ -7,7 +7,7 @@ with brightness varying by state so the tray reflects what JARVIS is doing.
 
 from __future__ import annotations
 
-from .config import CONFIG, TRAY_ICON_PATH
+from .config import TRAY_ICON_PATH
 from .logging_setup import get_logger
 
 log = get_logger("icon")

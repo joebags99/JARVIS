@@ -144,6 +144,13 @@ class _JSApi:
         log.info("voice dials saved as defaults via UI")
         return PERSONA.state()
 
+    # ── Settings panel (system status + editable categories) ─────────────────
+    def get_settings(self) -> dict:
+        return self._overlay._get_settings()
+
+    def save_categories(self, categories: list[str]) -> dict:
+        return self._overlay._save_categories(categories)
+
 
 class Overlay:
     def __init__(
@@ -377,6 +384,18 @@ class Overlay:
         except Exception as exc:  # noqa: BLE001
             log.error("could not save session summary: %s", exc)
 
+        # Store in long-term memory for relevance-ranked recall, and auto-extract
+        # any durable facts/preferences worth keeping across sessions. Best-effort
+        # — a memory failure must never break session close.
+        try:
+            from .memory import get_memory
+            mem = get_memory()
+            mem.add_session(summary)
+            for fact in self.claude.extract_facts(history):
+                mem.add_fact(fact, source="auto-extracted")
+        except Exception as exc:  # noqa: BLE001
+            log.error("could not store session in long-term memory: %s", exc)
+
     # ── Input handling ────────────────────────────────────────────────────────
 
     def _submit(self, text: str) -> None:
@@ -499,6 +518,30 @@ class Overlay:
         name_corrector.reload()
         if self._visible:
             self.set_status("Context reloaded")
+
+    # ── Settings ──────────────────────────────────────────────────────────────
+
+    def _get_settings(self) -> dict:
+        """Snapshot for the settings panel: status + editable categories."""
+        return {
+            "categories": list(CONFIG.categories),
+            "user_name": CONFIG.user_name,
+            "location": CONFIG.location or "",
+            "diagnostics": [
+                {"name": name, "ok": bool(ok), "detail": detail}
+                for name, ok, detail in CONFIG.diagnostics()
+            ],
+        }
+
+    def _save_categories(self, categories: list[str]) -> dict:
+        """Persist edited categories; returns the refreshed settings (or an error)."""
+        try:
+            CONFIG.save_categories(list(categories or []))
+            log.info("categories updated via settings panel: %s", CONFIG.categories)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("save_categories failed: %s", exc)
+            return {**self._get_settings(), "error": str(exc)}
+        return self._get_settings()
 
     def quit(self) -> None:
         try:

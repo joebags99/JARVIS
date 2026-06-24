@@ -201,6 +201,55 @@ def list_emails(
     return out
 
 
+def list_unread(
+    query: str = "is:unread is:important newer_than:1d", max_per_account: int = 5
+) -> list[dict]:
+    """Structured list of messages matching *query* across configured accounts.
+
+    Returns dicts ``{id, account, sender, subject}`` (empty list on any problem).
+    Unlike ``list_emails`` (which formats a string for the model), this exposes
+    the message id so the proactive email-ping scheduler can dedupe what it has
+    already alerted on. Never raises.
+    """
+    if not CONFIG.gmail_available:
+        return []
+    try:
+        from googleapiclient.discovery import build
+    except ImportError:
+        return []
+
+    out: list[dict] = []
+    for account in _accounts():
+        creds = _load_credentials(account)
+        if creds is None:
+            continue
+        try:
+            service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+            listing = google_api.execute(
+                service.users().messages()
+                .list(userId="me", q=query, maxResults=max(1, min(max_per_account, 25))),
+                label="gmail.messages.list",
+            )
+            for m in listing.get("messages", []):
+                mid = m["id"]
+                msg = google_api.execute(
+                    service.users().messages()
+                    .get(userId="me", id=mid, format="metadata",
+                         metadataHeaders=["From", "Subject"]),
+                    label="gmail.messages.get",
+                )
+                headers = msg.get("payload", {}).get("headers", [])
+                out.append({
+                    "id": mid,
+                    "account": account,
+                    "sender": _header(headers, "From"),
+                    "subject": _header(headers, "Subject") or "(no subject)",
+                })
+        except Exception as exc:  # noqa: BLE001
+            log.error("[%s] list_unread failed (q=%r): %s", account, query, exc)
+    return out
+
+
 def create_draft(
     to: str, subject: str, body: str, cc: str | None = None, account: str | None = None
 ) -> str:

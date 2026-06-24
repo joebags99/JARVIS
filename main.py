@@ -19,6 +19,22 @@ def main() -> int:
     log.info("─" * 50)
     log.info("JARVIS starting up (user=%s)", CONFIG.user_name)
 
+    # Startup self-check: log which integrations are live vs. misconfigured, so a
+    # missing token/flag is visible at launch instead of only when first used.
+    log.info("Integration readiness:")
+    for name, ok, detail in CONFIG.diagnostics():
+        log.info("  [%s] %-24s %s", "ON " if ok else "off", name, detail)
+    log.info("  Categories: %s", ", ".join(CONFIG.categories))
+
+    # Long-term memory store (SQLite). Import any legacy session summaries once.
+    try:
+        from app.memory import get_memory
+        mem = get_memory()
+        mem.import_legacy_sessions()
+        log.info("  Memory: %d item(s)", mem.count())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("memory init failed: %s", exc)
+
     if not CONFIG.has_anthropic_key:
         log.warning(
             "No ANTHROPIC_API_KEY configured — JARVIS will start but show an "
@@ -50,6 +66,7 @@ def main() -> int:
         return 1
 
     tray_holder: dict = {}
+    scheduler_holder: dict = {}
 
     def on_state_change(state: str) -> None:
         tray = tray_holder.get("tray")
@@ -80,6 +97,9 @@ def main() -> int:
     def on_quit() -> None:
         log.info("quit requested")
         notes_watcher.stop()
+        scheduler = scheduler_holder.get("scheduler")
+        if scheduler is not None:
+            scheduler.stop()
         tray = tray_holder.get("tray")
         if tray is not None:
             tray.stop()
@@ -96,6 +116,10 @@ def main() -> int:
     )
     tray_holder["tray"] = tray
     tray.start()
+
+    # Proactive scheduler (optional) — scheduled briefing, meeting alerts, and
+    # important-email pings. No-ops unless JARVIS_PROACTIVE_ENABLED is set.
+    _start_proactive(overlay, speaker, tray_holder, scheduler_holder, schedule, log)
 
     # Optional global hotkey to toggle the overlay from anywhere.
     _setup_hotkey(overlay, schedule, log)
@@ -120,6 +144,52 @@ def _setup_hotkey(overlay, schedule, log) -> None:
     except Exception as exc:  # noqa: BLE001
         # keyboard often needs root/admin on Linux/macOS; fail soft.
         log.warning("could not register global hotkey '%s': %s", CONFIG.hotkey, exc)
+
+
+def _start_proactive(overlay, speaker, tray_holder, scheduler_holder, schedule, log) -> None:
+    """Wire the proactive scheduler to the real tray/calendar/email side effects."""
+    if not CONFIG.proactive_enabled:
+        return
+    from app.proactive import ProactiveScheduler
+
+    def notify(title: str, message: str) -> None:
+        log.info("PROACTIVE [%s] %s", title, message)
+        tray = tray_holder.get("tray")
+        delivered = tray.notify(title, message) if tray is not None else False
+        if not delivered:
+            # No balloon support — surface it in the overlay status instead.
+            try:
+                schedule(lambda: overlay.set_status(f"{title}: {message}"))
+            except Exception as exc:  # noqa: BLE001
+                log.debug("overlay status fallback failed: %s", exc)
+        if CONFIG.proactive_speak and speaker is not None and getattr(speaker, "available", False):
+            try:
+                speaker.speak(f"{title}. {message}")
+            except Exception as exc:  # noqa: BLE001
+                log.debug("proactive speak failed: %s", exc)
+
+    def fetch_events() -> list:
+        from integrations import google_calendar, outlook_calendar, outlook_ics
+        events: list = []
+        for src in (google_calendar, outlook_calendar, outlook_ics):
+            try:
+                events += src.get_events(1, 30)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("proactive event fetch failed (%s): %s", src.__name__, exc)
+        return events
+
+    def fetch_email() -> list:
+        from integrations import gmail
+        return gmail.list_unread()
+
+    scheduler = ProactiveScheduler(
+        notify=notify,
+        briefing=lambda: schedule(overlay.daily_briefing),
+        fetch_events=fetch_events,
+        fetch_email=fetch_email,
+    )
+    scheduler.start()
+    scheduler_holder["scheduler"] = scheduler
 
 
 if __name__ == "__main__":

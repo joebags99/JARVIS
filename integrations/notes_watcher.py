@@ -1,11 +1,11 @@
 """Meeting-notes ingestion.
 
-Notes are split into separate streams — Daedabyte, Brightpoint, DnD, and
-General — each its own subfolder under ``notes/``, so the work/personal
-streams never mix and JARVIS never has to guess which one a note belongs to.
-This mirrors the category convention already used for Todoist projects
-(``integrations/todoist.py``): a fixed set of named buckets, not a free-form
-tag.
+Notes are split into separate streams — the user's configured categories (see
+``CONFIG.categories`` / ``JARVIS_CATEGORIES``) — each its own subfolder under
+``notes/``, so the work/personal streams never mix and JARVIS never has to guess
+which one a note belongs to. This mirrors the category convention already used
+for Todoist projects (``integrations/todoist.py``): a set of named buckets, not
+a free-form tag.
 
 Reads ``.txt`` / ``.md`` files from ``notes/<category>/``, newest first, and
 (optionally) watches the folder recursively with ``watchdog`` so freshly
@@ -21,22 +21,27 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.config import NOTES_DIR
+from app.config import CONFIG, NOTES_DIR
 from app.logging_setup import get_logger
 
 log = get_logger("notes")
 
 NOTE_EXTENSIONS = (".txt", ".md")
-CATEGORIES = ("Daedabyte", "General", "Brightpoint", "DnD")
 
 
 def _resolve_category(category: str) -> str:
-    """Case-insensitively match *category* against CATEGORIES. Raises ValueError if unknown."""
-    for c in CATEGORIES:
+    """Case-insensitively match *category* against the configured categories.
+
+    Reads ``CONFIG.categories`` at call time (not a cached constant) so a
+    runtime change to the configured set takes effect without re-importing.
+    Raises ValueError if the category isn't one of them.
+    """
+    for c in CONFIG.categories:
         if c.lower() == category.lower():
             return c
     raise ValueError(
-        f"Unknown notes category '{category}'. Must be one of: {', '.join(CATEGORIES)}."
+        f"Unknown notes category '{category}'. Must be one of: "
+        f"{', '.join(CONFIG.categories)}."
     )
 
 
