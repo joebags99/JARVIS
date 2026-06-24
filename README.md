@@ -45,8 +45,16 @@ calendars, and meeting notes.
 - **Music** (optional) — control Spotify by voice or chat: play a song, artist,
   album, or playlist, pause/skip, shuffle, set volume, and ask what's playing.
   Requires Spotify Premium. (There's also a hidden incantation… 🎸)
+- **Knowledge vault — a second brain (optional)** — point JARVIS at an
+  [Obsidian](https://obsidian.md) vault and it becomes a single, linked markdown
+  home for both your notes **and** its long-term memory: it searches the vault
+  before answering, writes new notes (with frontmatter, `[[wikilinks]]`, and
+  `#tags`), and records session recaps + durable facts there for you to browse
+  and edit in Obsidian. Without a vault, it falls back to a local notes folder +
+  recall store.
 - **Cross-session memory** — when you close a longer chat, JARVIS saves a short
-  recap and can recall it later ("pick up where we left off").
+  recap and any durable facts, then recalls them later ("pick up where we left
+  off") — into the vault when configured, else a local SQLite store.
 - **Smooth replies** — an animated "thinking" indicator while JARVIS composes,
   then the answer fades in line by line (no half-formed text filling in).
 - **Graceful degradation** — missing mic, missing calendar creds, or a missing
@@ -230,6 +238,40 @@ playlist", "pause", "skip", "set the volume to 30", "shuffle on", "what's
 playing?". And there may be a certain phrase that summons a certain AC/DC song
 with… maximum attitude. 🎸
 
+### 7g. (Optional) Obsidian knowledge vault (your second brain)
+Give JARVIS a real, browsable memory by pointing it at an
+[Obsidian](https://obsidian.md) vault — which is just a folder of markdown files.
+JARVIS reads and writes it directly on disk (no Obsidian plugin, and Obsidian
+doesn't even need to be running), so the vault becomes one linked home for your
+notes **and** its long-term memory.
+
+1. Pick a folder for the vault — an existing Obsidian vault, or a brand-new empty
+   folder (JARVIS seeds a starter structure on first run).
+2. In `.env`, set both:
+   ```
+   OBSIDIAN_ENABLED=true
+   OBSIDIAN_VAULT_PATH=C:\Users\you\Documents\Brain
+   ```
+3. Run JARVIS. On first launch it scaffolds default folders (`Sessions/`,
+   `Daily/`, `People/`, `Projects/`, `Topics/`, `Memory/`) plus an `index.md`
+   Map of Content, then does a **one-time, non-destructive** import of any
+   existing `notes/<category>/` files and `memory.db` facts into the vault — your
+   originals are left untouched as a safety net.
+
+Once enabled, the vault **replaces** the per-category notes folder and the SQLite
+recall store as JARVIS's durable brain. Ask it to "make a note about my meeting
+with Sam", "what do you know about the Q3 launch?", or "what did we decide last
+week?" and it searches/writes the vault — then open the same files in Obsidian to
+read, edit, and follow the links yourself. The model-facing tools are
+`search_vault`, `read_note`, `write_note`, `append_note`, and `list_notes`. A
+rebuildable search index (`vault_index.db`) is kept beside the app and is
+gitignored.
+
+> JARVIS can create and edit any note **inside** the vault (never outside it —
+> paths that escape the vault are refused). It reads a note before overwriting and
+> prefers appending for logs, but if you want a hands-off zone, keep those notes in
+> a separate vault.
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
@@ -268,7 +310,14 @@ the overlay.
 
 ---
 
-## Using the `/notes/` folder
+## Notes & memory
+
+> **With an Obsidian vault enabled (step 7g), it is the single home for notes and
+> memory** and supersedes everything in this section — JARVIS reads/writes the
+> vault instead of the `/notes/` folder. The folder-based system below is the
+> fallback used only when no vault is configured.
+
+### Using the `/notes/` folder (no-vault fallback)
 
 Notes are split into separate streams, one subfolder each, so they never mix:
 `notes/Daedabyte/`, `notes/Brightpoint/`, `notes/DnD/`, and `notes/General/`
@@ -315,6 +364,8 @@ notes from the 16th and add any action items to Todoist."
 | `TODOIST_API_KEY` | Personal API token from Todoist's Developer settings. |
 | `GMAIL_ENABLED` | `true` to enable Gmail read/draft tools (reuses Google `credentials.json`). |
 | `GMAIL_ACCOUNTS` | Comma-separated Gmail account names, e.g. `personal,work,side` (blank = reuse `GOOGLE_ACCOUNTS`). |
+| `OBSIDIAN_ENABLED` | `true` to use an Obsidian vault as the notes + memory store (second brain). Default off. |
+| `OBSIDIAN_VAULT_PATH` | Absolute path to the vault folder (created if missing), e.g. `C:\Users\you\Documents\Brain`. |
 
 ---
 
@@ -327,9 +378,13 @@ This repo is built so your personal data **never** reaches GitHub. The
 - `token.json`, `credentials.json`, `.msal_cache.bin` (auth tokens)
 - `context/*` **except** the `*.example.md` templates (your profile/notes)
 - `notes/*` (your meeting notes)
+- `memory.db` and `vault_index.db` (your recall store and the vault search index)
 - `meal_plans.json` (your dinner plans/shopping lists)
 - `logs/*` (may contain calendar/notes content)
 - recorded `*.wav` audio and downloaded model caches
+
+Your Obsidian vault lives wherever `OBSIDIAN_VAULT_PATH` points (outside this
+repo), so its contents are never part of the project in the first place.
 
 Only code and the `.example` templates are tracked. Verify any time with:
 ```bash
@@ -353,6 +408,13 @@ configured. For `edge`, install `edge-tts` + `miniaudio`; for `system`, install
 **Calendar shows nothing.** Calendars are optional and skip silently when not
 configured. Check `logs/jarvis.log` for auth details.
 
+**Vault tools don't appear / "the knowledge vault isn't configured."** Set
+**both** `OBSIDIAN_ENABLED=true` and `OBSIDIAN_VAULT_PATH` (an absolute path). The
+startup log's readiness table has an "Obsidian vault" row; if the path is blank
+the vault tools stay hidden and JARVIS falls back to the local notes folder +
+recall store. If search comes up empty, the index rebuilds from your files on the
+next launch.
+
 **Global hotkey doesn't work.** The `keyboard` library needs elevated
 privileges on some systems. It's optional — leave `JARVIS_HOTKEY` blank to skip.
 
@@ -370,6 +432,8 @@ jarvis/
 │   ├── logging_setup.py    # Rotating file logger
 │   ├── context_builder.py  # Assembles the system prompt (the brain)
 │   ├── claude_client.py    # Anthropic streaming + session memory
+│   ├── memory.py           # SQLite recall store (no-vault fallback)
+│   ├── vault_index.py      # FTS5 search index over the Obsidian vault
 │   ├── recorder.py         # Mic capture (sounddevice)
 │   ├── transcriber.py      # faster-whisper STT
 │   ├── overlay.py          # The floating UI window
@@ -380,7 +444,8 @@ jarvis/
 │   ├── outlook_calendar.py
 │   ├── todoist.py
 │   ├── meal_prep.py
-│   └── notes_watcher.py
+│   ├── obsidian.py         # Obsidian vault engine (second brain)
+│   └── notes_watcher.py    # notes/ folder watcher (no-vault fallback)
 ├── context/                # Your *.md context (gitignored; .example tracked)
 ├── notes/                  # Drop meeting notes here (gitignored)
 ├── logs/                   # jarvis.log (gitignored)

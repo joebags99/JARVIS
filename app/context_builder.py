@@ -11,11 +11,11 @@ Dynamic (always included — tiny):
     * current date & time
 On-demand via tools:
     * calendar events (get_calendar_events)
-    * meeting notes  (get_recent_notes)
-    * finances       (get_financial_summary)
-    * todos          (get_todos / create_todo / update_todo / complete_todo)
-    * meal plans     (get_meal_history / create_meal_plan)
-    * knowledge docs (load_knowledge_pool)
+    * knowledge vault (search_vault / read_note / write_note / append_note / list_notes)
+    * finances        (get_financial_summary)
+    * todos           (get_todos / create_todo / update_todo / complete_todo)
+    * meal plans      (get_meal_history / create_meal_plan)
+    * knowledge docs  (load_knowledge_pool)
 """
 
 from __future__ import annotations
@@ -95,6 +95,47 @@ class ContextBuilder:
         now = dt.datetime.now().astimezone()
         return now.strftime("%A, %B %d, %Y — %I:%M %p %Z (UTC%z)")
 
+    def _vault_section(self) -> str:
+        """A tiny, cached pointer to the Obsidian vault — never its contents.
+
+        Tells Claude the vault exists, shows its top-level folders so it knows
+        where to look/write, and sets the working habits (search before
+        answering, record durable knowledge as linked notes). Note *bodies* are
+        always fetched on demand via the vault tools, never preloaded here.
+        """
+        if not CONFIG.obsidian_available:
+            return ""
+        try:
+            from integrations import obsidian
+            root = obsidian.vault_root()
+            folders = sorted(
+                p.name for p in root.iterdir()
+                if p.is_dir() and not p.name.startswith(".")
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not inspect vault for context: %s", exc)
+            folders = []
+        folder_line = (
+            f"Top-level folders: {', '.join(folders)}.\n" if folders else ""
+        )
+        return (
+            "You keep a single Obsidian knowledge vault — the user's 'second brain' "
+            "— that is BOTH your long-term memory and your notes on people, "
+            "projects, meetings, and topics. It replaces any older notes/recall "
+            "tools.\n"
+            f"{folder_line}"
+            "Working habits:\n"
+            "- Before answering anything that might be recorded (past decisions, "
+            "people, projects, 'what did we discuss'), `search_vault` first, then "
+            "`read_note` the most relevant hit.\n"
+            "- When the user tells you something durable (a decision, a fact, "
+            "meeting notes, a preference), capture it with `write_note` (new) or "
+            "`append_note` (adding to a daily/running note) instead of only "
+            "replying. Record what they actually said — don't invent detail.\n"
+            "- Connect notes with `[[wikilinks]]` and `#tags` so the brain stays "
+            "interconnected; read a note before overwriting it."
+        )
+
     def _knowledge_pools_section(self) -> str:
         pools_file = ROOT_DIR / CONFIG.knowledge_pools_file
         if not pools_file.exists():
@@ -139,6 +180,10 @@ class ContextBuilder:
             f"## Your Persona & Voice\n{self._persona_section()}",
             f"## Who You Are Assisting\n{self._profile_section()}",
         ]
+
+        vault = self._vault_section()
+        if vault:
+            stable_sections.append(f"## Your Knowledge Vault\n{vault}")
 
         pools = self._knowledge_pools_section()
         if pools:

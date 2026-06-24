@@ -63,11 +63,12 @@ memory, and a wake-word voice loop safe and cheap to build afterward.
    are baked into tool enums (`claude_client.py`), directory creation
    (`app/config.py:37-38`), and `integrations/notes_watcher.py`. Blocks reuse by
    anyone else and is brittle to change.
-4. **Shallow memory.** `recall_session_history` returns the *most recent 3* flat
-   markdown summaries (`claude_client.py:965-977`; written by
-   `overlay.py:362-378`) with no relevance ranking, no durable facts/preferences
-   store, and no transcript persistence. Conversation history is in-memory only
-   and lost on close.
+4. ~~**Shallow memory.**~~ **Addressed.** Long-term memory is a relevance-ranked
+   SQLite/FTS5 store (Phase 3), and is now superseded by an optional **Obsidian
+   vault "second brain"** (`integrations/obsidian.py` + `app/vault_index.py`):
+   one linked-markdown home for notes *and* memory that JARVIS reads/writes and
+   the user can browse/edit in Obsidian. The SQLite store remains as the no-vault
+   fallback.
 5. **Purely reactive.** The daily briefing is a manual tray click
    (`app/overlay.py:290-303`). There is no scheduler, no reminders, no
    background monitoring of calendar or email.
@@ -153,7 +154,15 @@ the rest; Phases 3–5 are independent and can be reordered freely on top of it.
 - **DoD:** a fresh user configures categories/integrations without editing
   Python; dial panel and settings panel share one UI pattern.
 
-### Phase 3 — Long-term memory _(marquee feature)_
+### Phase 3 — Long-term memory _(marquee feature — ✅ delivered)_
+
+**Mechanism:** an optional **Obsidian vault** (direct filesystem access) is the
+durable store — a single, human-readable, inter-linked markdown home for both
+notes and memory, kept searchable by a local **FTS5 index** over the vault files
+(`app/vault_index.py`), with the original SQLite store (`app/memory.py`) retained
+as the no-vault fallback. Session summaries become `Sessions/` notes and extracted
+facts append to `Memory/Facts.md`; the model reads/writes via the `search_vault` /
+`read_note` / `write_note` / `append_note` / `list_notes` tools.
 
 **Goal:** durable, relevance-ranked memory instead of "last 3 files."
 

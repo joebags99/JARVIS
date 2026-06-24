@@ -25,26 +25,12 @@ from .logging_setup import get_logger
 
 log = get_logger("tools")
 
-# Note/task categories come from the user's config so the note + todo tools
-# aren't hardcoded to one person's set. Built at import — the tool specs are
-# registered once — so changing JARVIS_CATEGORIES takes effect on restart.
+# Task categories come from the user's config so the todo tools aren't hardcoded
+# to one person's set. Built at import — the tool specs are registered once — so
+# changing JARVIS_CATEGORIES takes effect on restart. (Notes no longer use
+# categories; they live in the Obsidian vault, organized by folders/tags/links.)
 _CATEGORIES = list(CONFIG.categories)
 _CAT_EXAMPLE = _CATEGORIES[0] if _CATEGORIES else "Work"
-
-
-def _category_phrase() -> str:
-    """Render the category list for prose, e.g. 'A, B, and C'."""
-    cats = _CATEGORIES
-    if not cats:
-        return ""
-    if len(cats) == 1:
-        return cats[0]
-    if len(cats) == 2:
-        return f"{cats[0]} and {cats[1]}"
-    return ", ".join(cats[:-1]) + ", and " + cats[-1]
-
-
-_CAT_PHRASE = _category_phrase()
 
 
 @dataclass(frozen=True)
@@ -113,19 +99,100 @@ def _get_calendar_events(input_data: dict) -> str:
     return "\n".join(e.format_line() for e in events[:20])
 
 
-def _get_recent_notes(input_data: dict) -> str:
-    import datetime as dt
-
-    from integrations import notes_watcher
-    category = input_data["category"]
-    notes = notes_watcher.read_recent_notes(category, 5, 2000)
-    if not notes:
-        return f"(No {category} notes yet.)"
+def _search_vault(input_data: dict) -> str:
+    from integrations import obsidian
+    query = (input_data.get("query") or "").strip()
+    limit = int(input_data.get("limit") or 5)
+    try:
+        hits = obsidian.search(
+            query,
+            tag=input_data.get("tag") or None,
+            folder=input_data.get("folder") or None,
+            limit=limit,
+        )
+    except obsidian.VaultError as exc:
+        return f"Error: {exc}"
+    if not hits:
+        return "(No matching notes found.)" if query else "(The vault has no notes yet.)"
     blocks = []
-    for note in notes:
-        modified = dt.datetime.fromtimestamp(note.modified).strftime("%Y-%m-%d")
-        blocks.append(f"### {note.path.name} (modified {modified})\n{note.content}")
+    for h in hits:
+        tagline = f"  ·  tags: {h.tags}" if h.tags else ""
+        blocks.append(f"### {h.title or h.path}\n`{h.path}`{tagline}\n{h.snippet}")
     return "\n\n".join(blocks)
+
+
+def _read_note(input_data: dict) -> str:
+    from integrations import obsidian
+    path = (input_data.get("path") or "").strip()
+    if not path:
+        return "Error: read_note needs a 'path'."
+    try:
+        note = obsidian.read_note(path)
+    except obsidian.VaultError as exc:
+        return f"Error: {exc}"
+    parts = [f"# {note.title}", f"`{note.path}`"]
+    if note.meta.get("tags"):
+        parts.append(f"tags: {note.meta['tags']}")
+    parts += ["", note.body.strip()]
+    if note.links:
+        parts.append("\nLinks out: " + ", ".join(f"[[{x}]]" for x in note.links))
+    if note.backlinks:
+        parts.append("Linked from: " + ", ".join(note.backlinks))
+    return "\n".join(parts)
+
+
+def _normalize_tags(tags) -> list[str] | None:
+    if not tags:
+        return None
+    if isinstance(tags, str):
+        tags = tags.replace("#", "").split(",")
+    return [t.strip() for t in tags if str(t).strip()] or None
+
+
+def _write_note(input_data: dict) -> str:
+    from integrations import obsidian
+    content = (input_data.get("content") or "").strip()
+    if not content:
+        return "Error: write_note needs 'content'."
+    path = (input_data.get("path") or "").strip()
+    title = (input_data.get("title") or "").strip() or None
+    folder = (input_data.get("folder") or "").strip() or None
+    tags = _normalize_tags(input_data.get("tags"))
+    try:
+        if path:
+            return obsidian.write_note(path, content, title=title, tags=tags, overwrite=True)
+        if not title:
+            return "Error: write_note needs either a 'path' or a 'title'."
+        new_path = obsidian.path_for_title(title, folder)
+        return obsidian.write_note(new_path, content, title=title, tags=tags, overwrite=False)
+    except obsidian.VaultError as exc:
+        return f"Error: {exc}"
+
+
+def _append_note(input_data: dict) -> str:
+    from integrations import obsidian
+    path = (input_data.get("path") or "").strip()
+    content = (input_data.get("content") or "").strip()
+    if not path or not content:
+        return "Error: append_note needs both 'path' and 'content'."
+    try:
+        return obsidian.append_note(path, content)
+    except obsidian.VaultError as exc:
+        return f"Error: {exc}"
+
+
+def _list_notes(input_data: dict) -> str:
+    from integrations import obsidian
+    folder = (input_data.get("folder") or "").strip() or None
+    try:
+        paths = obsidian.list_notes(folder=folder)
+    except obsidian.VaultError as exc:
+        return f"Error: {exc}"
+    if not paths:
+        scope = f" in '{folder}'" if folder else ""
+        return f"(No notes found{scope}.)"
+    listing = "\n".join(f"- {p}" for p in paths)
+    return f"{len(paths)} note(s):\n{listing}"
 
 
 def _get_weather(input_data: dict) -> str:
@@ -152,55 +219,6 @@ def _control_playback(input_data: dict) -> str:
 def _get_now_playing(input_data: dict) -> str:
     from integrations import spotify
     return spotify.now_playing()
-
-
-def _recall(input_data: dict) -> str:
-    from .memory import get_memory
-    query = (input_data.get("query") or "").strip()
-    limit = int(input_data.get("limit") or 5)
-    items = get_memory().search(query, limit=limit)
-    if not items:
-        return (
-            "(No relevant long-term memories found.)" if query
-            else "(No long-term memories yet.)"
-        )
-    blocks = []
-    for it in items:
-        tag = "Fact" if it.kind == "fact" else "Session"
-        when = (it.created_at or "")[:10]
-        blocks.append(f"[{tag} · {when}] {it.content}")
-    return "\n\n".join(blocks)
-
-
-def _remember(input_data: dict) -> str:
-    from .memory import get_memory
-    content = (input_data.get("content") or "").strip()
-    if not content:
-        return "Error: remember needs a non-empty 'content' string."
-    rid = get_memory().add_fact(content, source="remember-tool")
-    if rid is None:
-        return "Sorry, I couldn't save that to memory."
-    return f"Noted — I'll remember that: {content}"
-
-
-def _create_note(input_data: dict) -> str:
-    from integrations import notes_watcher
-    category = (input_data.get("category") or "").strip()
-    content = (input_data.get("content") or "").strip()
-    missing = [
-        f for f, v in (("category", category), ("content", content)) if not v
-    ]
-    if missing:
-        return (
-            f"Error: create_note is missing required field(s): "
-            f"{', '.join(missing)}. Provide them and call it once more."
-        )
-    return notes_watcher.create_note(
-        category=category,
-        content=content,
-        title=input_data.get("title"),
-        date=input_data.get("date"),
-    )
 
 
 def _create_calendar_event(input_data: dict) -> str:
@@ -380,70 +398,156 @@ register(Tool(
     handler=_get_calendar_events,
 ))
 
+# ── Knowledge vault (Obsidian "second brain") ───────────────────────────────
+# These five tools replace the old per-category notes + SQLite memory tools: the
+# vault is one linked markdown store for both meeting/topic notes and long-term
+# memory. All gate on CONFIG.obsidian_available so they vanish cleanly when no
+# vault is configured.
 register(Tool(
-    name="get_recent_notes",
+    name="search_vault",
     description=(
-        "Load recent meeting notes from one category of the user's notes folder "
-        f"— {_CAT_PHRASE} are kept in fully separate "
-        "subfolders and must never be mixed or merged together in a single "
-        "answer. Call this when the user asks about recent meetings, wants to "
-        "reference notes, asks what was discussed or decided, or asks about "
-        "action items. The user will often say which company/category they "
-        "mean; if they don't and it's genuinely unclear which one, ask before "
-        "calling this tool rather than guessing or fetching multiple categories."
+        "Search JARVIS's knowledge vault — the user's Obsidian 'second brain' — for "
+        "notes relevant to the current question. The vault is JARVIS's long-term "
+        "memory AND its meeting/topic/people/project notes, all in one linked place. "
+        "Call it whenever the user refers back to something ('what did we decide', "
+        "'what do you know about X', 'pick up where we left off'), asks about past "
+        "meetings/people/projects, or when recorded context would help. Pass key "
+        "terms as the query to rank by relevance; omit it for the most recently "
+        "edited notes. Optionally filter by tag or folder. Returns matching notes "
+        "with a snippet and path — use read_note to open one in full."
     ),
     input_schema={
         "type": "object",
         "properties": {
-            "category": {
+            "query": {
                 "type": "string",
-                "enum": list(_CATEGORIES),
-                "description": "Which notes stream to read. Ask the user if unclear — never guess.",
+                "description": "Key terms, e.g. 'kitchen remodel budget'. Omit for most-recent notes.",
             },
+            "tag": {
+                "type": "string",
+                "description": "Optional tag to filter by (with or without the leading #).",
+            },
+            "folder": {
+                "type": "string",
+                "description": "Optional folder to scope to, e.g. 'People' or 'Sessions'.",
+            },
+            "limit": {"type": "integer", "description": "Max notes to return. Default 5."},
         },
-        "required": ["category"],
+        "required": [],
     },
-    handler=_get_recent_notes,
+    handler=_search_vault,
+    available=lambda: CONFIG.obsidian_available,
 ))
 
 register(Tool(
-    name="create_note",
+    name="read_note",
     description=(
-        "Save a new meeting/conversation note to one category of the user's "
-        f"notes folder — {_CAT_PHRASE} are kept in "
-        "fully separate subfolders and must never be mixed. Use this when the "
-        "user asks you to log, save, or write down a note about something (e.g. "
-        "'make a note about my meeting with Sam on the 16th') instead of just "
-        "summarizing in chat — capture what they actually told you about it "
-        "(who, what was discussed, decisions, action items) rather than "
-        "inventing detail they didn't give you. The user will often say which "
-        "company/category the note belongs to; if they don't and it's genuinely "
-        "unclear which one, ask before calling this tool rather than guessing."
+        "Open a single vault note in full by its path (as returned by search_vault "
+        "or list_notes), including its frontmatter, body, outgoing [[links]], and "
+        "which notes link back to it. Use it after search_vault to read the most "
+        "relevant note, to follow a [[wikilink]], or before editing a note so you "
+        "don't overwrite content you haven't seen."
     ),
     input_schema={
         "type": "object",
         "properties": {
-            "category": {
+            "path": {
                 "type": "string",
-                "enum": list(_CATEGORIES),
-                "description": "Which notes stream this belongs to. Ask the user if unclear — never guess.",
+                "description": "Vault-relative path, e.g. 'People/Sam.md'.",
             },
-            "content": {
+        },
+        "required": ["path"],
+    },
+    handler=_read_note,
+    available=lambda: CONFIG.obsidian_available,
+))
+
+register(Tool(
+    name="write_note",
+    description=(
+        "Create or update a note in the vault. Use this to record durable knowledge "
+        "the user wants kept — meeting notes, facts, people, projects, decisions — as "
+        "a linked markdown note rather than only replying in chat. Capture what the "
+        "user actually told you (who/what/decisions/follow-ups); don't invent detail. "
+        "Connect related notes with [[wikilinks]] and add #tags so the brain stays "
+        "interconnected. Provide a 'path' to write/overwrite a specific note (read it "
+        "first so you don't clobber it), OR a 'title' (+ optional 'folder') to create "
+        "a new note — JARVIS derives the filename and won't overwrite an existing one. "
+        "To add to an existing note (a daily log, a running list) prefer append_note."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "path": {
                 "type": "string",
-                "description": "The note body — what was discussed, decided, follow-ups, etc.",
+                "description": "Vault-relative path to write/overwrite, e.g. 'Projects/Website.md'. Provide this OR title.",
             },
             "title": {
                 "type": "string",
-                "description": "Short topic/title, e.g. 'Meeting with Sam'. Used in the filename and as a heading.",
+                "description": "Title for a new note when no path is given; also used as the # heading.",
             },
-            "date": {
+            "folder": {
                 "type": "string",
-                "description": "YYYY-MM-DD the note is about. Defaults to today if omitted.",
+                "description": "Folder for a title-based new note, e.g. 'People' or 'Sessions'. Optional.",
+            },
+            "content": {
+                "type": "string",
+                "description": "The note body (markdown). Use [[wikilinks]] to connect related notes.",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional tags without the #, e.g. ['meeting','daedabyte'].",
             },
         },
-        "required": ["category", "content"],
+        "required": ["content"],
     },
-    handler=_create_note,
+    handler=_write_note,
+    available=lambda: CONFIG.obsidian_available,
+))
+
+register(Tool(
+    name="append_note",
+    description=(
+        "Append a block of markdown to the end of an existing note (creating it if "
+        "needed) without rewriting what's already there. Best for journals and "
+        "running logs — a daily note ('Daily/2026-06-24.md'), a person's note, or a "
+        "fact to remember. Safer than write_note when you only want to add."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Vault-relative path to append to, e.g. 'Daily/2026-06-24.md'.",
+            },
+            "content": {"type": "string", "description": "Markdown to append."},
+        },
+        "required": ["path", "content"],
+    },
+    handler=_append_note,
+    available=lambda: CONFIG.obsidian_available,
+))
+
+register(Tool(
+    name="list_notes",
+    description=(
+        "List note paths in the vault (optionally within a folder) to browse its "
+        "structure when you don't have a search term — e.g. to see what's under "
+        "'People' or 'Projects'. To find notes by content, prefer search_vault."
+    ),
+    input_schema={
+        "type": "object",
+        "properties": {
+            "folder": {
+                "type": "string",
+                "description": "Optional folder to list, e.g. 'Sessions'. Omit to list the whole vault.",
+            },
+        },
+        "required": [],
+    },
+    handler=_list_notes,
+    available=lambda: CONFIG.obsidian_available,
 ))
 
 register(Tool(
@@ -479,65 +583,6 @@ register(Tool(
         "required": [],
     },
     handler=_get_weather,
-))
-
-register(Tool(
-    name="recall",
-    description=(
-        "Search JARVIS's long-term memory — durable facts about the user plus "
-        "summaries of past conversations — for anything relevant to the current "
-        "question. Call it when the user refers back to an earlier conversation "
-        "('what did we decide last time', 'pick up where we left off', 'what were "
-        "we talking about yesterday'), asks what you know or remember about "
-        "something, or when past context would clearly help. Pass a query of key "
-        "terms to rank results by relevance; omit it to get the most recent "
-        "memories. This is cross-session memory, separate from meeting notes (use "
-        "get_recent_notes for those)."
-    ),
-    input_schema={
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": (
-                    "Key terms to search memory for, e.g. 'kitchen remodel budget'. "
-                    "Omit to return the most recent memories instead."
-                ),
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Max memories to return. Default 5.",
-            },
-        },
-        "required": [],
-    },
-    handler=_recall,
-))
-
-register(Tool(
-    name="remember",
-    description=(
-        "Save a durable fact or stable preference about the user to long-term "
-        "memory so it's available in future conversations — e.g. the user says "
-        "'remember that I'm allergic to shellfish', 'my anniversary is June 3', "
-        "'I prefer short answers'. Use it for lasting facts, NOT transient details "
-        "like today's schedule or this week's tasks. Keep each fact short and "
-        "self-contained."
-    ),
-    input_schema={
-        "type": "object",
-        "properties": {
-            "content": {
-                "type": "string",
-                "description": (
-                    "The fact or preference to remember, as a short self-contained "
-                    "statement, e.g. 'Allergic to shellfish'."
-                ),
-            },
-        },
-        "required": ["content"],
-    },
-    handler=_remember,
 ))
 
 register(Tool(

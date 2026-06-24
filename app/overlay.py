@@ -367,10 +367,45 @@ class Overlay:
     # ── Session summary ───────────────────────────────────────────────────────
 
     def _save_session_summary(self, history: list[dict]) -> None:
-        """Generate a summary via Claude and write it to notes/. Background thread."""
+        """Summarize a closed session and store it durably. Background thread.
+
+        When an Obsidian vault is configured it becomes the sink — the summary is
+        a ``Sessions/`` note and any extracted facts append to ``Memory/Facts.md``,
+        so cross-session memory lives in the browsable, linked second brain. With
+        no vault, it falls back to the legacy ``notes/session_*.md`` + ``memory.db``
+        path so users who haven't migrated keep their memory. Best-effort
+        throughout — a storage failure must never break session close.
+        """
         summary = self.claude.summarize_session(history)
         if not summary:
             return
+        facts = self.claude.extract_facts(history)
+        if CONFIG.obsidian_available:
+            self._store_session_in_vault(summary, facts)
+        else:
+            self._store_session_in_memory(summary, facts)
+
+    def _store_session_in_vault(self, summary: str, facts: list[str]) -> None:
+        now = dt.datetime.now()
+        try:
+            from integrations import obsidian
+            obsidian.write_note(
+                now.strftime("Sessions/%Y-%m-%d_%H-%M.md"),
+                f"{summary}\n",
+                title=now.strftime("Session — %B %d, %Y %I:%M %p"),
+                tags=["session"],
+                overwrite=False,
+            )
+            if facts:
+                bullets = "\n".join(f"- {f}" for f in facts)
+                obsidian.append_note(
+                    "Memory/Facts.md", f"## {now.strftime('%Y-%m-%d')}\n{bullets}"
+                )
+            log.info("session summary written to vault (%d fact(s))", len(facts))
+        except Exception as exc:  # noqa: BLE001
+            log.error("could not store session in vault: %s", exc)
+
+    def _store_session_in_memory(self, summary: str, facts: list[str]) -> None:
         now = dt.datetime.now()
         filename = now.strftime("session_%Y-%m-%d_%H-%M.md")
         path = NOTES_DIR / filename
@@ -383,15 +418,11 @@ class Overlay:
             log.info("session summary saved: %s", filename)
         except Exception as exc:  # noqa: BLE001
             log.error("could not save session summary: %s", exc)
-
-        # Store in long-term memory for relevance-ranked recall, and auto-extract
-        # any durable facts/preferences worth keeping across sessions. Best-effort
-        # — a memory failure must never break session close.
         try:
             from .memory import get_memory
             mem = get_memory()
             mem.add_session(summary)
-            for fact in self.claude.extract_facts(history):
+            for fact in facts:
                 mem.add_fact(fact, source="auto-extracted")
         except Exception as exc:  # noqa: BLE001
             log.error("could not store session in long-term memory: %s", exc)
