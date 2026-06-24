@@ -18,6 +18,7 @@ tokens/
 
 # Personal context (your jobs, profile, D&D notes, etc.)
 knowledge_pools.json
+JARVIS/
 
 # Meal-prep cycles (your dinner plans/shopping lists)
 meal_plans.json
