@@ -44,6 +44,9 @@ NOTE_EXT = ".md"
 # Folders seeded in a fresh vault; JARVIS organizes its writes into these but also
 # adapts to whatever structure it finds in an existing vault.
 DEFAULT_FOLDERS = ["Sessions", "Daily", "People", "Projects", "Topics", "Memory", "Imported"]
+# Top-level folders kept out of the search index. Archive/ holds originals the
+# cleanup pass has superseded — retained for review, but out of JARVIS's way.
+INDEX_SKIP_FOLDERS = {"Archive"}
 MEMORY_DB_PATH = ROOT_DIR / "memory.db"
 _MIGRATION_MARKER = ".jarvis_migrated"
 
@@ -297,10 +300,19 @@ def _reindex_path(p: Path) -> None:
 
 
 def iter_markdown(root: Path | None = None):
-    """Yield every ``.md`` file in the vault, skipping dot-folders/dot-files."""
+    """Yield every ``.md`` file in the vault, skipping dot-folders/dot-files.
+
+    When walking from the vault root, top-level ``Archive/`` is also skipped so
+    superseded originals (parked there by the cleanup pass) never re-enter the
+    search index. Walking an explicit folder (``list_notes('Archive')``) still
+    lists them, so they remain browsable on request.
+    """
     base = root or vault_root()
     for p in base.rglob(f"*{NOTE_EXT}"):
-        if any(part.startswith(".") for part in p.relative_to(base).parts):
+        parts = p.relative_to(base).parts
+        if any(part.startswith(".") for part in parts):
+            continue
+        if parts and parts[0] in INDEX_SKIP_FOLDERS:
             continue
         if p.is_file():
             yield p
@@ -413,6 +425,31 @@ def append_note(path: str, content: str) -> str:
     _reindex_path(p)
     log.info("appended to vault note %s", _rel(p))
     return f"Appended to note {_rel(p)}."
+
+
+def move_to_archive(path: str) -> str:
+    """Move a note under ``Archive/`` (non-colliding) and drop it from the index.
+
+    Used by the cleanup pass to retire an original once its tidied replacement is
+    written: the file is preserved (reversible) but ``Archive/`` is excluded from
+    search, so it no longer competes with the clean version. The original's
+    vault-relative path is mirrored under ``Archive/`` (e.g. ``Imported/x.md`` →
+    ``Archive/Imported/x.md``). Returns the new vault-relative path.
+    """
+    src = _safe_path(path)
+    if not src.exists():
+        raise VaultError(f"note '{path}' not found.")
+    rel = _rel(src)
+    dest = _noncolliding(vault_root() / "Archive" / rel)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src.replace(dest)
+    try:
+        from app.vault_index import get_index
+        get_index().remove(rel)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("index remove after archive failed for %s: %s", rel, exc)
+    log.info("archived vault note %s -> %s", rel, _rel(dest))
+    return _rel(dest)
 
 
 # ── Scaffold + migration ─────────────────────────────────────────────────────

@@ -59,6 +59,26 @@ def test_write_adds_md_suffix(vault):
     assert (vault / "People" / "Sam.md").exists()
 
 
+def test_move_to_archive_excludes_from_index(vault):
+    obsidian.write_note("Imported/old.md", "secret budget figure", title="Old")
+    assert any(h.path == "Imported/old.md" for h in obsidian.search("budget"))
+
+    new_rel = obsidian.move_to_archive("Imported/old.md")
+    assert new_rel == "Archive/Imported/old.md"
+    assert not (vault / "Imported" / "old.md").exists()
+    assert (vault / "Archive" / "Imported" / "old.md").exists()
+
+    # Gone from search, and a full reindex keeps Archive/ out of the index.
+    assert all(not h.path.startswith("Archive/") for h in obsidian.search("budget"))
+    obsidian.reindex()
+    assert all(not h.path.startswith("Archive/") for h in obsidian.search("budget"))
+
+
+def test_move_to_archive_missing_note_raises(vault):
+    with pytest.raises(VaultError):
+        obsidian.move_to_archive("Imported/nope.md")
+
+
 def test_read_missing_raises(vault):
     with pytest.raises(VaultError):
         obsidian.read_note("nope.md")

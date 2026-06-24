@@ -288,6 +288,23 @@ python -m app.vault_cli list [folder]    # browse the vault
 migration also runs automatically the first time you launch JARVIS with the vault
 enabled, so the CLI is optional; it just lets you look before you leap.
 
+**Tidy up the imported notes (optional, uses the API).** The migration drops your
+old notes into `Imported/` as-is. To have Claude reformat each one (frontmatter,
+tags, `[[wikilinks]]`) and refile it into the right folder, run the cleanup pass.
+Unlike the commands above, **this one calls the Claude API per note, so it costs
+tokens** — it's preview-first and non-destructive:
+
+```bash
+python -m app.vault_organize              # PREVIEW the plan (writes nothing)
+python -m app.vault_organize --limit 5    # try it on the first 5 notes
+python -m app.vault_organize --apply       # tidy + refile; originals move to Archive/
+```
+
+With `--apply`, each tidied note is written to its new home and the original is
+moved to `Archive/` (never deleted, and excluded from search), so you can review in
+Obsidian and delete `Archive/` once you're happy. Faithful cleanup only — it
+preserves every decision, action item, and date rather than summarizing them away.
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
