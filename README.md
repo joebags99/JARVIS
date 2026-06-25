@@ -305,23 +305,26 @@ moved to `Archive/` (never deleted, and excluded from search), so you can review
 Obsidian and delete `Archive/` once you're happy. Faithful cleanup only — it
 preserves every decision, action item, and date rather than summarizing them away.
 
-**Consolidate people (one identity per person).** Imported notes often refer to the
-same person several ways (`Joe`, `Joe K`, `Joe Konkle`), splitting them across
-notes and links. The consolidation pass (also API-backed) clusters the variants and
-fixes them:
+**Consolidate identities (one note per person, company, and project).** Imported
+notes often refer to the same entity several ways — a person (`Joe`, `Joe K`,
+`Joe Konkle`), a company (`Databyte`/`Daedabyte`), or a project (`CCC`/`CCC Legacy`)
+— splitting them across notes and links. The consolidation pass (also API-backed)
+clusters the variants per kind and fixes them:
 
 ```bash
-python -m app.vault_people            # PREVIEW the proposed merges (writes nothing)
-python -m app.vault_people --apply    # set aliases, merge dup notes, rewrite links
+python -m app.vault_entities                 # PREVIEW people + companies/projects (writes nothing)
+python -m app.vault_entities --apply          # consolidate both, rewrite links
+python -m app.vault_entities --kind projects  # just companies/projects
 ```
 
-`--apply` records the canonical name + `aliases:` on one `People/<Name>.md` note,
-folds any duplicate person notes into it (originals → `Archive/`), and rewrites every
-`[[alias]]` in the vault to the canonical name. Going forward this mostly takes care
-of itself: JARVIS knows the roster (it's in its prompt) and **canonicalizes person
-links automatically on every write**, so the same person stays one note. The source
-of truth is the `aliases:` list in each `People/` note — edit it in Obsidian anytime
-to teach JARVIS a new nickname.
+`--apply` records the canonical name + `aliases:` on one note in the right folder
+(`People/` or `Projects/`), folds any duplicate notes into it (originals →
+`Archive/`), and rewrites every `[[alias]]` in the vault to the canonical name.
+Going forward this mostly takes care of itself: JARVIS knows the roster (people +
+companies/projects, in its prompt) and **canonicalizes links automatically on every
+write**, so each entity stays one note. The source of truth is the `aliases:` list
+in each `People/`/`Projects/` note — edit it in Obsidian anytime to teach a new
+nickname. (`python -m app.vault_people` still works as a people-only shortcut.)
 
 ### 8. Add your personal context
 ```bash

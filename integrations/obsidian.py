@@ -47,6 +47,10 @@ DEFAULT_FOLDERS = ["Sessions", "Daily", "People", "Projects", "Topics", "Memory"
 # Top-level folders kept out of the search index. Archive/ holds originals the
 # cleanup pass has superseded — retained for review, but out of JARVIS's way.
 INDEX_SKIP_FOLDERS = {"Archive"}
+# Folders whose notes define canonical entities (+ their ``aliases``) used to
+# de-duplicate names: People for individuals, Projects for companies/clients/
+# projects. Consolidation + link-canonicalization cover every folder listed here.
+ENTITY_FOLDERS = ["People", "Projects"]
 MEMORY_DB_PATH = ROOT_DIR / "memory.db"
 _MIGRATION_MARKER = ".jarvis_migrated"
 
@@ -246,7 +250,7 @@ _roster_cache: tuple[str, dict[str, str]] | None = None
 
 
 def reload_roster() -> dict[str, str]:
-    """Rebuild the alias→canonical map from People/ notes. Best-effort."""
+    """Rebuild the alias→canonical map from every entity folder. Best-effort."""
     global _roster_cache
     mapping: dict[str, str] = {}
     try:
@@ -254,9 +258,11 @@ def reload_roster() -> dict[str, str]:
     except VaultError:
         _roster_cache = None
         return {}
-    people = root / "People"
-    if people.exists():
-        for p in sorted(people.glob(f"*{NOTE_EXT}")):
+    for folder in ENTITY_FOLDERS:
+        base = root / folder
+        if not base.exists():
+            continue
+        for p in sorted(base.glob(f"*{NOTE_EXT}")):
             try:
                 meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
             except Exception as exc:  # noqa: BLE001
@@ -282,15 +288,33 @@ def get_roster() -> dict[str, str]:
     return reload_roster()
 
 
-def canonical_people() -> dict[str, list[str]]:
-    """Canonical name → its aliases (inverted roster), for prompts/reporting."""
+def canonical_entities(folder: str) -> dict[str, list[str]]:
+    """Canonical name → aliases for notes in *folder* (e.g. People, Projects).
+
+    Only entities that actually have aliases are returned — they're the ones worth
+    naming in the prompt/report.
+    """
     out: dict[str, list[str]] = {}
-    for alias, canonical in get_roster().items():
-        if alias != canonical.lower():
-            out.setdefault(canonical, [])
-            if alias not in (a.lower() for a in out[canonical]):
-                out[canonical].append(alias)
+    try:
+        base = vault_root() / folder
+    except VaultError:
+        return out
+    if not base.exists():
+        return out
+    for p in sorted(base.glob(f"*{NOTE_EXT}")):
+        try:
+            meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001
+            continue
+        aliases = extract_aliases(meta)
+        if aliases:
+            out[title_for(_rel(p), meta, body) or _title_from_stem(p.stem)] = aliases
     return out
+
+
+def canonical_people() -> dict[str, list[str]]:
+    """Back-compat: canonical person → aliases (see :func:`canonical_entities`)."""
+    return canonical_entities("People")
 
 
 def canonicalize_links(text: str, roster: dict[str, str] | None = None) -> str:
@@ -468,11 +492,11 @@ def list_notes(folder: str | None = None, limit: int = 200) -> list[str]:
 
 
 # ── Writes ───────────────────────────────────────────────────────────────────
-def _invalidate_roster_if_person(p: Path) -> None:
-    """Drop the cached roster when a People/ note changed, so it's rebuilt fresh."""
+def _invalidate_roster_if_entity(p: Path) -> None:
+    """Drop the cached roster when an entity-folder note changed, so it's rebuilt."""
     global _roster_cache
     try:
-        if _rel(p).split("/", 1)[0] == "People":
+        if _rel(p).split("/", 1)[0] in ENTITY_FOLDERS:
             _roster_cache = None
     except Exception:  # noqa: BLE001
         _roster_cache = None
@@ -504,7 +528,7 @@ def write_note(
         log.error("could not write note %s: %s", p, exc)
         raise VaultError(f"could not save note: {exc}") from exc
     _reindex_path(p)
-    _invalidate_roster_if_person(p)
+    _invalidate_roster_if_entity(p)
     rel = _rel(p)
     log.info("%s vault note %s", "updated" if existed else "created", rel)
     return f"{'Updated' if existed else 'Saved'} note {rel}."
@@ -524,13 +548,13 @@ def append_note(path: str, content: str) -> str:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(_stamp(addition, _title_from_stem(p.stem), None), encoding="utf-8")
         _reindex_path(p)
-        _invalidate_roster_if_person(p)
+        _invalidate_roster_if_entity(p)
         log.info("created vault note %s (via append)", _rel(p))
         return f"Created note {_rel(p)}."
     existing = p.read_text(encoding="utf-8", errors="replace").rstrip()
     p.write_text(f"{existing}\n\n{addition}\n", encoding="utf-8")
     _reindex_path(p)
-    _invalidate_roster_if_person(p)
+    _invalidate_roster_if_entity(p)
     log.info("appended to vault note %s", _rel(p))
     return f"Appended to note {_rel(p)}."
 
@@ -564,22 +588,21 @@ def move_to_archive(path: str) -> str:
 
 
 # ── Identity merge primitives (used by the people-consolidation pass) ─────────
-def find_person_note(name: str) -> str | None:
-    """Locate an existing ``People/`` note for *name*, matching on slug.
+def find_entity_note(name: str, folder: str = "People") -> str | None:
+    """Locate an existing note for *name* in *folder*, matching on slug.
 
     Slug comparison makes the lookup case- and punctuation-insensitive, so a
     migrated ``People/Joe.md`` and a generated ``People/joe.md`` both resolve.
     Returns the note's vault-relative path, or None.
     """
     try:
-        root = vault_root()
+        base = vault_root() / folder
     except VaultError:
         return None
-    people = root / "People"
-    if not people.exists():
+    if not base.exists():
         return None
     target = _slugify(name)
-    for p in sorted(people.glob(f"*{NOTE_EXT}")):
+    for p in sorted(base.glob(f"*{NOTE_EXT}")):
         try:
             meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
         except Exception:  # noqa: BLE001
@@ -589,14 +612,19 @@ def find_person_note(name: str) -> str | None:
     return None
 
 
-def set_aliases(canonical: str, aliases: list[str]) -> str:
-    """Create/update the canonical ``People/`` note with a merged ``aliases`` list.
+def find_person_note(name: str) -> str | None:
+    """Back-compat wrapper for :func:`find_entity_note` in People/."""
+    return find_entity_note(name, "People")
+
+
+def set_aliases(canonical: str, aliases: list[str], folder: str = "People") -> str:
+    """Create/update the canonical note in *folder* with a merged ``aliases`` list.
 
     Preserves any existing body and aliases; the canonical name is never listed
     as its own alias. Reuses an existing note for the name if one is found (rather
     than creating a slug duplicate). Returns the note's vault-relative path.
     """
-    rel = find_person_note(canonical) or path_for_title(canonical, "People")
+    rel = find_entity_note(canonical, folder) or path_for_title(canonical, folder)
     p = _safe_path(rel)
     if p.exists():
         meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
@@ -618,12 +646,12 @@ def set_aliases(canonical: str, aliases: list[str]) -> str:
     return _rel(p)
 
 
-def merge_note_into(src_rel: str, canonical: str) -> bool:
-    """Fold a duplicate person note's body into the canonical note, then archive it.
+def merge_note_into(src_rel: str, canonical: str, folder: str = "People") -> bool:
+    """Fold a duplicate entity note's body into the canonical note, then archive it.
 
     No-op (returns False) if *src_rel* is missing or is already the canonical note.
     """
-    canonical_rel = find_person_note(canonical) or path_for_title(canonical, "People")
+    canonical_rel = find_entity_note(canonical, folder) or path_for_title(canonical, folder)
     src = _safe_path(src_rel)
     if not src.exists() or _rel(src) == canonical_rel:
         return False
