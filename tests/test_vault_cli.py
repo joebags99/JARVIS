@@ -96,6 +96,19 @@ def test_idea_graph_moc_doctor(cli_vault, capsys):
     assert "vault health" in out and "dangling" in out  # the [[Ghost]] link is flagged
 
 
+def test_refile_moves_misfiled_meetings(cli_vault, capsys):
+    from integrations import obsidian
+
+    obsidian.ensure_scaffold()
+    obsidian.write_note("People/team_meeting_june.md", "x", title="TM", canonicalize=False)
+    assert vault_cli.main(["refile"]) == 0          # preview
+    assert "Would move" in capsys.readouterr().out
+    assert vault_cli.main(["refile", "--apply"]) == 0
+    assert "moved to sessions" in capsys.readouterr().out.lower()
+    assert vault_cli.main(["refile"]) == 0          # nothing left
+    assert "No misfiled" in capsys.readouterr().out
+
+
 def test_upgrade_modernizes_old_notes(cli_vault, capsys):
     from integrations import obsidian
 

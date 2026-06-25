@@ -183,6 +183,28 @@ def test_write_graph_config(vault):
     assert all("rgb" in g["color"] for g in data["colorGroups"])
 
 
+def test_find_misfiled_and_refile(vault):
+    # A real person + a meeting wrongly in People, and the same person duplicated in Projects.
+    obsidian.write_note("People/Felicity Kline.md", "person", title="Felicity Kline", canonicalize=False)
+    obsidian.write_note("People/meeting_with_jaime_june_24.md", "notes", title="Mtg", canonicalize=False)
+    obsidian.write_note("Projects/felicity_kline.md", "dup", title="Felicity Kline", canonicalize=False)
+    obsidian.write_note("Projects/Brightpoint/team_meeting.md", "ok", title="TM", canonicalize=False)
+
+    mis = obsidian.find_misfiled()
+    assert "People/meeting_with_jaime_june_24.md" in mis["meetings_in_entities"]
+    assert "Projects/Brightpoint/team_meeting.md" not in mis["meetings_in_entities"]  # nested = left alone
+    assert "felicity_kline" in mis["cross_folder"]  # in both People and Projects
+
+    moved = obsidian.refile_meetings(dry_run=True)
+    assert ("People/meeting_with_jaime_june_24.md", "Sessions/meeting_with_jaime_june_24.md") in moved
+    assert not (vault / "Sessions" / "meeting_with_jaime_june_24.md").exists()  # preview only
+
+    obsidian.refile_meetings(dry_run=False)
+    assert not (vault / "People" / "meeting_with_jaime_june_24.md").exists()
+    sess = obsidian.read_note("Sessions/meeting_with_jaime_june_24.md")
+    assert sess.meta.get("type") == "session"  # type corrected on move
+
+
 def test_linkify_vault_connects_old_notes(vault):
     obsidian.set_aliases("Joe Konkle", ["Joe"])
     # An old note with a bare mention and no link (frontmatter must survive intact).

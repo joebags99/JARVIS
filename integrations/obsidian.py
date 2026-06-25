@@ -941,6 +941,76 @@ def linkify_vault(roster: dict[str, str] | None = None) -> int:
     return changed
 
 
+# Meeting/session-style note names that should never be a People/Projects *entity*.
+_MEETING_RE = re.compile(
+    r"(?:^|[\s_-])(meeting|standup|stand-up|huddle|retro|retrospective|"
+    r"1on1|1-on-1|kickoff|kick-off)(?:$|[\s_-])", re.I)
+
+
+def looks_like_meeting(name: str) -> bool:
+    """True if *name* reads like a meeting/session note (not a person/project)."""
+    n = name or ""
+    return bool(_MEETING_RE.search(n)) or n.lower().startswith("session")
+
+
+def find_misfiled() -> dict:
+    """Detect notes likely in the wrong folder.
+
+    Returns ``{"meetings_in_entities": [rel…], "cross_folder": {slug: [rel…]}}``:
+      * meeting/session notes sitting *directly* in People/ or Projects/ (a meeting
+        is not an entity — notes nested in a project subfolder are left alone), and
+      * the same entity name present in more than one entity folder (a duplicate,
+        e.g. ``People/Felicity Kline.md`` and ``Projects/felicity_kline.md``).
+    """
+    meetings: list[str] = []
+    by_slug: dict[str, list[str]] = {}
+    for folder in ENTITY_FOLDERS:
+        for rel in list_notes(folder=folder):
+            if len(rel.split("/")) != 2:  # only direct children are "entities"
+                continue
+            stem = Path(rel).stem
+            if looks_like_meeting(stem):
+                meetings.append(rel)
+            else:
+                by_slug.setdefault(_slugify(stem), []).append(rel)
+    cross = {
+        slug: sorted(rels) for slug, rels in by_slug.items()
+        if len({r.split("/")[0] for r in rels}) > 1
+    }
+    return {"meetings_in_entities": sorted(meetings), "cross_folder": cross}
+
+
+def refile_meetings(dry_run: bool = True) -> list[tuple[str, str]]:
+    """Move meeting/session notes out of People/Projects into ``Sessions/``.
+
+    Returns ``(src, dest)`` pairs. With ``dry_run=False`` it performs each move
+    (non-colliding), corrects the note's ``type`` to ``session``, and reindexes.
+    """
+    moved: list[tuple[str, str]] = []
+    for rel in find_misfiled()["meetings_in_entities"]:
+        name = Path(rel).name
+        if dry_run:
+            moved.append((rel, f"Sessions/{name}"))
+            continue
+        src = _safe_path(rel)
+        meta, body = parse_frontmatter(src.read_text(encoding="utf-8", errors="replace"))
+        meta["type"] = vault_taxonomy.type_for_folder("Sessions")
+        dest = _noncolliding(vault_root() / "Sessions" / name)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(f"{build_frontmatter(meta)}{body.strip()}\n", encoding="utf-8")
+        src.unlink()
+        try:
+            from app.vault_index import get_index
+            get_index().remove(rel)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("index remove after refile failed for %s: %s", rel, exc)
+        _reindex_path(dest)
+        moved.append((rel, _rel(dest)))
+    if moved and not dry_run:
+        log.info("refiled %d meeting note(s) out of entity folders", len(moved))
+    return moved
+
+
 def find_orphans() -> list[str]:
     """Notes with no outgoing ``[[links]]`` and no backlinks — graph islands."""
     orphans: list[str] = []

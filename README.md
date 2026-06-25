@@ -339,7 +339,8 @@ make the graph view look like a colored brain:
 ```bash
 python -m app.vault_cli graph     # color the graph by folder + stamp `type:` on every note
 python -m app.vault_cli moc       # rebuild hub "Maps of Content" that link each folder's notes
-python -m app.vault_cli doctor    # health report: orphans, dangling links, counts by type
+python -m app.vault_cli doctor    # health: orphans, dangling links, misfiled notes, dupes
+python -m app.vault_cli refile    # move meeting notes wrongly filed in People/Projects → Sessions/
 python -m app.vault_cli idea "ship a wake word"   # quick-capture an idea into Ideas/Inbox.md
 ```
 
@@ -348,8 +349,13 @@ python -m app.vault_cli idea "ship a wake word"   # quick-capture an idea into I
 - **`moc`** generates a `Maps/<Folder>.md` hub linking every note in that folder
   (and refreshes `index.md`), which forms the bright cluster-centers in the graph
   and eliminates orphans.
-- **`doctor`** flags islands (notes with no links) and dangling `[[links]]` so you
-  can keep the brain connected as it grows.
+- **`doctor`** flags islands (notes with no links), dangling `[[links]]`, **misfiled
+  meetings** (a meeting sitting in `People/`/`Projects/`), and **cross-folder
+  duplicates** (the same name in two entity folders) so you can keep the brain tidy.
+- **`refile`** moves those misfiled meeting notes into `Sessions/` (preview-first;
+  `--apply` to commit). The `vault_entities` consolidation also no longer creates
+  cross-folder duplicates — if you have leftover ones, delete the wrong-folder copy
+  and re-run it.
 
 JARVIS runs **`graph` + `moc` automatically on startup** (type-stamping, hub
 refresh, and graph colors), so the brain stays fresh without you remembering. It's

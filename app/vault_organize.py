@@ -36,9 +36,12 @@ _SYSTEM = (
     "content. Rewrite it cleanly and decide where it belongs.\n\n"
     "Return ONLY a JSON object (no prose, no code fence) with these keys:\n"
     '  "folder": one of ' + ", ".join(_ALLOWED_FOLDERS) + ' — or a "Projects/<Name>" '
-    "subfolder (e.g. \"Projects/Daedabyte\"). Pick the single best fit: meeting/recap "
-    "notes → Sessions or Projects/<Name>; a person → People; a project → Projects/<Name>; "
-    "reference/topic notes → Topics; durable facts → Memory.\n"
+    "subfolder (e.g. \"Projects/Daedabyte\"). Pick the single best fit. People/ is "
+    "ONLY for a note ABOUT one individual person, and Projects/ ONLY for a company "
+    "or project — never put a meeting, recap, or event there. Meeting/recap notes → "
+    "Sessions (or Projects/<Name> if clearly that project's meeting); a person → "
+    "People; a company/project → Projects/<Name>; reference/topic → Topics; durable "
+    "facts → Memory.\n"
     '  "title": a clear human title for the note.\n'
     '  "tags": a list of lowercase tags (no "#"), e.g. ["meeting","daedabyte"].\n'
     '  "body": the cleaned markdown body. Do NOT include a frontmatter block or an '

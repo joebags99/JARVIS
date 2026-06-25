@@ -192,7 +192,40 @@ def cmd_doctor(_args) -> int:
     if len(dangling) > 20:
         print(f"    … and {len(dangling) - 20} more notes")
 
-    print("\nTidy up: `vault_cli moc` (rebuild hubs), `vault_cli graph` (color the graph).")
+    mis = obsidian.find_misfiled()
+    meetings, cross = mis["meetings_in_entities"], mis["cross_folder"]
+    print(f"\nmisfiled meetings ({len(meetings)}) — meeting/session notes inside People/Projects:")
+    for rel in meetings[:20]:
+        print(f"    {rel}")
+    print(f"\ncross-folder dupes ({len(cross)}) — same name in more than one entity folder:")
+    for rels in list(cross.values())[:20]:
+        print(f"    {'  ↔  '.join(rels)}")
+
+    if meetings:
+        print("\n  Fix meetings: `vault_cli refile --apply` (moves them to Sessions/).")
+    if cross:
+        print("  Fix dupes: delete the wrong-folder copy in Obsidian, then re-run "
+              "`vault_entities --apply` (it no longer creates cross-folder duplicates).")
+    if not (meetings or cross):
+        print("\nTidy up: `vault_cli moc` (rebuild hubs), `vault_cli graph` (color the graph).")
+    return 0
+
+
+def cmd_refile(args) -> int:
+    """Move meeting/session notes out of People/Projects into Sessions/ (preview-first)."""
+    if not _require_vault():
+        return 1
+    from integrations import obsidian
+
+    moved = obsidian.refile_meetings(dry_run=not args.apply)
+    if not moved:
+        print("No misfiled meeting/session notes in People/ or Projects/.")
+        return 0
+    verb = "Moved" if args.apply else "Would move"
+    for src, dest in moved:
+        print(f"{verb}: {src}  →  {dest}")
+    print(f"\n{len(moved)} note(s) "
+          + ("moved to Sessions/." if args.apply else "to move. Re-run with --apply."))
     return 0
 
 
@@ -284,6 +317,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("graph", help="Type-stamp notes + write graph color config.").set_defaults(func=cmd_graph)
     sub.add_parser("moc", help="Rebuild hub Maps of Content + index.md.").set_defaults(func=cmd_moc)
     sub.add_parser("upgrade", help="Bring old notes up to current conventions (token-free).").set_defaults(func=cmd_upgrade)
+
+    rf = sub.add_parser("refile", help="Move misfiled meeting notes out of People/Projects → Sessions/.")
+    rf.add_argument("--apply", action="store_true", help="Perform the moves (default: preview).")
+    rf.set_defaults(func=cmd_refile)
 
     idea = sub.add_parser("idea", help="Quick-capture an idea into Ideas/Inbox.md.")
     idea.add_argument("text", nargs="+", help="The idea to capture.")

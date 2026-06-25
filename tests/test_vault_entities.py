@@ -91,6 +91,27 @@ def test_kind_filter_only_runs_requested(ent_vault):
     assert obsidian.find_entity_note("Joe Konkle", "People") is None
 
 
+def test_gather_candidates_excludes_meetings(ent_vault):
+    _root, obsidian = ent_vault
+    obsidian.write_note("Sessions/m.md", "[[meeting_with_jaime]] and [[Sam]]", title="M",
+                        canonicalize=False)
+    names = vault_entities.gather_candidates()
+    assert "Sam" in names and "meeting_with_jaime" not in names
+
+
+def test_apply_skips_cross_folder_duplicate(ent_vault):
+    _root, obsidian = ent_vault
+
+    def clusterer(_kind, _names):
+        # Simulate the bug: BOTH the people and projects passes grab the same name.
+        return [{"canonical": "Felicity Kline", "aliases": ["Felicity"]}]
+
+    out = vault_entities.run(apply=True, clusterer=clusterer)
+    assert obsidian.find_entity_note("Felicity Kline", "People")        # people pass created it
+    assert obsidian.find_entity_note("Felicity Kline", "Projects") is None  # projects pass skipped
+    assert any(kind == "projects" for kind, _name in out["skipped"])
+
+
 def test_preview_writes_nothing(ent_vault):
     root, obsidian = ent_vault
     obsidian.write_note("Sessions/m.md", "[[Databyte]]", title="M", canonicalize=False)

@@ -74,7 +74,8 @@ def gather_candidates() -> list[str]:
             names.add(obsidian._title_from_stem(Path(rel).stem))
     for p in obsidian.iter_markdown():
         names.update(obsidian.extract_wikilinks(p.read_text(encoding="utf-8", errors="replace")))
-    return sorted(n for n in names if n.strip())
+    # Drop meeting/session-style names so a meeting never becomes a People/Projects entity.
+    return sorted(n for n in names if n.strip() and not obsidian.looks_like_meeting(n))
 
 
 def parse_clusters(text: str) -> list[dict]:
@@ -109,6 +110,20 @@ def _default_clusterer(model: str):
     return cluster
 
 
+def _in_other_entity_folder(canonical: str, folder: str) -> bool:
+    """True if *canonical* already has an entity note in a different entity folder.
+
+    The guard that stops the people↔projects bleed: if "Felicity Kline" already
+    lives in People/, the projects pass must not also create Projects/felicity_kline.
+    """
+    from integrations import obsidian
+
+    return any(
+        f != folder and obsidian.find_entity_note(canonical, f)
+        for f in obsidian.ENTITY_FOLDERS
+    )
+
+
 def _apply_cluster(c: dict, folder: str) -> tuple[str, list[str], list[str]]:
     from integrations import obsidian
 
@@ -132,14 +147,22 @@ def run(
 
     clusterer = clusterer or _default_clusterer(model or CONFIG.anthropic_model)
     candidates = gather_candidates()
-    out: dict = {"kinds": {}, "links_rewritten": 0}
+    out: dict = {"kinds": {}, "links_rewritten": 0, "skipped": []}
     any_applied = False
+    claimed: set[str] = set()  # canonicals already filed by an earlier kind this run
     for kind in kinds:
         folder = _KINDS[kind]["folder"]
         clusters = clusterer(kind, candidates) if candidates else []
         applied = []
         if apply:
-            applied = [_apply_cluster(c, folder) for c in clusters]
+            for c in clusters:
+                canonical = c["canonical"]
+                # Never create the same entity in two folders (people↔projects bleed).
+                if canonical.lower() in claimed or _in_other_entity_folder(canonical, folder):
+                    out["skipped"].append((kind, canonical))
+                    continue
+                applied.append(_apply_cluster(c, folder))
+                claimed.add(canonical.lower())
             any_applied = any_applied or bool(applied)
         out["kinds"][kind] = {"clusters": clusters, "applied": applied}
     if any_applied:
@@ -159,6 +182,9 @@ def _print_report(out: dict, apply: bool) -> None:
             print(f"[{label}] {verb}: {', '.join(c['aliases'])}  →  {c['canonical']}")
         total += len(res["clusters"])
     print(f"\n{total} entity(ies) consolidated.")
+    if out.get("skipped"):
+        print(f"Skipped {len(out['skipped'])} name(s) already filed in another folder "
+              "(no cross-folder duplicates created).")
     if apply:
         print(f"Rewrote links in {out['links_rewritten']} note(s); "
               "duplicate notes moved to Archive/.")
