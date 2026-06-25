@@ -351,6 +351,11 @@ python -m app.vault_cli idea "ship a wake word"   # quick-capture an idea into I
 - **`doctor`** flags islands (notes with no links) and dangling `[[links]]` so you
   can keep the brain connected as it grows.
 
+JARVIS runs **`graph` + `moc` automatically on startup** (type-stamping, hub
+refresh, and graph colors), so the brain stays fresh without you remembering. It's
+idempotent — only rewrites what actually changed — so there's no churn. Set
+`OBSIDIAN_AUTO_ORGANIZE=false` to manage those yourself with the commands above.
+
 **Future-proof for new categories.** Folders, their note `type`, whether they hold
 de-duplicated entities, and their graph color all live in the **taxonomy**
 (`app/vault_taxonomy.py`). Add a category without touching code by dropping a

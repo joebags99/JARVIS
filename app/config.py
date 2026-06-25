@@ -230,6 +230,13 @@ class Config:
     obsidian_vault_path: str = field(
         default_factory=lambda: _get("OBSIDIAN_VAULT_PATH")
     )
+    # On startup, keep the vault tidy automatically: stamp `type:` on notes,
+    # refresh the hub Maps of Content + index.md, and write the graph color config.
+    # Idempotent (only rewrites what changed). Set OBSIDIAN_AUTO_ORGANIZE=false to
+    # manage those with the `vault_cli graph`/`moc` commands yourself instead.
+    obsidian_auto_organize: bool = field(
+        default_factory=lambda: _get_bool("OBSIDIAN_AUTO_ORGANIZE", True)
+    )
 
     # ── Proactivity (optional, off by default) ───────────────────────────────
     # Master switch for the background scheduler (scheduled briefing, meeting

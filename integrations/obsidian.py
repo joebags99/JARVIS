@@ -780,6 +780,22 @@ def record_session_facts(facts: list[dict]) -> int:
 
 
 # ── Organization: types, graph coloring, maps, health ────────────────────────
+def _write_if_changed(path: Path, content: str) -> bool:
+    """Write *content* to *path* only if it differs — avoids needless churn/sync.
+
+    Auto-organization runs on every startup, so rewriting byte-identical maps each
+    launch would thrash mtimes (and any Obsidian/Git sync). Returns True if written.
+    """
+    try:
+        if path.exists() and path.read_text(encoding="utf-8") == content:
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return True
+
+
 def capture_idea(text: str) -> str:
     """Quick-capture an idea into ``Ideas/Inbox.md`` (timestamped). Returns status."""
     text = (text or "").strip()
@@ -832,8 +848,8 @@ def write_graph_config() -> str:
         for folder, color in vault_taxonomy.color_groups()
     ]
     data.setdefault("collapse-color-groups", False)
-    gpath.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    log.info("wrote graph color config (%d groups) to %s", len(data["colorGroups"]), gpath)
+    if _write_if_changed(gpath, json.dumps(data, indent=2)):
+        log.info("wrote graph color config (%d groups) to %s", len(data["colorGroups"]), gpath)
     return str(gpath)
 
 
@@ -866,9 +882,8 @@ def rebuild_mocs() -> int:
                 title = _title_from_stem(Path(rel).stem)
             lines.append(f"- [[{rel[:-len(NOTE_EXT)]}|{title}]]")
         dest = root / "Maps" / f"{folder}.md"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        _reindex_path(dest)
+        if _write_if_changed(dest, "\n".join(lines) + "\n"):
+            _reindex_path(dest)
         maps.append(folder)
 
     idx = [
@@ -877,8 +892,8 @@ def rebuild_mocs() -> int:
         "JARVIS's knowledge vault. Each map below is a hub linking every note in that area.", "",
     ]
     idx += [f"- [[Maps/{folder}|{folder}]]" for folder in maps]
-    (root / "index.md").write_text("\n".join(idx) + "\n", encoding="utf-8")
-    _reindex_path(root / "index.md")
+    if _write_if_changed(root / "index.md", "\n".join(idx) + "\n"):
+        _reindex_path(root / "index.md")
     log.info("rebuilt %d map(s) of content", len(maps))
     return len(maps)
 

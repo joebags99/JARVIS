@@ -145,6 +145,20 @@ def test_rebuild_mocs_creates_hub_links(vault):
     assert "[[Maps/People|People]]" in (vault / "index.md").read_text(encoding="utf-8")
 
 
+def test_rebuild_mocs_and_graph_idempotent(vault):
+    obsidian.write_note(obsidian.path_for_title("X", "Topics"), "a", title="X")
+    obsidian.rebuild_mocs()
+    obsidian.write_graph_config()
+    moc = vault / "Maps" / "Topics.md"
+    graph = vault / ".obsidian" / "graph.json"
+    moc_mt, graph_mt = moc.stat().st_mtime_ns, graph.stat().st_mtime_ns
+    # Re-running with nothing changed must NOT rewrite the files (no startup churn).
+    obsidian.rebuild_mocs()
+    obsidian.write_graph_config()
+    assert moc.stat().st_mtime_ns == moc_mt
+    assert graph.stat().st_mtime_ns == graph_mt
+
+
 def test_find_orphans(vault):
     obsidian.write_note("Topics/Lonely.md", "no links", title="Lonely", canonicalize=False)
     obsidian.write_note("Topics/Linker.md", "see [[Lonely]]", title="Linker", canonicalize=False)
