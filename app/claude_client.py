@@ -25,6 +25,7 @@ from .config import CONFIG
 from .context_builder import ContextBuilder
 from .logging_setup import get_logger
 from .tool_registry import api_tools, execute_tool
+from . import usage
 
 log = get_logger("claude")
 
@@ -251,6 +252,7 @@ class ClaudeClient:
         # so a fresh session restores the saved defaults.
         from .persona import PERSONA
         PERSONA.reset()
+        usage.get_tracker().reset_session()  # logs the session usage/cost total
         log.info("session history cleared")
 
     def reload_context(self) -> None:
@@ -279,6 +281,7 @@ class ClaudeClient:
                     ),
                 }],
             )
+            usage.record(CONFIG.summary_model, getattr(response, "usage", None), kind="summary")
             return response.content[0].text if response.content else ""
         except Exception as exc:  # noqa: BLE001
             log.error("summarize_session failed: %s", exc)
@@ -300,6 +303,7 @@ class ClaudeClient:
                     "content": _FACT_EXTRACTION_PROMPT + "\n\n" + "\n".join(lines),
                 }],
             )
+            usage.record(CONFIG.summary_model, getattr(response, "usage", None), kind="facts")
             text = response.content[0].text if response.content else ""
             facts = _parse_fact_list(text)
             if facts:
@@ -544,6 +548,7 @@ class ClaudeClient:
                             on_delta(text)
                     final_msg = stream.get_final_message()
 
+                usage.record(CONFIG.anthropic_model, getattr(final_msg, "usage", None), kind="turn")
                 log.info(
                     "round %d content block types: %s",
                     round_num, [b.type for b in final_msg.content],
@@ -634,6 +639,7 @@ class ClaudeClient:
                             if on_delta:
                                 on_delta(text)
                         final_msg = stream.get_final_message()
+                    usage.record(CONFIG.anthropic_model, getattr(final_msg, "usage", None), kind="turn")
                     self.history.append({
                         "role": "assistant",
                         "content": [history.block_to_dict(b) for b in final_msg.content],

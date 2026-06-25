@@ -96,3 +96,6 @@ Thumbs.db
 *.wav
 temp/
 tmp/
+
+# Usage-pricing overrides (optional, personal)
+jarvis_usage_prices.json

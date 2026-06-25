@@ -57,6 +57,9 @@ calendars, and meeting notes.
   off") — into the vault when configured, else a local SQLite store.
 - **Smooth replies** — an animated "thinking" indicator while JARVIS composes,
   then the answer fades in line by line (no half-formed text filling in).
+- **Token & cache diagnostics** — every API call's token usage (including
+  prompt-cache hits) is logged with an estimated cost, so you can see what you're
+  spending and how well caching is working (`python -m app.usage_report`).
 - **Graceful degradation** — missing mic, missing calendar creds, or a missing
   API key are handled with clear messages, never a crash.
 
@@ -391,6 +394,31 @@ and it saves a `YYYY-MM-DD_topic.md` file into the right subfolder using what
 you told it, no manual file-dropping required. Tell it the same way to extract
 Todoist tasks from notes you've already dropped in, e.g. "check the Brightpoint
 notes from the 16th and add any action items to Todoist."
+
+---
+
+## Token & cache usage
+
+JARVIS records the `usage` from every Claude API call — input/output tokens plus
+the prompt-cache counters — to `logs/usage.jsonl` (gitignored), and logs a
+one-line summary per turn and per session. To see totals, the **cache hit rate**
+(how much of your input was served cheaply from cache), and an estimated cost:
+
+```bash
+python -m app.usage_report            # all-time totals + per-model / per-kind breakdown
+python -m app.usage_report --by-day   # daily rows, to spot spend spikes
+python -m app.usage_report --since 2026-06-01
+```
+
+This is token-free (it only reads the log). Cost is estimated from Anthropic's
+published per-1M-token rates with the cache multipliers applied (5-min cache
+writes at 1.25×, reads at 0.1×). If prices drift, drop a
+`jarvis_usage_prices.json` at the repo root to override them, e.g.
+`{"claude-sonnet-4-6": {"input": 3.0, "output": 15.0}}` — no code change needed.
+
+A healthy cache hit rate on multi-turn chats confirms the prompt-caching split
+(`app/context_builder.py`) is doing its job; a persistent 0% means something is
+invalidating the cached prefix.
 
 ---
 
