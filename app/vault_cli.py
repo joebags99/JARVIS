@@ -156,6 +156,82 @@ def cmd_list(args) -> int:
     return 0
 
 
+def cmd_doctor(_args) -> int:
+    """Vault health report: counts by type, orphans, dangling links, index size."""
+    if not _require_vault():
+        return 1
+    from collections import Counter
+
+    from integrations import obsidian
+
+    notes = obsidian.list_notes()
+    by_type: Counter = Counter()
+    for rel in notes:
+        try:
+            by_type[obsidian.read_note(rel).meta.get("type") or "—"] += 1
+        except Exception:  # noqa: BLE001
+            by_type["—"] += 1
+
+    print("JARVIS — vault health")
+    print("-" * 44)
+    print(f"notes            : {len(notes)}")
+    print("by type          : " + ", ".join(f"{t}×{n}" for t, n in sorted(by_type.items())))
+
+    orphans = obsidian.find_orphans()
+    print(f"\norphans ({len(orphans)})        — notes with no links in or out:")
+    for rel in orphans[:20]:
+        print(f"    {rel}")
+    if len(orphans) > 20:
+        print(f"    … and {len(orphans) - 20} more")
+
+    dangling = obsidian.find_dangling_links()
+    n_missing = sum(len(v) for v in dangling.values())
+    print(f"\ndangling links ({n_missing})  — [[targets]] with no matching note:")
+    for rel, missing in list(dangling.items())[:20]:
+        print(f"    {rel} → {', '.join('[[' + m + ']]' for m in missing)}")
+    if len(dangling) > 20:
+        print(f"    … and {len(dangling) - 20} more notes")
+
+    print("\nTidy up: `vault_cli moc` (rebuild hubs), `vault_cli graph` (color the graph).")
+    return 0
+
+
+def cmd_graph(_args) -> int:
+    """Type-stamp notes and write the graph color config (colors clusters by folder)."""
+    if not _require_vault():
+        return 1
+    from app import vault_taxonomy
+    from integrations import obsidian
+
+    typed = obsidian.backfill_types()
+    path = obsidian.write_graph_config()
+    print(f"Stamped type on {typed} note(s); wrote graph colors to {path}.")
+    print("Open the graph view in Obsidian — nodes are now colored by folder:")
+    for folder, color in vault_taxonomy.color_groups():
+        print(f"    {color}  {folder}")
+    return 0
+
+
+def cmd_moc(_args) -> int:
+    """Rebuild Maps of Content — hub notes that link every note in each folder."""
+    if not _require_vault():
+        return 1
+    from integrations import obsidian
+
+    print(f"Rebuilt {obsidian.rebuild_mocs()} map(s) under Maps/ and refreshed index.md.")
+    return 0
+
+
+def cmd_idea(args) -> int:
+    """Quick-capture an idea into Ideas/Inbox.md (timestamped)."""
+    if not _require_vault():
+        return 1
+    from integrations import obsidian
+
+    print(obsidian.capture_idea(" ".join(args.text)))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="vault_cli",
@@ -181,6 +257,14 @@ def build_parser() -> argparse.ArgumentParser:
     ls = sub.add_parser("list", help="List notes in the vault.")
     ls.add_argument("folder", nargs="?", default=None)
     ls.set_defaults(func=cmd_list)
+
+    sub.add_parser("doctor", help="Health report: orphans, dangling links, counts.").set_defaults(func=cmd_doctor)
+    sub.add_parser("graph", help="Type-stamp notes + write graph color config.").set_defaults(func=cmd_graph)
+    sub.add_parser("moc", help="Rebuild hub Maps of Content + index.md.").set_defaults(func=cmd_moc)
+
+    idea = sub.add_parser("idea", help="Quick-capture an idea into Ideas/Inbox.md.")
+    idea.add_argument("text", nargs="+", help="The idea to capture.")
+    idea.set_defaults(func=cmd_idea)
     return p
 
 

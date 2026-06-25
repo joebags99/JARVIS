@@ -141,7 +141,9 @@ class ContextBuilder:
             "- Connect notes with `[[wikilinks]]` and `#tags` so the brain stays "
             "interconnected; read a note before overwriting it. Always link a person, "
             "company, or project by the canonical name listed above (never an alias), "
-            "so each stays one note."
+            "so each stays one note.\n"
+            "- Capture a fleeting idea the user wants kept as a short note in the "
+            "`Ideas/` folder, linked to anything related."
         )
 
     @staticmethod

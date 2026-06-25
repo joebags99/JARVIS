@@ -30,27 +30,27 @@ Everything is best-effort and never raises across the tool boundary except via
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app import vault_taxonomy
 from app.config import CONFIG, NOTES_DIR, ROOT_DIR
 from app.logging_setup import get_logger
 
 log = get_logger("obsidian")
 
 NOTE_EXT = ".md"
-# Folders seeded in a fresh vault; JARVIS organizes its writes into these but also
-# adapts to whatever structure it finds in an existing vault.
-DEFAULT_FOLDERS = ["Sessions", "Daily", "People", "Projects", "Topics", "Memory", "Imported"]
-# Top-level folders kept out of the search index. Archive/ holds originals the
-# cleanup pass has superseded — retained for review, but out of JARVIS's way.
-INDEX_SKIP_FOLDERS = {"Archive"}
-# Folders whose notes define canonical entities (+ their ``aliases``) used to
-# de-duplicate names: People for individuals, Projects for companies/clients/
-# projects. Consolidation + link-canonicalization cover every folder listed here.
-ENTITY_FOLDERS = ["People", "Projects"]
+# Folder organization is defined by the config-driven taxonomy (app.vault_taxonomy):
+#   * DEFAULT_FOLDERS — seeded in a fresh vault (JARVIS still adapts to an existing one)
+#   * INDEX_SKIP_FOLDERS — excluded from the search index + graph (e.g. Archive/)
+#   * ENTITY_FOLDERS — notes here are canonical, alias-de-duplicated identities
+# Computed at import; add a category by editing vault_config.json, not this file.
+DEFAULT_FOLDERS = vault_taxonomy.folders()
+INDEX_SKIP_FOLDERS = vault_taxonomy.skip_folders()
+ENTITY_FOLDERS = vault_taxonomy.entity_folders()
 MEMORY_DB_PATH = ROOT_DIR / "memory.db"
 _MIGRATION_MARKER = ".jarvis_migrated"
 
@@ -193,8 +193,8 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 
 
 def build_frontmatter(meta: dict) -> str:
-    """Render a frontmatter block. ``title/created/updated/tags`` come first."""
-    ordered = ["title", "created", "updated", "tags"]
+    """Render a frontmatter block. ``title/type/created/updated/tags`` come first."""
+    ordered = ["title", "type", "created", "updated", "tags"]
     keys = [k for k in ordered if k in meta] + [k for k in meta if k not in ordered]
     out = ["---"]
     for k in keys:
@@ -391,15 +391,23 @@ def _today() -> str:
     return dt.date.today().isoformat()
 
 
-def _stamp(content: str, title: str | None, tags: list[str] | None) -> str:
-    """Return *content* with frontmatter (created/updated/tags) and a heading.
+def _type_for_path(rel: str) -> str:
+    """The taxonomy ``type`` for a note, from its top-level folder."""
+    return vault_taxonomy.type_for_folder(rel.split("/", 1)[0])
 
-    Respects frontmatter the model already wrote (merging in tags/updated) and
-    only adds an ``# H1`` when a title is supplied and the body lacks one.
+
+def _stamp(content: str, title: str | None, tags: list[str] | None,
+           note_type: str | None = None) -> str:
+    """Return *content* with frontmatter (type/created/updated/tags) and a heading.
+
+    Respects frontmatter the model already wrote (merging in tags/updated/type)
+    and only adds an ``# H1`` when a title is supplied and the body lacks one.
     """
     meta, body = parse_frontmatter(content or "")
     if title and "title" not in meta:
         meta["title"] = title
+    if note_type and "type" not in meta:
+        meta["type"] = note_type
     existing = meta.get("tags") or []
     if isinstance(existing, str):
         existing = [existing]
@@ -558,7 +566,7 @@ def write_note(
     if canonicalize:
         content = canonicalize_links(content or "")
     try:
-        p.write_text(_stamp(content, title, tags), encoding="utf-8")
+        p.write_text(_stamp(content, title, tags, _type_for_path(_rel(p))), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         log.error("could not write note %s: %s", p, exc)
         raise VaultError(f"could not save note: {exc}") from exc
@@ -581,7 +589,10 @@ def append_note(path: str, content: str) -> str:
         raise VaultError("append_note needs non-empty content.")
     if not p.exists():
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(_stamp(addition, _title_from_stem(p.stem), None), encoding="utf-8")
+        p.write_text(
+            _stamp(addition, _title_from_stem(p.stem), None, _type_for_path(_rel(p))),
+            encoding="utf-8",
+        )
         _reindex_path(p)
         _invalidate_roster_if_entity(p)
         log.info("created vault note %s (via append)", _rel(p))
@@ -666,6 +677,7 @@ def set_aliases(canonical: str, aliases: list[str], folder: str = "People") -> s
     else:
         meta, body = {}, ""
     meta.setdefault("title", canonical)
+    meta.setdefault("type", vault_taxonomy.type_for_folder(folder))
     merged = _dedupe(extract_aliases(meta) + [str(a).strip() for a in aliases])
     meta["aliases"] = [a for a in merged if a and a.lower() != canonical.lower()]
     now = _today()
@@ -765,6 +777,151 @@ def record_session_facts(facts: list[dict]) -> int:
         count += len(general)
     log.info("recorded %d session fact(s) across %d entity note(s)", count, len(groups))
     return count
+
+
+# ── Organization: types, graph coloring, maps, health ────────────────────────
+def capture_idea(text: str) -> str:
+    """Quick-capture an idea into ``Ideas/Inbox.md`` (timestamped). Returns status."""
+    text = (text or "").strip()
+    if not text:
+        raise VaultError("capture_idea needs text.")
+    stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    append_note("Ideas/Inbox.md", f"- {stamp} — {text}")
+    return f"Captured to Ideas/Inbox.md: {text}"
+
+
+def backfill_types() -> int:
+    """Stamp a ``type:`` (from the taxonomy) onto any note that lacks one.
+
+    Lets the graph color *existing* notes by kind. Returns the number updated.
+    """
+    changed = 0
+    for p in iter_markdown():
+        try:
+            meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001
+            continue
+        if meta.get("type"):
+            continue
+        meta["type"] = _type_for_path(_rel(p))
+        p.write_text(f"{build_frontmatter(meta)}{body.strip()}\n", encoding="utf-8")
+        _reindex_path(p)
+        changed += 1
+    return changed
+
+
+def write_graph_config() -> str:
+    """Write/refresh ``.obsidian/graph.json`` so the graph colors notes by folder.
+
+    Merges into any existing graph settings (only ``colorGroups`` is replaced),
+    so it never clobbers the user's other graph preferences. Returns the path.
+    """
+    root = vault_root()
+    obs = root / ".obsidian"
+    obs.mkdir(parents=True, exist_ok=True)
+    gpath = obs / "graph.json"
+    data: dict = {}
+    if gpath.exists():
+        try:
+            data = json.loads(gpath.read_text(encoding="utf-8")) or {}
+        except Exception as exc:  # noqa: BLE001
+            log.warning("existing graph.json unreadable, rewriting: %s", exc)
+            data = {}
+    data["colorGroups"] = [
+        {"query": f'path:"{folder}/"', "color": {"a": 1, "rgb": int(color.lstrip("#"), 16)}}
+        for folder, color in vault_taxonomy.color_groups()
+    ]
+    data.setdefault("collapse-color-groups", False)
+    gpath.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    log.info("wrote graph color config (%d groups) to %s", len(data["colorGroups"]), gpath)
+    return str(gpath)
+
+
+def rebuild_mocs() -> int:
+    """Regenerate hub *Maps of Content* — one ``Maps/<Folder>.md`` per populated folder.
+
+    Each map links to every note in its folder, so in the graph it becomes a bright
+    hub the cluster orbits. ``index.md`` is refreshed to link to every map. These
+    notes are auto-generated (overwritten on each run). Returns the map count.
+    """
+    root = vault_root()
+    skip = {"Maps", "Imported"} | INDEX_SKIP_FOLDERS
+    maps: list[str] = []
+    for folder in vault_taxonomy.folders():
+        if folder in skip:
+            continue
+        rels = [r for r in list_notes(folder=folder) if not r.startswith(f"{folder}/.")]
+        if not rels:
+            continue
+        lines = [
+            "---", "title: " + f"{folder} Map", "type: map", "tags: [moc]", "---", "",
+            f"# {folder} Map", "",
+            f"_Auto-generated hub linking every note in {folder}/._", "",
+        ]
+        for rel in sorted(rels):
+            try:
+                meta, body = parse_frontmatter((root / rel).read_text(encoding="utf-8", errors="replace"))
+                title = title_for(rel, meta, body)
+            except Exception:  # noqa: BLE001
+                title = _title_from_stem(Path(rel).stem)
+            lines.append(f"- [[{rel[:-len(NOTE_EXT)]}|{title}]]")
+        dest = root / "Maps" / f"{folder}.md"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _reindex_path(dest)
+        maps.append(folder)
+
+    idx = [
+        "---", "title: Index", "type: map", "tags: [moc]", "---", "",
+        "# Index — Map of Content", "",
+        "JARVIS's knowledge vault. Each map below is a hub linking every note in that area.", "",
+    ]
+    idx += [f"- [[Maps/{folder}|{folder}]]" for folder in maps]
+    (root / "index.md").write_text("\n".join(idx) + "\n", encoding="utf-8")
+    _reindex_path(root / "index.md")
+    log.info("rebuilt %d map(s) of content", len(maps))
+    return len(maps)
+
+
+def find_orphans() -> list[str]:
+    """Notes with no outgoing ``[[links]]`` and no backlinks — graph islands."""
+    orphans: list[str] = []
+    for p in iter_markdown():
+        try:
+            meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001
+            continue
+        if extract_wikilinks(body):
+            continue
+        rel = _rel(p)
+        if not _backlinks(p, title_for(rel, meta, body), extract_aliases(meta)):
+            orphans.append(rel)
+    return sorted(orphans)
+
+
+def find_dangling_links() -> dict[str, list[str]]:
+    """``{source: [missing targets]}`` for ``[[links]]`` pointing at no existing note."""
+    out_links: dict[str, list[str]] = {}
+    resolvable: set[str] = set()
+    for p in iter_markdown():
+        try:
+            meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001
+            continue
+        rel = _rel(p)
+        resolvable |= {
+            title_for(rel, meta, body).lower(),
+            Path(rel).stem.lower(),
+            rel[:-len(NOTE_EXT)].lower(),
+            *(a.lower() for a in extract_aliases(meta)),
+        }
+        out_links[rel] = extract_wikilinks(body)
+    dangling: dict[str, list[str]] = {}
+    for rel, links in out_links.items():
+        missing = [t for t in links if t.lower() not in resolvable]
+        if missing:
+            dangling[rel] = missing
+    return dangling
 
 
 # ── Scaffold + migration ─────────────────────────────────────────────────────

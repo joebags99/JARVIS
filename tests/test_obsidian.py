@@ -114,6 +114,61 @@ def test_backlinks_are_alias_aware(vault):
     assert "Sessions/n.md" in obsidian.read_note(canon_rel).backlinks
 
 
+# ── Taxonomy: types, graph, maps, health ──────────────────────────────────────
+def test_write_stamps_type_from_folder(vault):
+    obsidian.write_note("People/Sam.md", "x", title="Sam")
+    obsidian.write_note("Topics/SEO.md", "y", title="SEO")
+    assert obsidian.read_note("People/Sam.md").meta.get("type") == "person"
+    assert obsidian.read_note("Topics/SEO.md").meta.get("type") == "topic"
+
+
+def test_backfill_types(vault):
+    (vault / "Projects").mkdir(parents=True, exist_ok=True)
+    (vault / "Projects" / "old.md").write_text("# Old\n\nbody", encoding="utf-8")  # no type
+    assert obsidian.backfill_types() >= 1
+    assert obsidian.read_note("Projects/old.md").meta.get("type") == "project"
+
+
+def test_capture_idea(vault):
+    obsidian.capture_idea("build a wake word")
+    note = obsidian.read_note("Ideas/Inbox.md")
+    assert "build a wake word" in note.body and note.meta.get("type") == "idea"
+
+
+def test_rebuild_mocs_creates_hub_links(vault):
+    obsidian.write_note(obsidian.path_for_title("Joe Konkle", "People"), "x", title="Joe Konkle")
+    obsidian.write_note(obsidian.path_for_title("Website", "Projects"), "y", title="Website")
+    assert obsidian.rebuild_mocs() >= 2
+    people_map = obsidian.read_note("Maps/People.md")
+    assert "[[People/joe_konkle|Joe Konkle]]" in people_map.body
+    assert people_map.meta.get("type") == "map"
+    assert "[[Maps/People|People]]" in (vault / "index.md").read_text(encoding="utf-8")
+
+
+def test_find_orphans(vault):
+    obsidian.write_note("Topics/Lonely.md", "no links", title="Lonely", canonicalize=False)
+    obsidian.write_note("Topics/Linker.md", "see [[Lonely]]", title="Linker", canonicalize=False)
+    obsidian.write_note("Topics/Island.md", "truly alone", title="Island", canonicalize=False)
+    orphans = obsidian.find_orphans()
+    assert "Topics/Island.md" in orphans          # no links in or out
+    assert "Topics/Linker.md" not in orphans       # has an outgoing link
+    assert "Topics/Lonely.md" not in orphans       # has a backlink
+
+
+def test_find_dangling_links(vault):
+    obsidian.write_note("Topics/A.md", "to [[Ghost]] and [[A]]", title="A", canonicalize=False)
+    assert obsidian.find_dangling_links().get("Topics/A.md") == ["Ghost"]  # [[A]] self-resolves
+
+
+def test_write_graph_config(vault):
+    import json as _json
+    obsidian.write_graph_config()
+    data = _json.loads((vault / ".obsidian" / "graph.json").read_text(encoding="utf-8"))
+    queries = {g["query"] for g in data["colorGroups"]}
+    assert 'path:"People/"' in queries and 'path:"Ideas/"' in queries
+    assert all("rgb" in g["color"] for g in data["colorGroups"])
+
+
 def test_linkify_entities_wraps_known_names(vault):
     obsidian.set_aliases("Joe Konkle", ["Joe", "Joe K"])
     obsidian.set_aliases("Daedabyte", [], folder="Projects")

@@ -72,3 +72,25 @@ def test_list(cli_vault, capsys):
     obsidian.write_note("People/Sam.md", "x", title="Sam")
     assert vault_cli.main(["list", "People"]) == 0
     assert "People/Sam.md" in capsys.readouterr().out
+
+
+def test_idea_graph_moc_doctor(cli_vault, capsys):
+    root = cli_vault
+    from integrations import obsidian
+
+    obsidian.ensure_scaffold()
+    obsidian.write_note("People/Sam.md", "see [[Ghost]]", title="Sam", canonicalize=False)
+
+    assert vault_cli.main(["idea", "build", "a", "wake", "word"]) == 0
+    assert "Ideas/Inbox.md" in capsys.readouterr().out
+
+    assert vault_cli.main(["graph"]) == 0
+    assert "graph colors" in capsys.readouterr().out.lower()
+    assert (root / ".obsidian" / "graph.json").exists()
+
+    assert vault_cli.main(["moc"]) == 0
+    assert "map(s)" in capsys.readouterr().out
+
+    assert vault_cli.main(["doctor"]) == 0
+    out = capsys.readouterr().out.lower()
+    assert "vault health" in out and "dangling" in out  # the [[Ghost]] link is flagged

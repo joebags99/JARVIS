@@ -333,6 +333,39 @@ write**, so each entity stays one note. The source of truth is the `aliases:` li
 in each `People/`/`Projects/` note — edit it in Obsidian anytime to teach a new
 nickname. (`python -m app.vault_people` still works as a people-only shortcut.)
 
+**Keep the graph organized (token-free).** A few commands keep the vault tidy and
+make the graph view look like a colored brain:
+
+```bash
+python -m app.vault_cli graph     # color the graph by folder + stamp `type:` on every note
+python -m app.vault_cli moc       # rebuild hub "Maps of Content" that link each folder's notes
+python -m app.vault_cli doctor    # health report: orphans, dangling links, counts by type
+python -m app.vault_cli idea "ship a wake word"   # quick-capture an idea into Ideas/Inbox.md
+```
+
+- **`graph`** writes `.obsidian/graph.json` so Obsidian's graph colors nodes by
+  folder (people green, projects cyan, ideas pink, …) — instant visual clusters.
+- **`moc`** generates a `Maps/<Folder>.md` hub linking every note in that folder
+  (and refreshes `index.md`), which forms the bright cluster-centers in the graph
+  and eliminates orphans.
+- **`doctor`** flags islands (notes with no links) and dangling `[[links]]` so you
+  can keep the brain connected as it grows.
+
+**Future-proof for new categories.** Folders, their note `type`, whether they hold
+de-duplicated entities, and their graph color all live in the **taxonomy**
+(`app/vault_taxonomy.py`). Add a category without touching code by dropping a
+`vault_config.json` at the repo root:
+
+```json
+{"folders": [
+  {"folder": "Books", "type": "book", "entity": true,  "color": "#ff8a65"},
+  {"folder": "Goals", "type": "goal", "entity": false, "color": "#7e57c2"}
+]}
+```
+
+JARVIS will scaffold the folder, stamp the new `type:`, color it in the graph, and
+(for `entity: true`) de-duplicate names in it — all automatically.
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
