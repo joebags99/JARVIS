@@ -232,6 +232,28 @@ def cmd_idea(args) -> int:
     return 0
 
 
+def cmd_upgrade(_args) -> int:
+    """Bring existing notes up to the current conventions (token-free)."""
+    if not _require_vault():
+        return 1
+    from integrations import obsidian
+
+    typed = obsidian.backfill_types()
+    relinked = obsidian.recanonicalize_vault()
+    connected = obsidian.linkify_vault()
+    maps = obsidian.rebuild_mocs()
+    obsidian.write_graph_config()
+    print("Upgraded existing notes to the current conventions:")
+    print(f"    type-stamped            : {typed} note(s)")
+    print(f"    alias links → canonical : {relinked} note(s)")
+    print(f"    newly wikilinked to entities : {connected} note(s)")
+    print(f"    hub maps rebuilt        : {maps}")
+    print("\nThe deeper, content-level cleanup uses the API (preview-first):")
+    print("    python -m app.vault_organize --apply   # reformat + refile the Imported/ dump")
+    print("    python -m app.vault_entities --apply    # merge duplicate people/companies/projects")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="vault_cli",
@@ -261,6 +283,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("doctor", help="Health report: orphans, dangling links, counts.").set_defaults(func=cmd_doctor)
     sub.add_parser("graph", help="Type-stamp notes + write graph color config.").set_defaults(func=cmd_graph)
     sub.add_parser("moc", help="Rebuild hub Maps of Content + index.md.").set_defaults(func=cmd_moc)
+    sub.add_parser("upgrade", help="Bring old notes up to current conventions (token-free).").set_defaults(func=cmd_upgrade)
 
     idea = sub.add_parser("idea", help="Quick-capture an idea into Ideas/Inbox.md.")
     idea.add_argument("text", nargs="+", help="The idea to capture.")

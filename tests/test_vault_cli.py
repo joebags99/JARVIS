@@ -94,3 +94,14 @@ def test_idea_graph_moc_doctor(cli_vault, capsys):
     assert vault_cli.main(["doctor"]) == 0
     out = capsys.readouterr().out.lower()
     assert "vault health" in out and "dangling" in out  # the [[Ghost]] link is flagged
+
+
+def test_upgrade_modernizes_old_notes(cli_vault, capsys):
+    from integrations import obsidian
+
+    obsidian.ensure_scaffold()
+    obsidian.set_aliases("Joe Konkle", ["Joe"])
+    obsidian.write_note("Sessions/old.md", "Met Joe.", title="Old")  # bare mention
+    assert vault_cli.main(["upgrade"]) == 0
+    assert "Upgraded existing notes" in capsys.readouterr().out
+    assert "[[Joe Konkle|Joe]]" in obsidian.read_note("Sessions/old.md").body

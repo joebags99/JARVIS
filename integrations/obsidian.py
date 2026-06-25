@@ -371,6 +371,23 @@ def linkify_entities(text: str, roster: dict[str, str] | None = None) -> str:
     )
 
 
+def _split_frontmatter_raw(text: str) -> tuple[str, str]:
+    """Split off the frontmatter block *verbatim* (incl. ``---`` fences) from the body.
+
+    Unlike :func:`parse_frontmatter` this preserves the original frontmatter text,
+    so a body-only rewrite (e.g. retro-linkifying) never reformats the metadata.
+    """
+    if not text.startswith("---"):
+        return "", text
+    lines = text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return "", text
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return "".join(lines[: i + 1]), "".join(lines[i + 1:])
+    return "", text
+
+
 def _has_heading(body: str) -> bool:
     for line in body.splitlines():
         if line.strip():
@@ -896,6 +913,32 @@ def rebuild_mocs() -> int:
         _reindex_path(root / "index.md")
     log.info("rebuilt %d map(s) of content", len(maps))
     return len(maps)
+
+
+def linkify_vault(roster: dict[str, str] | None = None) -> int:
+    """Retro-wrap bare mentions of known entities in ``[[links]]`` across old notes.
+
+    Connects pre-existing notes (sessions, imported, topics, daily) into the graph
+    deterministically — no API calls. Frontmatter is preserved verbatim; entity
+    folders (People/Projects) and Maps/ are skipped to avoid self-link noise.
+    Returns the number of notes changed.
+    """
+    roster = roster if roster is not None else get_roster()
+    if not roster:
+        return 0
+    skip = {"People", "Projects", "Maps"} | INDEX_SKIP_FOLDERS
+    changed = 0
+    for p in iter_markdown():
+        if _rel(p).split("/", 1)[0] in skip:
+            continue
+        raw = p.read_text(encoding="utf-8", errors="replace")
+        fm, body = _split_frontmatter_raw(raw)
+        new_body = linkify_entities(body, roster)
+        if new_body != body:
+            p.write_text(fm + new_body, encoding="utf-8")
+            _reindex_path(p)
+            changed += 1
+    return changed
 
 
 def find_orphans() -> list[str]:

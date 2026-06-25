@@ -356,6 +356,19 @@ refresh, and graph colors), so the brain stays fresh without you remembering. It
 idempotent — only rewrites what actually changed — so there's no churn. Set
 `OBSIDIAN_AUTO_ORGANIZE=false` to manage those yourself with the commands above.
 
+**Modernize older notes in one shot.** Structural conventions (types, colors, hubs)
+self-heal on startup, but pre-existing notes' *links* don't — an old recap that says
+"Joe" in prose won't become `[[Joe Konkle]]` on its own. `upgrade` backfills all of
+that across the whole vault, token-free:
+
+```bash
+python -m app.vault_cli upgrade   # type-stamp + canonicalize links + wikilink bare mentions + rebuild hubs
+```
+
+For the deeper, content-level cleanup, run the two API-backed passes it points you to
+(`vault_organize --apply` to reformat/refile the `Imported/` dump,
+`vault_entities --apply` to merge duplicate identities).
+
 **Future-proof for new categories.** Folders, their note `type`, whether they hold
 de-duplicated entities, and their graph color all live in the **taxonomy**
 (`app/vault_taxonomy.py`). Add a category without touching code by dropping a

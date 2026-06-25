@@ -183,6 +183,24 @@ def test_write_graph_config(vault):
     assert all("rgb" in g["color"] for g in data["colorGroups"])
 
 
+def test_linkify_vault_connects_old_notes(vault):
+    obsidian.set_aliases("Joe Konkle", ["Joe"])
+    # An old note with a bare mention and no link (frontmatter must survive intact).
+    obsidian.write_note("Sessions/old.md", "Met Joe about the deck.", title="Recap")
+    fm_before = (vault / "Sessions" / "old.md").read_text(encoding="utf-8").split("\n\n")[0]
+
+    assert obsidian.linkify_vault() >= 1
+    note = obsidian.read_note("Sessions/old.md")
+    assert "[[Joe Konkle|Joe]]" in note.body
+    assert note.meta.get("type") == "session"           # frontmatter preserved
+    assert (vault / "Sessions" / "old.md").read_text(encoding="utf-8").startswith(fm_before)
+
+    # Entity folders are skipped — no churn on a second pass.
+    person_before = (vault / "People" / "joe_konkle.md").read_text(encoding="utf-8")
+    obsidian.linkify_vault()
+    assert (vault / "People" / "joe_konkle.md").read_text(encoding="utf-8") == person_before
+
+
 def test_linkify_entities_wraps_known_names(vault):
     obsidian.set_aliases("Joe Konkle", ["Joe", "Joe K"])
     obsidian.set_aliases("Daedabyte", [], folder="Projects")
