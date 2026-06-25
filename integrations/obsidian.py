@@ -54,6 +54,9 @@ _MIGRATION_MARKER = ".jarvis_migrated"
 # with an optional ``|alias`` and ``#heading``/``^block`` suffix.
 _TAG_RE = re.compile(r"(?:^|\s)#([A-Za-z0-9_][A-Za-z0-9_/-]*)")
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|[^\]]*)?\]\]")
+# Plain ``[[target]]`` only (no ``|alias`` / ``#heading``) — the safe surface to
+# rewrite when canonicalizing person links, so display text is never clobbered.
+_PLAIN_WIKILINK_RE = re.compile(r"\[\[([^\]|#^]+)\]\]")
 
 
 class VaultError(Exception):
@@ -226,6 +229,89 @@ def extract_wikilinks(body: str) -> list[str]:
     return _dedupe([m.strip() for m in _WIKILINK_RE.findall(body or "")])
 
 
+def extract_aliases(meta: dict) -> list[str]:
+    """A note's frontmatter ``aliases`` as a clean list (handles str or list)."""
+    a = meta.get("aliases") or []
+    if isinstance(a, str):
+        a = [x.strip() for x in a.replace(",", " ").split()]
+    return _dedupe([str(x).lstrip("#").strip() for x in a if str(x).strip()])
+
+
+# ── People roster / name canonicalization ────────────────────────────────────
+# Source of truth = the People/ notes' titles + ``aliases`` frontmatter. The
+# roster maps every lowercased alias (and the canonical name itself) to the one
+# canonical spelling, so "Joe"/"Joe K" both resolve to "Joe Konkle". Cached and
+# keyed by vault root so a different vault (e.g. in tests) never sees stale data.
+_roster_cache: tuple[str, dict[str, str]] | None = None
+
+
+def reload_roster() -> dict[str, str]:
+    """Rebuild the alias→canonical map from People/ notes. Best-effort."""
+    global _roster_cache
+    mapping: dict[str, str] = {}
+    try:
+        root = vault_root()
+    except VaultError:
+        _roster_cache = None
+        return {}
+    people = root / "People"
+    if people.exists():
+        for p in sorted(people.glob(f"*{NOTE_EXT}")):
+            try:
+                meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+            except Exception as exc:  # noqa: BLE001
+                log.debug("roster: could not read %s: %s", p.name, exc)
+                continue
+            canonical = title_for(_rel(p), meta, body) or _title_from_stem(p.stem)
+            mapping[canonical.lower()] = canonical
+            mapping[p.stem.lower()] = canonical
+            for alias in extract_aliases(meta):
+                mapping[alias.lower()] = canonical
+    _roster_cache = (str(root), mapping)
+    return mapping
+
+
+def get_roster() -> dict[str, str]:
+    """Cached alias→canonical map, rebuilt when the vault root changes."""
+    try:
+        root = str(vault_root())
+    except VaultError:
+        return {}
+    if _roster_cache and _roster_cache[0] == root:
+        return _roster_cache[1]
+    return reload_roster()
+
+
+def canonical_people() -> dict[str, list[str]]:
+    """Canonical name → its aliases (inverted roster), for prompts/reporting."""
+    out: dict[str, list[str]] = {}
+    for alias, canonical in get_roster().items():
+        if alias != canonical.lower():
+            out.setdefault(canonical, [])
+            if alias not in (a.lower() for a in out[canonical]):
+                out[canonical].append(alias)
+    return out
+
+
+def canonicalize_links(text: str, roster: dict[str, str] | None = None) -> str:
+    """Rewrite plain ``[[alias]]`` links to ``[[Canonical]]`` using the roster.
+
+    Only plain links are touched (never ``[[x|display]]`` or ``[[x#heading]]``),
+    and only when the target is a known alias, so this is a safe, bounded rewrite
+    — no free-text substitution that could mangle names inside prose.
+    """
+    roster = roster if roster is not None else get_roster()
+    if not roster or not text:
+        return text
+
+    def _sub(m: re.Match) -> str:
+        target = m.group(1).strip()
+        canon = roster.get(target.lower())
+        return f"[[{canon}]]" if canon and canon != target else m.group(0)
+
+    return _PLAIN_WIKILINK_RE.sub(_sub, text)
+
+
 def _has_heading(body: str) -> bool:
     for line in body.splitlines():
         if line.strip():
@@ -338,17 +424,22 @@ def read_note(path: str) -> NoteRead:
     title = title_for(rel, meta, body)
     return NoteRead(
         path=rel, title=title, meta=meta, body=body,
-        links=extract_wikilinks(body), backlinks=_backlinks(p, title),
+        links=extract_wikilinks(body), backlinks=_backlinks(p, title, extract_aliases(meta)),
     )
 
 
-def _backlinks(p: Path, title: str) -> list[str]:
-    """Notes linking to this one, via the index (by filename stem and title)."""
+def _backlinks(p: Path, title: str, aliases: list[str] | None = None) -> list[str]:
+    """Notes linking to this one, by filename stem, title, and any aliases.
+
+    Including the note's own ``aliases`` means a ``[[Joe K]]`` reference still
+    counts as a backlink to ``People/Joe Konkle.md`` even before links are
+    canonicalized — so consolidated identities stay connected.
+    """
     try:
         from app.vault_index import get_index
         idx = get_index()
         rel = _rel(p)
-        names = _dedupe([Path(rel).stem, title, rel[:-len(NOTE_EXT)]])
+        names = _dedupe([Path(rel).stem, title, rel[:-len(NOTE_EXT)], *(aliases or [])])
         found: list[str] = []
         for n in names:
             found += idx.linking_to(n)
@@ -377,15 +468,27 @@ def list_notes(folder: str | None = None, limit: int = 200) -> list[str]:
 
 
 # ── Writes ───────────────────────────────────────────────────────────────────
+def _invalidate_roster_if_person(p: Path) -> None:
+    """Drop the cached roster when a People/ note changed, so it's rebuilt fresh."""
+    global _roster_cache
+    try:
+        if _rel(p).split("/", 1)[0] == "People":
+            _roster_cache = None
+    except Exception:  # noqa: BLE001
+        _roster_cache = None
+
+
 def write_note(
     path: str, content: str, title: str | None = None,
-    tags: list[str] | None = None, overwrite: bool = True,
+    tags: list[str] | None = None, overwrite: bool = True, canonicalize: bool = True,
 ) -> str:
     """Create or overwrite a note (frontmatter stamped, ``# H1`` added if titled).
 
     With ``overwrite=False`` an existing path is given a numeric suffix instead
     of being replaced — used when creating a note from a title so JARVIS never
-    silently clobbers an existing note.
+    silently clobbers an existing note. Plain person ``[[links]]`` are
+    canonicalized against the roster on the way in (``canonicalize=False`` to
+    skip) so the same person never splits across name variants.
     """
     p = _safe_path(path)
     existed = p.exists()
@@ -393,12 +496,15 @@ def write_note(
         p = _noncolliding(p)
         existed = False
     p.parent.mkdir(parents=True, exist_ok=True)
+    if canonicalize:
+        content = canonicalize_links(content or "")
     try:
         p.write_text(_stamp(content, title, tags), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         log.error("could not write note %s: %s", p, exc)
         raise VaultError(f"could not save note: {exc}") from exc
     _reindex_path(p)
+    _invalidate_roster_if_person(p)
     rel = _rel(p)
     log.info("%s vault note %s", "updated" if existed else "created", rel)
     return f"{'Updated' if existed else 'Saved'} note {rel}."
@@ -411,18 +517,20 @@ def append_note(path: str, content: str) -> str:
     to a note is safer than rewriting it.
     """
     p = _safe_path(path)
-    addition = (content or "").strip()
+    addition = canonicalize_links((content or "").strip())
     if not addition:
         raise VaultError("append_note needs non-empty content.")
     if not p.exists():
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(_stamp(addition, _title_from_stem(p.stem), None), encoding="utf-8")
         _reindex_path(p)
+        _invalidate_roster_if_person(p)
         log.info("created vault note %s (via append)", _rel(p))
         return f"Created note {_rel(p)}."
     existing = p.read_text(encoding="utf-8", errors="replace").rstrip()
     p.write_text(f"{existing}\n\n{addition}\n", encoding="utf-8")
     _reindex_path(p)
+    _invalidate_roster_if_person(p)
     log.info("appended to vault note %s", _rel(p))
     return f"Appended to note {_rel(p)}."
 
@@ -448,8 +556,102 @@ def move_to_archive(path: str) -> str:
         get_index().remove(rel)
     except Exception as exc:  # noqa: BLE001
         log.debug("index remove after archive failed for %s: %s", rel, exc)
+    if rel.split("/", 1)[0] == "People":
+        global _roster_cache
+        _roster_cache = None
     log.info("archived vault note %s -> %s", rel, _rel(dest))
     return _rel(dest)
+
+
+# ── Identity merge primitives (used by the people-consolidation pass) ─────────
+def find_person_note(name: str) -> str | None:
+    """Locate an existing ``People/`` note for *name*, matching on slug.
+
+    Slug comparison makes the lookup case- and punctuation-insensitive, so a
+    migrated ``People/Joe.md`` and a generated ``People/joe.md`` both resolve.
+    Returns the note's vault-relative path, or None.
+    """
+    try:
+        root = vault_root()
+    except VaultError:
+        return None
+    people = root / "People"
+    if not people.exists():
+        return None
+    target = _slugify(name)
+    for p in sorted(people.glob(f"*{NOTE_EXT}")):
+        try:
+            meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001
+            continue
+        if _slugify(p.stem) == target or _slugify(title_for(_rel(p), meta, body)) == target:
+            return _rel(p)
+    return None
+
+
+def set_aliases(canonical: str, aliases: list[str]) -> str:
+    """Create/update the canonical ``People/`` note with a merged ``aliases`` list.
+
+    Preserves any existing body and aliases; the canonical name is never listed
+    as its own alias. Reuses an existing note for the name if one is found (rather
+    than creating a slug duplicate). Returns the note's vault-relative path.
+    """
+    rel = find_person_note(canonical) or path_for_title(canonical, "People")
+    p = _safe_path(rel)
+    if p.exists():
+        meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+    else:
+        meta, body = {}, ""
+    meta.setdefault("title", canonical)
+    merged = _dedupe(extract_aliases(meta) + [str(a).strip() for a in aliases])
+    meta["aliases"] = [a for a in merged if a and a.lower() != canonical.lower()]
+    now = _today()
+    meta.setdefault("created", now)
+    meta["updated"] = now
+    heading = "" if _has_heading(body) else f"# {canonical}\n\n"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(f"{build_frontmatter(meta)}{heading}{body.strip()}\n", encoding="utf-8")
+    _reindex_path(p)
+    global _roster_cache
+    _roster_cache = None
+    log.info("set aliases on %s (%d)", _rel(p), len(meta["aliases"]))
+    return _rel(p)
+
+
+def merge_note_into(src_rel: str, canonical: str) -> bool:
+    """Fold a duplicate person note's body into the canonical note, then archive it.
+
+    No-op (returns False) if *src_rel* is missing or is already the canonical note.
+    """
+    canonical_rel = find_person_note(canonical) or path_for_title(canonical, "People")
+    src = _safe_path(src_rel)
+    if not src.exists() or _rel(src) == canonical_rel:
+        return False
+    _meta, body = parse_frontmatter(src.read_text(encoding="utf-8", errors="replace"))
+    if body.strip():
+        append_note(canonical_rel, f"## Merged from {Path(src_rel).stem}\n\n{body.strip()}")
+    move_to_archive(_rel(src))
+    return True
+
+
+def recanonicalize_vault() -> int:
+    """Rewrite plain person ``[[links]]`` to canonical across every note.
+
+    Returns the number of notes changed. Used after aliases are set so existing
+    references (``[[Joe K]]`` …) collapse onto the canonical name everywhere.
+    """
+    roster = reload_roster()
+    if not roster:
+        return 0
+    changed = 0
+    for p in iter_markdown():
+        raw = p.read_text(encoding="utf-8", errors="replace")
+        new = canonicalize_links(raw, roster)
+        if new != raw:
+            p.write_text(new, encoding="utf-8")
+            _reindex_path(p)
+            changed += 1
+    return changed
 
 
 # ── Scaffold + migration ─────────────────────────────────────────────────────

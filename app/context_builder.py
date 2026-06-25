@@ -112,18 +112,20 @@ class ContextBuilder:
                 p.name for p in root.iterdir()
                 if p.is_dir() and not p.name.startswith(".")
             )
+            people = obsidian.canonical_people()
         except Exception as exc:  # noqa: BLE001
             log.warning("could not inspect vault for context: %s", exc)
-            folders = []
+            folders, people = [], {}
         folder_line = (
             f"Top-level folders: {', '.join(folders)}.\n" if folders else ""
         )
+        people_line = self._people_line(people)
         return (
             "You keep a single Obsidian knowledge vault — the user's 'second brain' "
             "— that is BOTH your long-term memory and your notes on people, "
             "projects, meetings, and topics. It replaces any older notes/recall "
             "tools.\n"
-            f"{folder_line}"
+            f"{folder_line}{people_line}"
             "Working habits:\n"
             "- Before answering anything that might be recorded (past decisions, "
             "people, projects, 'what did we discuss'), `search_vault` first, then "
@@ -133,8 +135,23 @@ class ContextBuilder:
             "`append_note` (adding to a daily/running note) instead of only "
             "replying. Record what they actually said — don't invent detail.\n"
             "- Connect notes with `[[wikilinks]]` and `#tags` so the brain stays "
-            "interconnected; read a note before overwriting it."
+            "interconnected; read a note before overwriting it. Always link a person "
+            "by their canonical name below (never an alias), so each person stays one "
+            "note."
         )
+
+    @staticmethod
+    def _people_line(people: dict[str, list[str]], limit: int = 40) -> str:
+        """Render the known-people roster as 'Canonical (aka a, b)' for the prompt."""
+        if not people:
+            return ""
+        names = sorted(people)[:limit]
+        parts = []
+        for name in names:
+            aliases = ", ".join(people[name])
+            parts.append(f"{name} (aka {aliases})" if aliases else name)
+        more = "" if len(people) <= limit else f", +{len(people) - limit} more"
+        return f"Known people (use the canonical name): {'; '.join(parts)}{more}.\n"
 
     def _knowledge_pools_section(self) -> str:
         pools_file = ROOT_DIR / CONFIG.knowledge_pools_file

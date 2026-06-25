@@ -79,6 +79,57 @@ def test_move_to_archive_missing_note_raises(vault):
         obsidian.move_to_archive("Imported/nope.md")
 
 
+# ── People roster / name canonicalization ──────────────────────────────────────
+def test_roster_from_people_aliases(vault):
+    obsidian.set_aliases("Joe Konkle", ["Joe", "Joe K"])
+    roster = obsidian.get_roster()
+    assert roster["joe"] == "Joe Konkle"
+    assert roster["joe k"] == "Joe Konkle"
+    assert roster["joe konkle"] == "Joe Konkle"
+    assert obsidian.canonical_people()["Joe Konkle"]  # has aliases
+
+
+def test_canonicalize_links_only_touches_plain_known_links(vault):
+    obsidian.set_aliases("Joe Konkle", ["Joe", "Joe K"])
+    out = obsidian.canonicalize_links(
+        "Met [[Joe]] and [[Joe K|Joey]] re [[Joe K#Notes]] and [[Sam]]."
+    )
+    assert "[[Joe Konkle]]" in out          # plain alias rewritten
+    assert "[[Joe K|Joey]]" in out          # display-aliased link untouched
+    assert "[[Joe K#Notes]]" in out         # heading link untouched
+    assert "[[Sam]]" in out                 # unknown name untouched
+
+
+def test_write_note_canonicalizes_person_links(vault):
+    obsidian.set_aliases("Joe Konkle", ["Joe K"])
+    obsidian.write_note("Sessions/m.md", "Spoke with [[Joe K]] today.", title="M")
+    raw = (vault / "Sessions" / "m.md").read_text(encoding="utf-8")
+    assert "[[Joe Konkle]]" in raw and "[[Joe K]]" not in raw
+
+
+def test_backlinks_are_alias_aware(vault):
+    canon_rel = obsidian.set_aliases("Joe Konkle", ["Joe K"])
+    # A straggler that still links the alias (canonicalize off to simulate it).
+    obsidian.write_note("Sessions/n.md", "ref [[Joe K]]", title="N", canonicalize=False)
+    assert "Sessions/n.md" in obsidian.read_note(canon_rel).backlinks
+
+
+def test_merge_and_recanonicalize(vault):
+    obsidian.write_note("People/Joe.md", "Joe is CAO.", title="Joe", canonicalize=False)
+    obsidian.write_note("Sessions/s.md", "owner [[Joe]]", title="S", canonicalize=False)
+
+    obsidian.set_aliases("Joe Konkle", ["Joe"])
+    assert obsidian.merge_note_into("People/Joe.md", "Joe Konkle") is True
+    changed = obsidian.recanonicalize_vault()
+
+    canon = obsidian.read_note("People/joe_konkle.md")
+    assert "Joe is CAO" in canon.body                 # duplicate folded in
+    assert not (vault / "People" / "Joe.md").exists()  # original archived
+    assert (vault / "Archive" / "People" / "Joe.md").exists()
+    assert "[[Joe Konkle]]" in (vault / "Sessions" / "s.md").read_text(encoding="utf-8")
+    assert changed >= 1
+
+
 def test_read_missing_raises(vault):
     with pytest.raises(VaultError):
         obsidian.read_note("nope.md")

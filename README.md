@@ -305,6 +305,24 @@ moved to `Archive/` (never deleted, and excluded from search), so you can review
 Obsidian and delete `Archive/` once you're happy. Faithful cleanup only — it
 preserves every decision, action item, and date rather than summarizing them away.
 
+**Consolidate people (one identity per person).** Imported notes often refer to the
+same person several ways (`Joe`, `Joe K`, `Joe Konkle`), splitting them across
+notes and links. The consolidation pass (also API-backed) clusters the variants and
+fixes them:
+
+```bash
+python -m app.vault_people            # PREVIEW the proposed merges (writes nothing)
+python -m app.vault_people --apply    # set aliases, merge dup notes, rewrite links
+```
+
+`--apply` records the canonical name + `aliases:` on one `People/<Name>.md` note,
+folds any duplicate person notes into it (originals → `Archive/`), and rewrites every
+`[[alias]]` in the vault to the canonical name. Going forward this mostly takes care
+of itself: JARVIS knows the roster (it's in its prompt) and **canonicalizes person
+links automatically on every write**, so the same person stays one note. The source
+of truth is the `aliases:` list in each `People/` note — edit it in Obsidian anytime
+to teach JARVIS a new nickname.
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
