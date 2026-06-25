@@ -54,7 +54,11 @@ calendars, and meeting notes.
   recall store.
 - **Cross-session memory** — when you close a longer chat, JARVIS saves a short
   recap and any durable facts, then recalls them later ("pick up where we left
-  off") — into the vault when configured, else a local SQLite store.
+  off"). With a vault, the recap is auto-**wikilinked** to the people/projects it
+  mentions, and each fact is filed under the note for the person/project it's
+  **about** (e.g. an allergy lands on that person's note) — facts about you go to
+  `Memory/Facts.md`. Name variants resolve to the canonical note, so a nickname
+  never creates a duplicate. Without a vault, it falls back to a local SQLite store.
 - **Smooth replies** — an animated "thinking" indicator while JARVIS composes,
   then the answer fades in line by line (no half-formed text filling in).
 - **Token & cache diagnostics** — every API call's token usage (including

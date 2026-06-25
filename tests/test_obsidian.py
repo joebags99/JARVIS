@@ -114,6 +114,43 @@ def test_backlinks_are_alias_aware(vault):
     assert "Sessions/n.md" in obsidian.read_note(canon_rel).backlinks
 
 
+def test_linkify_entities_wraps_known_names(vault):
+    obsidian.set_aliases("Joe Konkle", ["Joe", "Joe K"])
+    obsidian.set_aliases("Daedabyte", [], folder="Projects")
+    out = obsidian.linkify_entities("Met Joe K about Daedabyte; cc [[Sam]].")
+    assert "[[Joe Konkle|Joe K]] about [[Daedabyte]]" in out  # alias linked to canonical
+    assert "[[Sam]]" in out                                   # existing link untouched
+    # canonical-cased mention links plainly, no display alias
+    assert "[[Joe Konkle]]" in obsidian.linkify_entities("spoke with Joe Konkle")
+
+
+def test_record_session_facts_routes_to_entities(vault):
+    obsidian.set_aliases("Joe Konkle", ["Joe"])     # existing person w/ alias
+    facts = [
+        {"fact": "Allergic to shellfish", "subject": "Joe", "kind": "person"},
+        {"fact": "Targeting $50k/yr", "subject": "Daedabyte", "kind": "project"},
+        {"fact": "Prefers concise answers", "subject": "Joe Bagley", "kind": "self"},
+    ]
+    assert obsidian.record_session_facts(facts) == 3
+
+    # alias resolved to the canonical person note — no People/joe.md duplicate
+    assert "Allergic to shellfish" in obsidian.read_note("People/joe_konkle.md").body
+    assert not (vault / "People" / "joe.md").exists()
+    # new project note created with correct title + the fact
+    dae = obsidian.read_note("Projects/daedabyte.md")
+    assert dae.title == "Daedabyte" and "Targeting $50k/yr" in dae.body
+    # self fact lands in Memory/Facts.md, not a person note
+    assert "Prefers concise answers" in obsidian.read_note("Memory/Facts.md").body
+
+
+def test_record_session_facts_no_typo_duplicate_for_known_casing(vault):
+    # A migrated, capitalized note; a lowercase-subject fact must reuse it.
+    obsidian.write_note("People/Sam.md", "Colleague.", title="Sam", canonicalize=False)
+    obsidian.record_session_facts([{"fact": "Owns infra", "subject": "sam", "kind": "person"}])
+    assert "Owns infra" in obsidian.read_note("People/Sam.md").body
+    assert not (vault / "People" / "sam.md").exists()
+
+
 def test_merge_and_recanonicalize(vault):
     obsidian.write_note("People/Joe.md", "Joe is CAO.", title="Joe", canonicalize=False)
     obsidian.write_note("Sessions/s.md", "owner [[Joe]]", title="S", canonicalize=False)

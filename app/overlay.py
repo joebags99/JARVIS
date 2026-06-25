@@ -385,27 +385,26 @@ class Overlay:
         else:
             self._store_session_in_memory(summary, facts)
 
-    def _store_session_in_vault(self, summary: str, facts: list[str]) -> None:
+    def _store_session_in_vault(self, summary: str, facts: list[dict]) -> None:
         now = dt.datetime.now()
         try:
             from integrations import obsidian
+            # Facts first: they create/grow the People/Projects notes (and the
+            # roster), so the recap below can wikilink to entities they introduce.
+            stored = obsidian.record_session_facts(facts)
+            body = obsidian.linkify_entities(summary.strip())
             obsidian.write_note(
                 now.strftime("Sessions/%Y-%m-%d_%H-%M.md"),
-                f"{summary}\n",
+                f"{body}\n",
                 title=now.strftime("Session — %B %d, %Y %I:%M %p"),
                 tags=["session"],
                 overwrite=False,
             )
-            if facts:
-                bullets = "\n".join(f"- {f}" for f in facts)
-                obsidian.append_note(
-                    "Memory/Facts.md", f"## {now.strftime('%Y-%m-%d')}\n{bullets}"
-                )
-            log.info("session summary written to vault (%d fact(s))", len(facts))
+            log.info("session summary written to vault (%d fact(s) routed)", stored)
         except Exception as exc:  # noqa: BLE001
             log.error("could not store session in vault: %s", exc)
 
-    def _store_session_in_memory(self, summary: str, facts: list[str]) -> None:
+    def _store_session_in_memory(self, summary: str, facts: list[dict]) -> None:
         now = dt.datetime.now()
         filename = now.strftime("session_%Y-%m-%d_%H-%M.md")
         path = NOTES_DIR / filename
@@ -423,7 +422,9 @@ class Overlay:
             mem = get_memory()
             mem.add_session(summary)
             for fact in facts:
-                mem.add_fact(fact, source="auto-extracted")
+                text = fact.get("fact", "").strip() if isinstance(fact, dict) else str(fact)
+                if text:
+                    mem.add_fact(text, source="auto-extracted")
         except Exception as exc:  # noqa: BLE001
             log.error("could not store session in long-term memory: %s", exc)
 

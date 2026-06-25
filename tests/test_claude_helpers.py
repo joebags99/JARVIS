@@ -25,14 +25,18 @@ def test_is_easter_egg():
     assert not cc._is_easter_egg("hey jarvis play some music")
 
 
-def test_parse_fact_list():
-    assert cc._parse_fact_list('["a", "b"]') == ["a", "b"]
-    # tolerates surrounding prose around the JSON array
-    assert cc._parse_fact_list('Here are the facts: ["x"]. Done.') == ["x"]
-    assert cc._parse_fact_list("[]") == []
-    assert cc._parse_fact_list("not json at all") == []
-    # drops non-strings, blanks, and trims
-    assert cc._parse_fact_list('["ok", 3, "", "  trim  "]') == ["ok", "trim"]
+def test_parse_facts():
+    # structured objects with subject + kind
+    out = cc._parse_facts('[{"fact":"Allergic to shellfish","subject":"Joe","kind":"person"}]')
+    assert out == [{"fact": "Allergic to shellfish", "subject": "Joe", "kind": "person"}]
+    # bare strings (back-compat) become subjectless facts
+    assert cc._parse_facts('["x"]') == [{"fact": "x", "subject": "", "kind": ""}]
+    # tolerates surrounding prose, normalizes an unknown kind, drops blanks
+    assert cc._parse_facts('facts: [{"fact":"a","kind":"weird"}]. done')[0] == \
+        {"fact": "a", "subject": "", "kind": ""}
+    assert cc._parse_facts('[{"fact":"  "}, "", 3]') == []
+    assert cc._parse_facts("[]") == []
+    assert cc._parse_facts("not json at all") == []
 
 
 def test_is_transient_api_error():

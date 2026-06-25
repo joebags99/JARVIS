@@ -336,6 +336,41 @@ def canonicalize_links(text: str, roster: dict[str, str] | None = None) -> str:
     return _PLAIN_WIKILINK_RE.sub(_sub, text)
 
 
+def linkify_entities(text: str, roster: dict[str, str] | None = None) -> str:
+    """Wrap bare mentions of known people/projects in ``[[wikilinks]]``.
+
+    Scans *text* for any roster name (a canonical name or an alias) and links it to
+    the **canonical** note, preserving the original wording as a display alias when
+    it differs (``[[Joe Konkle|Joe]]``). Existing ``[[wikilinks]]`` are left intact,
+    longer names match first ("Joe Konkle" before "Joe"), and slug-style keys are
+    ignored so only real names in prose are linked. Used to wire session recaps
+    into the graph so each recap connects to the people/projects it mentions.
+    """
+    roster = roster if roster is not None else get_roster()
+    if not roster or not text:
+        return text
+    names = sorted((k for k in roster if k and "_" not in k), key=len, reverse=True)
+    if not names:
+        return text
+    pattern = re.compile(
+        r"(?<![\w\[])(" + "|".join(re.escape(n) for n in names) + r")(?![\w\]])",
+        re.IGNORECASE,
+    )
+
+    def _sub(m: re.Match) -> str:
+        matched = m.group(1)
+        canon = roster.get(matched.lower())
+        if not canon:
+            return matched
+        return f"[[{canon}]]" if matched == canon else f"[[{canon}|{matched}]]"
+
+    # Linkify only the segments *outside* existing [[wikilinks]].
+    parts = re.split(r"(\[\[[^\]]*\]\])", text)
+    return "".join(
+        seg if seg.startswith("[[") else pattern.sub(_sub, seg) for seg in parts
+    )
+
+
 def _has_heading(body: str) -> bool:
     for line in body.splitlines():
         if line.strip():
@@ -680,6 +715,56 @@ def recanonicalize_vault() -> int:
             _reindex_path(p)
             changed += 1
     return changed
+
+
+# ── Memory: routing extracted facts to the entity they're about ───────────────
+_GENERIC_SUBJECTS = {"user", "me", "i", "myself", "the user", ""}
+
+
+def record_session_facts(facts: list[dict]) -> int:
+    """File each extracted fact under the entity note it's about. Returns the count.
+
+    Each fact is ``{"fact","subject","kind"}`` (see ``claude_client.extract_facts``).
+    Facts about a person/project are appended — dated, grouped — to that entity's
+    note in ``People/`` or ``Projects/``; the target is resolved through the roster
+    (alias→canonical) then a slug match (:func:`find_entity_note`) so a typo or
+    nickname reuses the existing note instead of spawning a duplicate, and a
+    correctly-titled stub is created only when the entity is genuinely new. Facts
+    about the user (``kind == "self"``) or with no subject go to ``Memory/Facts.md``.
+    """
+    if not facts:
+        return 0
+    user = (CONFIG.user_name or "").strip().lower()
+    groups: dict[tuple[str, str], list[str]] = {}
+    general: list[str] = []
+    for f in facts:
+        text = str((f or {}).get("fact") or "").strip()
+        if not text:
+            continue
+        subject = str(f.get("subject") or "").strip()
+        kind = str(f.get("kind") or "").strip().lower()
+        if kind == "self" or subject.lower() in _GENERIC_SUBJECTS or subject.lower() == user:
+            general.append(text)
+            continue
+        folder = "Projects" if kind == "project" else "People"
+        canonical = get_roster().get(subject.lower(), subject)
+        groups.setdefault((folder, canonical), []).append(text)
+
+    today = _today()
+    count = 0
+    for (folder, canonical), texts in groups.items():
+        rel = find_entity_note(canonical, folder) or path_for_title(canonical, folder)
+        if not _safe_path(rel).exists():
+            # Titled stub first so casing is preserved (e.g. "CCC Legacy", not "Ccc Legacy").
+            write_note(rel, "", title=canonical, overwrite=False, canonicalize=False)
+            rel = find_entity_note(canonical, folder) or rel
+        append_note(rel, f"## Facts ({today})\n" + "\n".join(f"- {t}" for t in texts))
+        count += len(texts)
+    if general:
+        append_note("Memory/Facts.md", f"## {today}\n" + "\n".join(f"- {t}" for t in general))
+        count += len(general)
+    log.info("recorded %d session fact(s) across %d entity note(s)", count, len(groups))
+    return count
 
 
 # ── Scaffold + migration ─────────────────────────────────────────────────────
