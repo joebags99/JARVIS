@@ -193,10 +193,12 @@ def test_find_misfiled_and_refile(vault):
         "---\ntitle: Mtg\ntype: person\n---\n\n# Mtg\n\nnotes\n", encoding="utf-8")
     obsidian.write_note("Projects/felicity_kline.md", "dup", title="Felicity Kline", canonicalize=False)
     obsidian.write_note("Projects/Brightpoint/team_meeting.md", "ok", title="TM", canonicalize=False)
+    obsidian.write_note("Projects/Brightpoint/spec.md", "scope", title="Spec", canonicalize=False)
 
     mis = obsidian.find_misfiled()
     assert "People/meeting_with_jaime_june_24.md" in mis["meetings_in_entities"]
-    assert "Projects/Brightpoint/team_meeting.md" not in mis["meetings_in_entities"]  # nested = left alone
+    assert "Projects/Brightpoint/team_meeting.md" in mis["meetings_in_entities"]  # nested meeting caught
+    assert "Projects/Brightpoint/spec.md" not in mis["meetings_in_entities"]      # non-meeting left alone
     assert "felicity_kline" in mis["cross_folder"]  # in both People and Projects
 
     moved = obsidian.refile_meetings(dry_run=True)
@@ -205,6 +207,7 @@ def test_find_misfiled_and_refile(vault):
 
     obsidian.refile_meetings(dry_run=False)
     assert not (vault / "People" / "meeting_with_jaime_june_24.md").exists()
+    assert not (vault / "Projects" / "Brightpoint" / "team_meeting.md").exists()  # nested moved too
     sess = obsidian.read_note("Sessions/meeting_with_jaime_june_24.md")
     assert sess.meta.get("type") == "session"  # type corrected on move
 
@@ -273,6 +276,40 @@ def test_record_session_facts_routes_company(vault):
     note = obsidian.read_note("Companies/acme_corp.md")
     assert note.title == "Acme Corp" and "B2B SaaS startup" in note.body
     assert note.meta.get("type") == "company"
+
+
+def test_record_session_facts_reuses_existing_entity_across_folders(vault):
+    # THE BUG: a fact about an existing person, mis-tagged as a project, used to
+    # create a People/ + Projects/ pair. Now it reuses the existing People note.
+    obsidian.write_note("People/Joe Konkle.md", "The real Joe.", title="Joe Konkle",
+                        canonicalize=False)
+    obsidian.record_session_facts(
+        [{"fact": "Leads infra", "subject": "Joe Konkle", "kind": "project"}]
+    )
+    assert "Leads infra" in obsidian.read_note("People/Joe Konkle.md").body
+    assert obsidian.find_entity_note("Joe Konkle", "Projects") is None  # no Projects dup
+
+
+def test_find_existing_entity_searches_all_folders(vault):
+    obsidian.write_note("Companies/Acme.md", "x", title="Acme", canonicalize=False)
+    assert obsidian.find_existing_entity("Acme") == ("Companies", "Companies/Acme.md")
+    assert obsidian.find_existing_entity("Nobody") is None
+
+
+def test_dedupe_entities_merges_cross_folder(vault):
+    obsidian.write_note("People/Joe Konkle.md", "Person note.", title="Joe Konkle",
+                        canonicalize=False)
+    obsidian.write_note("Projects/joe_konkle.md", "Stray facts.", title="Joe Konkle",
+                        canonicalize=False)
+    merged = obsidian.dedupe_entities(dry_run=True)
+    assert ("Projects/joe_konkle.md", "People/Joe Konkle.md") in merged
+    assert (vault / "Projects" / "joe_konkle.md").exists()  # preview only
+
+    obsidian.dedupe_entities(dry_run=False)
+    assert not (vault / "Projects" / "joe_konkle.md").exists()          # merged away
+    body = obsidian.read_note("People/Joe Konkle.md").body
+    assert "Person note." in body and "Stray facts." in body
+    assert (vault / "Archive" / "Projects" / "joe_konkle.md").exists()  # reversible
 
 
 def test_linkify_vault_connects_old_notes(vault):

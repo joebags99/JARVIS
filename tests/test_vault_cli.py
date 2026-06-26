@@ -112,6 +112,20 @@ def test_refile_moves_misfiled_meetings(cli_vault, capsys):
     assert "No misfiled" in capsys.readouterr().out
 
 
+def test_dedupe_merges_cross_folder_duplicates(cli_vault, capsys):
+    from integrations import obsidian
+
+    obsidian.ensure_scaffold()
+    obsidian.write_note("People/Joe Konkle.md", "person", title="Joe Konkle", canonicalize=False)
+    obsidian.write_note("Projects/joe_konkle.md", "dup", title="Joe Konkle", canonicalize=False)
+    assert vault_cli.main(["dedupe"]) == 0                 # preview
+    assert "Would merge" in capsys.readouterr().out
+    assert vault_cli.main(["dedupe", "--apply"]) == 0
+    assert "merged" in capsys.readouterr().out.lower()
+    assert vault_cli.main(["dedupe"]) == 0                 # nothing left
+    assert "No cross-folder" in capsys.readouterr().out
+
+
 def test_upgrade_modernizes_old_notes(cli_vault, capsys):
     from integrations import obsidian
 

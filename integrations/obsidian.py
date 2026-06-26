@@ -714,6 +714,21 @@ def find_person_note(name: str) -> str | None:
     return find_entity_note(name, "People")
 
 
+def find_existing_entity(name: str) -> tuple[str, str] | None:
+    """Find *name*'s entity note in **any** entity folder. ``(folder, rel)`` or None.
+
+    Searches People → Companies → Projects (``ENTITY_FOLDERS`` order) and returns
+    the first hit, so a writer can reuse an entity wherever it already lives instead
+    of spawning a cross-folder duplicate (a person filed in People stays one note
+    even when a fact about them is mis-tagged as a project).
+    """
+    for folder in ENTITY_FOLDERS:
+        rel = find_entity_note(name, folder)
+        if rel:
+            return folder, rel
+    return None
+
+
 def set_aliases(canonical: str, aliases: list[str], folder: str = "People") -> str:
     """Create/update the canonical note in *folder* with a merged ``aliases`` list.
 
@@ -789,17 +804,18 @@ def record_session_facts(facts: list[dict]) -> int:
 
     Each fact is ``{"fact","subject","kind"}`` (see ``claude_client.extract_facts``).
     Facts about a person/company/project are appended — dated, grouped — to that
-    entity's note in ``People/``, ``Companies/`` or ``Projects/`` (by ``kind``); the
-    target is resolved through the roster (alias→canonical) then a slug match
-    (:func:`find_entity_note`) so a typo or nickname reuses the existing note
-    instead of spawning a duplicate, and a correctly-titled note is created only
-    when the entity is genuinely new. Facts about the user (``kind == "self"``) or
+    entity's note; the target is resolved through the roster (alias→canonical) then
+    an **any-folder** slug match (:func:`find_existing_entity`) so a typo, nickname,
+    *or mis-tagged kind* reuses the existing note instead of spawning a cross-folder
+    duplicate. A new note is created (in the folder its ``kind`` implies) only when
+    the entity is genuinely unknown. Facts about the user (``kind == "self"``) or
     with no subject go to ``Memory/Facts.md``.
     """
     if not facts:
         return 0
     user = (CONFIG.user_name or "").strip().lower()
-    groups: dict[tuple[str, str], list[str]] = {}
+    groups: dict[str, list[str]] = {}          # canonical → facts
+    default_folder: dict[str, str] = {}        # canonical → folder for a *new* entity
     general: list[str] = []
     for f in facts:
         text = str((f or {}).get("fact") or "").strip()
@@ -810,14 +826,21 @@ def record_session_facts(facts: list[dict]) -> int:
         if kind == "self" or subject.lower() in _GENERIC_SUBJECTS or subject.lower() == user:
             general.append(text)
             continue
-        folder = {"project": "Projects", "company": "Companies"}.get(kind, "People")
         canonical = get_roster().get(subject.lower(), subject)
-        groups.setdefault((folder, canonical), []).append(text)
+        groups.setdefault(canonical, []).append(text)
+        default_folder.setdefault(
+            canonical, {"project": "Projects", "company": "Companies"}.get(kind, "People")
+        )
 
     today = _today()
     count = 0
-    for (folder, canonical), texts in groups.items():
-        rel = find_entity_note(canonical, folder) or path_for_title(canonical, folder)
+    for canonical, texts in groups.items():
+        # Reuse the entity wherever it already lives so a person filed in People
+        # stays ONE note even if this fact was mis-tagged 'project' — the bug that
+        # split every person into a People/ + Projects/ pair. Only a genuinely new
+        # entity is created, in the folder its kind implies.
+        existing = find_existing_entity(canonical)
+        rel = existing[1] if existing else path_for_title(canonical, default_folder[canonical])
         block = f"## Facts ({today})\n" + "\n".join(f"- {t}" for t in texts)
         if not _safe_path(rel).exists():
             # Create with the first facts block as content (preserves casing, e.g.
@@ -994,8 +1017,10 @@ def find_misfiled() -> dict:
     """Detect notes likely in the wrong folder.
 
     Returns ``{"meetings_in_entities": [rel…], "cross_folder": {slug: [rel…]}}``:
-      * meeting/session notes sitting *directly* in People/ or Projects/ (a meeting
-        is not an entity — notes nested in a project subfolder are left alone), and
+      * meeting/session notes anywhere under an entity folder — a meeting is never
+        an entity, so one sitting in ``Projects/`` *or* nested in
+        ``Projects/Brightpoint/`` is flagged (other nested notes are left alone),
+        and
       * the same entity name present in more than one entity folder (a duplicate,
         e.g. ``People/Felicity Kline.md`` and ``Projects/felicity_kline.md``).
     """
@@ -1003,13 +1028,13 @@ def find_misfiled() -> dict:
     by_slug: dict[str, list[str]] = {}
     for folder in ENTITY_FOLDERS:
         for rel in list_notes(folder=folder):
-            if len(rel.split("/")) != 2:  # only direct children are "entities"
-                continue
             stem = Path(rel).stem
             if looks_like_meeting(stem):
-                meetings.append(rel)
-            else:
-                by_slug.setdefault(_slugify(stem), []).append(rel)
+                meetings.append(rel)              # a meeting at any depth is misfiled
+                continue
+            if len(rel.split("/")) != 2:          # other nested notes are scoped
+                continue
+            by_slug.setdefault(_slugify(stem), []).append(rel)
     cross = {
         slug: sorted(rels) for slug, rels in by_slug.items()
         if len({r.split("/")[0] for r in rels}) > 1
@@ -1018,10 +1043,12 @@ def find_misfiled() -> dict:
 
 
 def refile_meetings(dry_run: bool = True) -> list[tuple[str, str]]:
-    """Move meeting/session notes out of People/Projects into ``Sessions/``.
+    """Move meeting/session notes out of any entity folder into ``Sessions/``.
 
     Returns ``(src, dest)`` pairs. With ``dry_run=False`` it performs each move
     (non-colliding), corrects the note's ``type`` to ``session``, and reindexes.
+    Catches meetings nested under a project (``Projects/Brightpoint/standup.md``)
+    too, since a meeting is never part of an entity.
     """
     moved: list[tuple[str, str]] = []
     for rel in find_misfiled()["meetings_in_entities"]:
@@ -1046,6 +1073,38 @@ def refile_meetings(dry_run: bool = True) -> list[tuple[str, str]]:
     if moved and not dry_run:
         log.info("refiled %d meeting note(s) out of entity folders", len(moved))
     return moved
+
+
+def dedupe_entities(dry_run: bool = True) -> list[tuple[str, str]]:
+    """Merge cross-folder entity duplicates (same name in 2+ entity folders). Token-free.
+
+    For each duplicated name the copy in the **highest-priority** entity folder
+    (``ENTITY_FOLDERS`` order: People → Companies → Projects) is kept and the others
+    are folded into it (bodies appended, originals archived), collapsing the
+    ``People/Joe Konkle.md`` + ``Projects/joe_konkle.md`` pairs the old fact-router
+    created. Returns ``(merged_away, kept)`` pairs.
+
+    This only resolves *exact-name* duplicates; it does not move an entity that's
+    simply in the wrong folder (e.g. a campaign filed under People). For that
+    semantic placement, use the API-backed ``vault_entities --reclassify``. Safe and
+    reversible — losers go to ``Archive/``, nothing is deleted.
+    """
+    merged: list[tuple[str, str]] = []
+    priority = {f: i for i, f in enumerate(ENTITY_FOLDERS)}
+    for rels in find_misfiled()["cross_folder"].values():
+        keep = min(rels, key=lambda r: priority.get(r.split("/", 1)[0], 99))
+        keep_folder = keep.split("/", 1)[0]
+        canonical = read_note(keep).title
+        for rel in rels:
+            if rel == keep:
+                continue
+            if dry_run:
+                merged.append((rel, keep))
+            elif merge_note_into(rel, canonical, folder=keep_folder):
+                merged.append((rel, keep))
+    if merged and not dry_run:
+        log.info("deduped %d cross-folder entity duplicate(s)", len(merged))
+    return merged
 
 
 def relocate_note(rel: str, dest_folder: str) -> str:

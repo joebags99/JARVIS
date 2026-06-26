@@ -205,8 +205,11 @@ def cmd_doctor(_args) -> int:
     if meetings:
         print("\n  Fix meetings (token-free): `vault_cli refile --apply` (moves them to "
               "Sessions/).")
+    if cross:
+        print("  Merge duplicates (token-free): `vault_cli dedupe --apply` (keeps the "
+              "People copy; merges the rest).")
     if cross or meetings:
-        print("  Fix folder mistakes with the API: `vault_entities --reclassify --apply` "
+        print("  Or fix folder mistakes with the API: `vault_entities --reclassify --apply` "
               "(reclassifies person/company/project/meeting and merges duplicates).")
     if not (meetings or cross):
         print("\nTidy up: `vault_cli moc` (rebuild hubs), `vault_cli graph` (color the graph).")
@@ -228,6 +231,28 @@ def cmd_refile(args) -> int:
         print(f"{verb}: {src}  →  {dest}")
     print(f"\n{len(moved)} note(s) "
           + ("moved to Sessions/." if args.apply else "to move. Re-run with --apply."))
+    return 0
+
+
+def cmd_dedupe(args) -> int:
+    """Merge cross-folder entity duplicates (same name in 2+ folders) — token-free."""
+    if not _require_vault():
+        return 1
+    from integrations import obsidian
+
+    merged = obsidian.dedupe_entities(dry_run=not args.apply)
+    if not merged:
+        print("No cross-folder entity duplicates found.")
+        return 0
+    verb = "Merged" if args.apply else "Would merge"
+    for src, keep in merged:
+        print(f"{verb}: {src}  →  {keep}")
+    print(f"\n{len(merged)} duplicate(s) "
+          + ("merged (originals → Archive/)." if args.apply
+             else "to merge. Re-run with --apply."))
+    if args.apply:
+        print("Tip: for entities still in the wrong folder (e.g. a campaign under "
+              "People/), run `vault_entities --reclassify --apply`.")
     return 0
 
 
@@ -268,24 +293,33 @@ def cmd_idea(args) -> int:
 
 
 def cmd_upgrade(_args) -> int:
-    """Bring existing notes up to the current conventions (token-free)."""
+    """Bring existing notes up to the current conventions (token-free).
+
+    The one-shot mechanical cleanup: refile meetings out of entity folders, merge
+    cross-folder duplicates, type-stamp, canonicalize + wikilink, rebuild hubs and
+    graph colors. Moves/merges are reversible (originals → Archive/).
+    """
     if not _require_vault():
         return 1
     from integrations import obsidian
 
+    refiled = obsidian.refile_meetings(dry_run=False)
+    deduped = obsidian.dedupe_entities(dry_run=False)
     typed = obsidian.backfill_types()
     relinked = obsidian.recanonicalize_vault()
     connected = obsidian.linkify_vault()
     maps = obsidian.rebuild_mocs()
     obsidian.write_graph_config()
     print("Upgraded existing notes to the current conventions:")
+    print(f"    meetings → Sessions/    : {len(refiled)} note(s)")
+    print(f"    cross-folder dupes merged : {len(deduped)} note(s)")
     print(f"    type-stamped            : {typed} note(s)")
     print(f"    alias links → canonical : {relinked} note(s)")
     print(f"    newly wikilinked to entities : {connected} note(s)")
     print(f"    hub maps rebuilt        : {maps}")
     print("\nThe deeper, content-level cleanup uses the API (preview-first):")
-    print("    python -m app.vault_organize --apply   # reformat + refile the Imported/ dump")
-    print("    python -m app.vault_entities --apply    # merge duplicate people/companies/projects")
+    print("    python -m app.vault_organize --apply       # reformat + refile the Imported/ dump")
+    print("    python -m app.vault_entities --reclassify --apply  # move misfiled entities to the right folder")
     return 0
 
 
@@ -320,9 +354,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("moc", help="Rebuild hub Maps of Content + index.md.").set_defaults(func=cmd_moc)
     sub.add_parser("upgrade", help="Bring old notes up to current conventions (token-free).").set_defaults(func=cmd_upgrade)
 
-    rf = sub.add_parser("refile", help="Move misfiled meeting notes out of People/Projects → Sessions/.")
+    rf = sub.add_parser("refile", help="Move misfiled meeting notes out of entity folders → Sessions/.")
     rf.add_argument("--apply", action="store_true", help="Perform the moves (default: preview).")
     rf.set_defaults(func=cmd_refile)
+
+    dd = sub.add_parser("dedupe", help="Merge cross-folder entity duplicates (token-free).")
+    dd.add_argument("--apply", action="store_true", help="Perform the merges (default: preview).")
+    dd.set_defaults(func=cmd_dedupe)
 
     idea = sub.add_parser("idea", help="Quick-capture an idea into Ideas/Inbox.md.")
     idea.add_argument("text", nargs="+", help="The idea to capture.")

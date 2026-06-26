@@ -142,14 +142,16 @@ def _init_knowledge(log):
             if migrated:
                 log.info("  Vault: migrated %d legacy item(s)", migrated)
             if CONFIG.obsidian_auto_organize:
-                # Keep the graph tidy: type-stamp notes, refresh the hub Maps of
-                # Content, and (re)write the graph color config. Idempotent — only
-                # rewrites what changed — so it's cheap on every launch.
+                # Keep the vault tidy: refile meetings that slipped into an entity
+                # folder back to Sessions/, type-stamp notes, refresh the hub Maps
+                # of Content, and (re)write the graph color config. Idempotent —
+                # only rewrites what changed — so it's cheap on every launch.
+                refiled = obsidian.refile_meetings(dry_run=False)
                 typed = obsidian.backfill_types()
                 maps = obsidian.rebuild_mocs()
                 obsidian.write_graph_config()
-                log.info("  Vault: organized (%d newly typed, %d maps, graph colored)",
-                         typed, maps)
+                log.info("  Vault: organized (%d meetings refiled, %d newly typed, "
+                         "%d maps, graph colored)", len(refiled), typed, maps)
             indexed = obsidian.reindex()
             log.info("  Vault: %s (%d note(s) indexed)",
                      CONFIG.obsidian_vault_path, indexed)

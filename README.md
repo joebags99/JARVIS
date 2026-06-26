@@ -368,6 +368,7 @@ python -m app.vault_cli graph     # color the graph by folder + stamp `type:` on
 python -m app.vault_cli moc       # rebuild hub "Maps of Content" that link each folder's notes
 python -m app.vault_cli doctor    # health: orphans, dangling links, misfiled notes, dupes
 python -m app.vault_cli refile    # move meeting notes wrongly filed in an entity folder → Sessions/
+python -m app.vault_cli dedupe    # merge the same name appearing in two entity folders
 python -m app.vault_cli idea "ship a wake word"   # quick-capture an idea into Ideas/Inbox.md
 ```
 
@@ -377,31 +378,38 @@ python -m app.vault_cli idea "ship a wake word"   # quick-capture an idea into I
   (and refreshes `index.md`), which forms the bright cluster-centers in the graph
   and eliminates orphans.
 - **`doctor`** flags islands (notes with no links), dangling `[[links]]`, **misfiled
-  meetings** (a meeting sitting in an entity folder), and **cross-folder duplicates**
-  (the same name in two entity folders) so you can keep the brain tidy.
-- **`refile`** moves those misfiled meeting notes into `Sessions/` (preview-first;
-  `--apply` to commit) — token-free. For folder mistakes that need judgment (a
-  company filed as a person, say), `vault_entities --reclassify --apply` sorts them
-  with the API and merges any duplicates. New notes are routed correctly on write,
-  so these are mostly one-time cleanups.
+  meetings** (a meeting sitting in an entity folder — at any depth), and
+  **cross-folder duplicates** (the same name in two entity folders) so you can keep
+  the brain tidy.
+- **`refile`** moves misfiled meeting notes into `Sessions/` (preview-first;
+  `--apply` to commit) — token-free, and catches meetings nested under a project too.
+- **`dedupe`** merges cross-folder duplicates — the `People/Joe Konkle.md` +
+  `Projects/joe_konkle.md` pairs the old fact-router used to create. It keeps the
+  copy in the highest-priority folder (People → Companies → Projects) and folds the
+  rest in (originals → `Archive/`, reversible). For an entity that's simply in the
+  *wrong* folder (a campaign filed under People), use `vault_entities --reclassify
+  --apply`, which sorts placement with the API.
 
-JARVIS runs **`graph` + `moc` automatically on startup** (type-stamping, hub
-refresh, and graph colors), so the brain stays fresh without you remembering. It's
-idempotent — only rewrites what actually changed — so there's no churn. Set
-`OBSIDIAN_AUTO_ORGANIZE=false` to manage those yourself with the commands above.
+New notes are now routed and de-duplicated correctly on write — meetings always go
+to `Sessions/`, and a fact about an existing person is never split into a second
+folder even if it's mis-tagged — so these cleanups are one-time. JARVIS also runs
+**`refile` + `graph` + `moc` automatically on startup** (so stray meetings self-heal
+back to `Sessions/`), idempotently — set `OBSIDIAN_AUTO_ORGANIZE=false` to manage it
+yourself.
 
-**Modernize older notes in one shot.** Structural conventions (types, colors, hubs)
-self-heal on startup, but pre-existing notes' *links* don't — an old recap that says
-"Joe" in prose won't become `[[Joe Konkle]]` on its own. `upgrade` backfills all of
-that across the whole vault, token-free:
+**Fix everything mechanical in one shot.** `upgrade` is the token-free "clean it all
+up" command: it refiles stray meetings to `Sessions/`, merges cross-folder
+duplicates, type-stamps, canonicalizes + wikilinks bare mentions, and rebuilds the
+hubs + graph colors across the whole vault. Moves/merges are reversible (originals →
+`Archive/`):
 
 ```bash
-python -m app.vault_cli upgrade   # type-stamp + canonicalize links + wikilink bare mentions + rebuild hubs
+python -m app.vault_cli upgrade   # refile + dedupe + type-stamp + link + rebuild hubs
 ```
 
 For the deeper, content-level cleanup, run the two API-backed passes it points you to
 (`vault_organize --apply` to reformat/refile the `Imported/` dump,
-`vault_entities --apply` to merge duplicate identities).
+`vault_entities --reclassify --apply` to move misfiled entities to the right folder).
 
 **Future-proof for new categories.** Folders, their note `type`, whether they hold
 de-duplicated entities, and their graph color all live in the **taxonomy**
