@@ -113,23 +113,37 @@ class ContextBuilder:
                 if p.is_dir() and not p.name.startswith(".")
             )
             people = obsidian.canonical_people()
+            companies = obsidian.canonical_entities("Companies")
             projects = obsidian.canonical_entities("Projects")
         except Exception as exc:  # noqa: BLE001
             log.warning("could not inspect vault for context: %s", exc)
-            folders, people, projects = [], {}, {}
+            folders, people, companies, projects = [], {}, {}, {}
         folder_line = (
             f"Top-level folders: {', '.join(folders)}.\n" if folders else ""
         )
         roster = (
             self._entity_line("Known people", people)
-            + self._entity_line("Known companies/projects", projects)
+            + self._entity_line("Known companies", companies)
+            + self._entity_line("Known projects", projects)
         )
+        from . import vault_templates
         return (
             "You keep a single Obsidian knowledge vault — the user's 'second brain' "
             "— that is BOTH your long-term memory and your notes on people, "
-            "projects, meetings, and topics. It replaces any older notes/recall "
-            "tools.\n"
+            "companies, projects, meetings, and topics. It replaces any older "
+            "notes/recall tools.\n"
             f"{folder_line}{roster}"
+            "Where things go (put every new note in the right folder):\n"
+            "- `People/` — ONE individual human per note (never a meeting, company, "
+            "or project).\n"
+            "- `Companies/` — an organization, business, client, or team.\n"
+            "- `Projects/` — a project, product, campaign, or initiative.\n"
+            "- `Sessions/` — meeting/standup/call recaps. A meeting is NEVER a "
+            "person/company/project, so it never goes in those folders.\n"
+            "- `Topics/` reference notes · `Ideas/` fleeting ideas · `Daily/` logs.\n"
+            "Each note type follows a consistent template (use these section "
+            "headings so notes stay uniform):\n"
+            f"{vault_templates.prompt_summary()}\n"
             "Working habits:\n"
             "- Before answering anything that might be recorded (past decisions, "
             "people, projects, 'what did we discuss'), `search_vault` first, then "

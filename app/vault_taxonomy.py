@@ -31,6 +31,7 @@ log = get_logger("vault-taxonomy")
 # folder · type · entity? · graph color
 DEFAULT_TAXONOMY: list[dict] = [
     {"folder": "People", "type": "person", "entity": True, "color": "#4caf79"},
+    {"folder": "Companies", "type": "company", "entity": True, "color": "#ff8a65"},
     {"folder": "Projects", "type": "project", "entity": True, "color": "#00bcd4"},
     {"folder": "Sessions", "type": "session", "entity": False, "color": "#e0a458"},
     {"folder": "Daily", "type": "daily", "entity": False, "color": "#9e9e9e"},

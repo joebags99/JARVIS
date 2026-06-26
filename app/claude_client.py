@@ -157,8 +157,10 @@ _FACT_EXTRACTION_PROMPT = (
     "this week's tasks, the current question).\n\n"
     "Return ONLY a JSON array; each item is an object "
     '{"fact": "<concise fact>", "subject": "<the person, company, or project it '
-    'is about>", "kind": "person" | "project" | "self"}. Use "self" with the '
-    "user as the subject for a fact about the user. Return [] if nothing is durable."
+    'is about>", "kind": "person" | "company" | "project" | "self"}. Use "person" '
+    'for an individual, "company" for an organization/business, "project" for a '
+    'project or initiative, and "self" (with the user as the subject) for a fact '
+    "about the user. Return [] if nothing is durable."
 )
 
 
@@ -206,7 +208,7 @@ def _parse_facts(text: str) -> list[dict]:
             fact = str(item.get("fact") or "").strip()
             subject = str(item.get("subject") or "").strip()
             kind = str(item.get("kind") or "").strip().lower()
-            if kind not in ("person", "project", "self"):
+            if kind not in ("person", "company", "project", "self"):
                 kind = ""
         else:
             continue

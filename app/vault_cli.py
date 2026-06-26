@@ -194,7 +194,8 @@ def cmd_doctor(_args) -> int:
 
     mis = obsidian.find_misfiled()
     meetings, cross = mis["meetings_in_entities"], mis["cross_folder"]
-    print(f"\nmisfiled meetings ({len(meetings)}) — meeting/session notes inside People/Projects:")
+    print(f"\nmisfiled meetings ({len(meetings)}) — meeting/session notes inside "
+          "People/Companies/Projects:")
     for rel in meetings[:20]:
         print(f"    {rel}")
     print(f"\ncross-folder dupes ({len(cross)}) — same name in more than one entity folder:")
@@ -202,10 +203,11 @@ def cmd_doctor(_args) -> int:
         print(f"    {'  ↔  '.join(rels)}")
 
     if meetings:
-        print("\n  Fix meetings: `vault_cli refile --apply` (moves them to Sessions/).")
-    if cross:
-        print("  Fix dupes: delete the wrong-folder copy in Obsidian, then re-run "
-              "`vault_entities --apply` (it no longer creates cross-folder duplicates).")
+        print("\n  Fix meetings (token-free): `vault_cli refile --apply` (moves them to "
+              "Sessions/).")
+    if cross or meetings:
+        print("  Fix folder mistakes with the API: `vault_entities --reclassify --apply` "
+              "(reclassifies person/company/project/meeting and merges duplicates).")
     if not (meetings or cross):
         print("\nTidy up: `vault_cli moc` (rebuild hubs), `vault_cli graph` (color the graph).")
     return 0
@@ -219,7 +221,7 @@ def cmd_refile(args) -> int:
 
     moved = obsidian.refile_meetings(dry_run=not args.apply)
     if not moved:
-        print("No misfiled meeting/session notes in People/ or Projects/.")
+        print("No misfiled meeting/session notes in any entity folder.")
         return 0
     verb = "Moved" if args.apply else "Would move"
     for src, dest in moved:

@@ -50,8 +50,10 @@ calendars, and meeting notes.
   home for both your notes **and** its long-term memory: it searches the vault
   before answering, writes new notes (with frontmatter, `[[wikilinks]]`, and
   `#tags`), and records session recaps + durable facts there for you to browse
-  and edit in Obsidian. Without a vault, it falls back to a local notes folder +
-  recall store.
+  and edit in Obsidian. Notes are organized automatically — people, companies, and
+  projects each get their own canonical note, meetings always land in `Sessions/`,
+  and every note follows a per-type template. Without a vault, it falls back to a
+  local notes folder + recall store.
 - **Cross-session memory** — when you close a longer chat, JARVIS saves a short
   recap and any durable facts, then recalls them later ("pick up where we left
   off"). With a vault, the recap is auto-**wikilinked** to the people/projects it
@@ -260,10 +262,10 @@ notes **and** its long-term memory.
    OBSIDIAN_VAULT_PATH=C:\Users\you\Documents\Brain
    ```
 3. Run JARVIS. On first launch it scaffolds default folders (`Sessions/`,
-   `Daily/`, `People/`, `Projects/`, `Topics/`, `Memory/`) plus an `index.md`
-   Map of Content, then does a **one-time, non-destructive** import of any
-   existing `notes/<category>/` files and `memory.db` facts into the vault — your
-   originals are left untouched as a safety net.
+   `Daily/`, `People/`, `Companies/`, `Projects/`, `Topics/`, `Memory/`) plus an
+   `index.md` Map of Content, then does a **one-time, non-destructive** import of
+   any existing `notes/<category>/` files and `memory.db` facts into the vault —
+   your originals are left untouched as a safety net.
 
 Once enabled, the vault **replaces** the per-category notes folder and the SQLite
 recall store as JARVIS's durable brain. Ask it to "make a note about my meeting
@@ -273,6 +275,21 @@ read, edit, and follow the links yourself. The model-facing tools are
 `search_vault`, `read_note`, `write_note`, `append_note`, and `list_notes`. A
 rebuildable search index (`vault_index.db`) is kept beside the app and is
 gitignored.
+
+**Consistent organization, by design.** Every note lands in the right folder and
+follows a uniform shape, so the vault stays readable as it grows:
+
+- **Entity folders** — `People/` (one individual per note), `Companies/` (an org,
+  client, or team), and `Projects/` (a project, product, or campaign). Notes here
+  are *canonical* identities (de-duplicated by their `aliases:`).
+- **Deterministic routing** — a meeting/standup/call note can **never** land in an
+  entity folder. However it's created (a tool call, a paste, a fact write), it is
+  redirected to `Sessions/`, so people and meetings never get mixed up.
+- **Per-type templates** — a fresh note is seeded with its type's section skeleton
+  (a person gets *Facts · Projects · Notes*; a meeting gets *Summary · Attendees ·
+  Decisions · Action Items · Open Questions*; etc.), and JARVIS is told the same
+  templates so its free-form writing matches. The taxonomy (folders → type → graph
+  color) lives in `app/vault_taxonomy.py` and is extensible via `vault_config.json`.
 
 > JARVIS can create and edit any note **inside** the vault (never outside it —
 > paths that escape the vault are refused). It reads a note before overwriting and
@@ -319,19 +336,29 @@ notes often refer to the same entity several ways — a person (`Joe`, `Joe K`,
 clusters the variants per kind and fixes them:
 
 ```bash
-python -m app.vault_entities                 # PREVIEW people + companies/projects (writes nothing)
-python -m app.vault_entities --apply          # consolidate both, rewrite links
-python -m app.vault_entities --kind projects  # just companies/projects
+python -m app.vault_entities                  # PREVIEW people + companies + projects (writes nothing)
+python -m app.vault_entities --apply           # consolidate all kinds, rewrite links
+python -m app.vault_entities --kind companies  # just companies
 ```
 
 `--apply` records the canonical name + `aliases:` on one note in the right folder
-(`People/` or `Projects/`), folds any duplicate notes into it (originals →
-`Archive/`), and rewrites every `[[alias]]` in the vault to the canonical name.
-Going forward this mostly takes care of itself: JARVIS knows the roster (people +
-companies/projects, in its prompt) and **canonicalizes links automatically on every
-write**, so each entity stays one note. The source of truth is the `aliases:` list
-in each `People/`/`Projects/` note — edit it in Obsidian anytime to teach a new
-nickname. (`python -m app.vault_people` still works as a people-only shortcut.)
+(`People/`, `Companies/`, or `Projects/`), folds any duplicate notes into it
+(originals → `Archive/`), and rewrites every `[[alias]]` in the vault to the
+canonical name. Going forward this mostly takes care of itself: JARVIS knows the
+roster (people + companies + projects, in its prompt) and **canonicalizes links
+automatically on every write**, so each entity stays one note. The source of truth
+is the `aliases:` list in each entity note — edit it in Obsidian anytime to teach a
+new nickname. (`python -m app.vault_people` still works as a people-only shortcut.)
+
+**Fix misfiled notes (uses the API).** If notes ended up in the wrong folder (a
+company under `People/`, a meeting under `Projects/`), the reclassify pass asks
+Claude what each entity note is really about and moves it to the matching folder —
+merging into an existing same-named entity instead of duplicating it:
+
+```bash
+python -m app.vault_entities --reclassify          # PREVIEW the folder fixes (writes nothing)
+python -m app.vault_entities --reclassify --apply  # move person/company/project/meeting notes home
+```
 
 **Keep the graph organized (token-free).** A few commands keep the vault tidy and
 make the graph view look like a colored brain:
@@ -340,7 +367,7 @@ make the graph view look like a colored brain:
 python -m app.vault_cli graph     # color the graph by folder + stamp `type:` on every note
 python -m app.vault_cli moc       # rebuild hub "Maps of Content" that link each folder's notes
 python -m app.vault_cli doctor    # health: orphans, dangling links, misfiled notes, dupes
-python -m app.vault_cli refile    # move meeting notes wrongly filed in People/Projects → Sessions/
+python -m app.vault_cli refile    # move meeting notes wrongly filed in an entity folder → Sessions/
 python -m app.vault_cli idea "ship a wake word"   # quick-capture an idea into Ideas/Inbox.md
 ```
 
@@ -350,12 +377,13 @@ python -m app.vault_cli idea "ship a wake word"   # quick-capture an idea into I
   (and refreshes `index.md`), which forms the bright cluster-centers in the graph
   and eliminates orphans.
 - **`doctor`** flags islands (notes with no links), dangling `[[links]]`, **misfiled
-  meetings** (a meeting sitting in `People/`/`Projects/`), and **cross-folder
-  duplicates** (the same name in two entity folders) so you can keep the brain tidy.
+  meetings** (a meeting sitting in an entity folder), and **cross-folder duplicates**
+  (the same name in two entity folders) so you can keep the brain tidy.
 - **`refile`** moves those misfiled meeting notes into `Sessions/` (preview-first;
-  `--apply` to commit). The `vault_entities` consolidation also no longer creates
-  cross-folder duplicates — if you have leftover ones, delete the wrong-folder copy
-  and re-run it.
+  `--apply` to commit) — token-free. For folder mistakes that need judgment (a
+  company filed as a person, say), `vault_entities --reclassify --apply` sorts them
+  with the API and merges any duplicates. New notes are routed correctly on write,
+  so these are mostly one-time cleanups.
 
 JARVIS runs **`graph` + `moc` automatically on startup** (type-stamping, hub
 refresh, and graph colors), so the brain stays fresh without you remembering. It's
@@ -577,6 +605,10 @@ jarvis/
 │   ├── claude_client.py    # Anthropic streaming + session memory
 │   ├── memory.py           # SQLite recall store (no-vault fallback)
 │   ├── vault_index.py      # FTS5 search index over the Obsidian vault
+│   ├── vault_taxonomy.py   # Folder → type → entity → graph-color taxonomy
+│   ├── vault_templates.py  # Per-type note section templates
+│   ├── vault_cli.py        # Token-free vault tools (check/migrate/doctor/refile…)
+│   ├── vault_entities.py   # Consolidate + reclassify entities (uses the API)
 │   ├── recorder.py         # Mic capture (sounddevice)
 │   ├── transcriber.py      # faster-whisper STT
 │   ├── overlay.py          # The floating UI window

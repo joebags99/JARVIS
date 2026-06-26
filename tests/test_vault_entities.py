@@ -1,7 +1,8 @@
-"""Tests for the entity-consolidation pass (app/vault_entities.py).
+"""Tests for the entity-consolidation + reclassify passes (app/vault_entities.py).
 
-Covers both kinds (people + companies/projects). The Claude clustering call is
-injected as a fake ``clusterer`` so these run offline and token-free.
+Covers all kinds (people / companies / projects) and the folder-reclassify pass.
+The Claude clustering/classification call is injected as a fake so these run
+offline and token-free.
 """
 
 from __future__ import annotations
@@ -119,6 +120,75 @@ def test_preview_writes_nothing(ent_vault):
     assert out["kinds"]["projects"]["applied"] == []
     assert not (root / "Projects" / "daedabyte.md").exists()
     assert "[[Databyte]]" in (root / "Sessions" / "m.md").read_text(encoding="utf-8")
+
+
+# ── Reclassify (folder fixes) ────────────────────────────────────────────────────
+def test_parse_classifications_keeps_known_labels():
+    text = (
+        '{"classifications":['
+        '{"path":"People/Acme.md","type":"company"},'
+        '{"path":"Projects/x.md","type":"bogus"},'
+        '{"path":"People/Sam.md","type":"person"}]}'
+    )
+    out = vault_entities.parse_classifications(text)
+    assert out == {"People/Acme.md": "company", "People/Sam.md": "person"}
+
+
+def test_gather_entity_notes_only_direct_children(ent_vault):
+    _root, obsidian = ent_vault
+    obsidian.write_note("People/Sam.md", "x", title="Sam", canonicalize=False)
+    obsidian.write_note("Projects/Brightpoint/sub.md", "x", title="Sub", canonicalize=False)
+    rels = {rel for rel, _title in vault_entities.gather_entity_notes()}
+    assert "People/Sam.md" in rels
+    assert "Projects/Brightpoint/sub.md" not in rels  # nested notes are scoped, not entities
+
+
+def test_reclassify_moves_misfiled_notes(ent_vault):
+    root, obsidian = ent_vault
+    # A company misfiled under People, and a meeting misfiled under Projects.
+    obsidian.write_note("People/Acme.md", "An org", title="Acme", canonicalize=False)
+    (root / "Projects").mkdir(parents=True, exist_ok=True)
+    (root / "Projects" / "weekly_sync.md").write_text(
+        "---\ntitle: Weekly Sync\ntype: project\n---\n\n# Weekly Sync\n\nnotes\n",
+        encoding="utf-8")
+
+    def classifier(items):
+        labels = {}
+        for rel, _title in items:
+            if rel == "People/Acme.md":
+                labels[rel] = "company"
+            elif rel == "Projects/weekly_sync.md":
+                labels[rel] = "meeting"
+        return labels
+
+    out = vault_entities.reclassify(apply=True, classifier=classifier)
+    dests = {src: dest for src, _label, dest in out["moves"]}
+    assert dests["People/Acme.md"] == "Companies/Acme.md"
+    assert dests["Projects/weekly_sync.md"] == "Sessions/weekly_sync.md"
+    assert (root / "Companies" / "Acme.md").exists()
+    assert (root / "Sessions" / "weekly_sync.md").exists()
+    assert not (root / "People" / "Acme.md").exists()
+    assert obsidian.read_note("Companies/Acme.md").meta.get("type") == "company"
+
+
+def test_reclassify_preview_writes_nothing(ent_vault):
+    root, obsidian = ent_vault
+    obsidian.write_note("People/Acme.md", "An org", title="Acme", canonicalize=False)
+    out = vault_entities.reclassify(
+        apply=False, classifier=lambda items: {"People/Acme.md": "company"}
+    )
+    assert out["moves"] == [("People/Acme.md", "company", "Companies/Acme.md")]
+    assert (root / "People" / "Acme.md").exists()          # untouched
+    assert not (root / "Companies" / "Acme.md").exists()    # nothing written
+
+
+def test_reclassify_leaves_correctly_filed_notes(ent_vault):
+    _root, obsidian = ent_vault
+    obsidian.write_note("People/Sam.md", "x", title="Sam", canonicalize=False)
+    out = vault_entities.reclassify(
+        apply=True, classifier=lambda items: {"People/Sam.md": "person"}
+    )
+    assert out["moves"] == []  # already in the right folder
 
 
 def test_vault_people_shim_forces_people_kind(ent_vault, monkeypatch, capsys):

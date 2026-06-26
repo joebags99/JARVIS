@@ -17,9 +17,10 @@ def _fresh_taxonomy():
 
 
 def test_defaults():
-    assert {"People", "Projects", "Ideas", "Maps"} <= set(vt.folders())
-    assert set(vt.entity_folders()) == {"People", "Projects"}
+    assert {"People", "Companies", "Projects", "Ideas", "Maps"} <= set(vt.folders())
+    assert set(vt.entity_folders()) == {"People", "Companies", "Projects"}
     assert vt.type_for_folder("People") == "person"
+    assert vt.type_for_folder("Companies") == "company"
     assert vt.type_for_folder("Ideas") == "idea"
     assert vt.type_for_folder("Nonexistent") == "note"
     assert ("People", "#4caf79") in vt.color_groups()

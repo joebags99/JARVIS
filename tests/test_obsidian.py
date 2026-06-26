@@ -186,7 +186,11 @@ def test_write_graph_config(vault):
 def test_find_misfiled_and_refile(vault):
     # A real person + a meeting wrongly in People, and the same person duplicated in Projects.
     obsidian.write_note("People/Felicity Kline.md", "person", title="Felicity Kline", canonicalize=False)
-    obsidian.write_note("People/meeting_with_jaime_june_24.md", "notes", title="Mtg", canonicalize=False)
+    # write_note now routes meetings away from entity folders, so simulate a note
+    # that got into People/ by other means (a manual edit / migrated data) on disk.
+    (vault / "People").mkdir(parents=True, exist_ok=True)
+    (vault / "People" / "meeting_with_jaime_june_24.md").write_text(
+        "---\ntitle: Mtg\ntype: person\n---\n\n# Mtg\n\nnotes\n", encoding="utf-8")
     obsidian.write_note("Projects/felicity_kline.md", "dup", title="Felicity Kline", canonicalize=False)
     obsidian.write_note("Projects/Brightpoint/team_meeting.md", "ok", title="TM", canonicalize=False)
 
@@ -203,6 +207,72 @@ def test_find_misfiled_and_refile(vault):
     assert not (vault / "People" / "meeting_with_jaime_june_24.md").exists()
     sess = obsidian.read_note("Sessions/meeting_with_jaime_june_24.md")
     assert sess.meta.get("type") == "session"  # type corrected on move
+
+
+# ── Deterministic routing + templates ──────────────────────────────────────────
+def test_write_routes_meeting_out_of_entity_folder(vault):
+    # A meeting written into People/ is redirected to Sessions/ on the way in.
+    obsidian.write_note("People/standup_june_24.md", "notes", title="Standup")
+    assert not (vault / "People" / "standup_june_24.md").exists()
+    assert (vault / "Sessions" / "standup_june_24.md").exists()
+    assert obsidian.read_note("Sessions/standup_june_24.md").meta.get("type") == "session"
+
+
+def test_write_routes_by_meeting_title(vault):
+    # Even a non-meeting filename is routed when the *title* reads like a meeting.
+    obsidian.write_note("Companies/acme.md", "notes", title="Acme Kickoff Meeting")
+    assert not (vault / "Companies" / "acme.md").exists()
+    assert (vault / "Sessions" / "acme.md").exists()
+
+
+def test_nested_entity_note_not_routed(vault):
+    # A note nested under a project is intentional — never rerouted.
+    obsidian.write_note("Projects/Brightpoint/team_meeting.md", "ok", title="TM")
+    assert (vault / "Projects" / "Brightpoint" / "team_meeting.md").exists()
+
+
+def test_empty_note_gets_type_template(vault):
+    obsidian.write_note("People/Sam.md", "", title="Sam")
+    body = obsidian.read_note("People/Sam.md").body
+    for header in ("## Facts", "## Projects", "## Notes"):
+        assert header in body
+    # A company gets its own section set.
+    obsidian.write_note("Companies/Acme.md", "", title="Acme")
+    cbody = obsidian.read_note("Companies/Acme.md").body
+    assert "## Overview" in cbody and "## People" in cbody
+
+
+def test_content_note_keeps_authored_body(vault):
+    # Real content is never replaced with the template skeleton.
+    obsidian.write_note("People/Sam.md", "Sam runs infra.", title="Sam")
+    assert "Sam runs infra." in obsidian.read_note("People/Sam.md").body
+
+
+def test_relocate_note_moves_and_corrects_type(vault):
+    obsidian.write_note("Projects/Acme.md", "An org", title="Acme", canonicalize=False)
+    dest = obsidian.relocate_note("Projects/Acme.md", "Companies")
+    assert dest == "Companies/Acme.md"
+    assert not (vault / "Projects" / "Acme.md").exists()
+    assert obsidian.read_note("Companies/Acme.md").meta.get("type") == "company"
+
+
+def test_relocate_note_merges_into_existing_entity(vault):
+    obsidian.write_note("People/joe_konkle.md", "The real Joe.", title="Joe Konkle", canonicalize=False)
+    obsidian.write_note("Projects/joe_konkle.md", "Misfiled dup.", title="Joe Konkle", canonicalize=False)
+    dest = obsidian.relocate_note("Projects/joe_konkle.md", "People")
+    assert dest == "People/joe_konkle.md"                       # merged into existing
+    assert not (vault / "Projects" / "joe_konkle.md").exists()  # source removed
+    body = obsidian.read_note("People/joe_konkle.md").body
+    assert "The real Joe." in body and "Misfiled dup." in body
+
+
+def test_record_session_facts_routes_company(vault):
+    obsidian.record_session_facts(
+        [{"fact": "B2B SaaS startup", "subject": "Acme Corp", "kind": "company"}]
+    )
+    note = obsidian.read_note("Companies/acme_corp.md")
+    assert note.title == "Acme Corp" and "B2B SaaS startup" in note.body
+    assert note.meta.get("type") == "company"
 
 
 def test_linkify_vault_connects_old_notes(vault):
@@ -282,11 +352,11 @@ def test_read_missing_raises(vault):
 
 
 def test_title_based_write_is_noncolliding(vault):
-    p1 = obsidian.path_for_title("Meeting With Sam", "Projects")
-    obsidian.write_note(p1, "first", title="Meeting With Sam", overwrite=False)
-    obsidian.write_note(p1, "second", title="Meeting With Sam", overwrite=False)
+    p1 = obsidian.path_for_title("Project Alpha", "Projects")
+    obsidian.write_note(p1, "first", title="Project Alpha", overwrite=False)
+    obsidian.write_note(p1, "second", title="Project Alpha", overwrite=False)
     files = sorted(p.name for p in (vault / "Projects").glob("*.md"))
-    assert files == ["meeting_with_sam.md", "meeting_with_sam_2.md"]
+    assert files == ["project_alpha.md", "project_alpha_2.md"]
 
 
 def test_overwrite_replaces(vault):

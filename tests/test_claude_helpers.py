@@ -29,6 +29,9 @@ def test_parse_facts():
     # structured objects with subject + kind
     out = cc._parse_facts('[{"fact":"Allergic to shellfish","subject":"Joe","kind":"person"}]')
     assert out == [{"fact": "Allergic to shellfish", "subject": "Joe", "kind": "person"}]
+    # company is a recognized kind
+    assert cc._parse_facts('[{"fact":"B2B SaaS","subject":"Acme","kind":"company"}]') == \
+        [{"fact": "B2B SaaS", "subject": "Acme", "kind": "company"}]
     # bare strings (back-compat) become subjectless facts
     assert cc._parse_facts('["x"]') == [{"fact": "x", "subject": "", "kind": ""}]
     # tolerates surrounding prose, normalizes an unknown kind, drops blanks

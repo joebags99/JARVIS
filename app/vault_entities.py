@@ -1,25 +1,32 @@
-"""Consolidate entity name variants (people + companies/projects) in the vault.
+"""Consolidate entity name variants — and reclassify misfiled notes — in the vault.
 
-The same person, company, or project often appears under several names
-("Joe"/"Joe K"/"Joe Konkle", "Databyte"/"Daedabyte", "CCC"/"CCC Legacy"), which
-splits them across separate ``[[links]]`` and notes. This command asks the Claude
-API to cluster the variants *per kind*, records the canonical name + ``aliases``
-on one note in the right folder (People/ or Projects/), folds duplicate notes into
-it, and rewrites every ``[[alias]]`` across the vault to the canonical name.
+Two API-backed cleanup passes:
 
-Like :mod:`app.vault_organize` it **calls the API** (one clustering request per
-kind), so it costs tokens. Preview-first and non-destructive — duplicate notes are
-moved to ``Archive/`` (never deleted). Run from the repo root:
+**Consolidate** (default): the same person, company, or project often appears under
+several names ("Joe"/"Joe K"/"Joe Konkle", "Databyte"/"Daedabyte", "CCC"/"CCC
+Legacy"), splitting them across separate ``[[links]]`` and notes. This asks Claude
+to cluster the variants *per kind* (people / companies / projects), records the
+canonical name + ``aliases`` on one note in the right folder, folds duplicate notes
+into it, and rewrites every ``[[alias]]`` to the canonical name.
 
-    python -m app.vault_entities                 # PREVIEW people + projects (writes nothing)
-    python -m app.vault_entities --apply          # consolidate both, rewrite links
-    python -m app.vault_entities --kind projects  # just companies/projects
-    python -m app.vault_entities --kind people --apply
+**Reclassify** (``--reclassify``): when notes land in the wrong folder (a meeting in
+People/, a company under Projects/), this classifies every entity note by what it's
+actually about and moves each to the folder that matches (merging into an existing
+same-named entity instead of duplicating it).
 
-Going forward JARVIS keeps things consolidated on its own: the roster (people +
-companies/projects) is in its prompt and writes are canonicalized, so this is
-mainly a one-time cleanup. Edit a note's ``aliases:`` in Obsidian to teach a new
-nickname anytime.
+Both **call the API** so they cost tokens. Preview-first and non-destructive —
+duplicates go to ``Archive/`` (never deleted). Run from the repo root:
+
+    python -m app.vault_entities                  # PREVIEW consolidation (writes nothing)
+    python -m app.vault_entities --apply           # consolidate all kinds, rewrite links
+    python -m app.vault_entities --kind companies  # just companies
+    python -m app.vault_entities --reclassify      # PREVIEW folder fixes
+    python -m app.vault_entities --reclassify --apply
+
+Going forward JARVIS keeps things tidy on its own: the roster (people + companies +
+projects) is in its prompt, writes are canonicalized, and meeting notes are routed
+out of entity folders deterministically — so these are mainly one-time cleanups.
+Edit a note's ``aliases:`` in Obsidian to teach a new nickname anytime.
 """
 
 from __future__ import annotations
@@ -43,14 +50,24 @@ _KINDS: dict[str, dict] = {
             "products, projects, topics)."
         ),
     },
-    "projects": {
-        "folder": "Projects",
-        "label": "companies & projects",
+    "companies": {
+        "folder": "Companies",
+        "label": "companies",
         "system": (
             "You are given names referenced in a personal Obsidian vault. Group the "
-            "ones that refer to the SAME company, client, or project (e.g. "
-            "'Databyte'/'Daedabyte', 'CCC'/'CCC Legacy', 'Be Cleaned'). IGNORE names "
-            "that are individual people or generic topics."
+            "ones that refer to the SAME company, organization, or client (e.g. "
+            "'Databyte'/'Daedabyte', 'CCC'/'CCC Legacy'). IGNORE names that are "
+            "individual people, specific projects/products, or generic topics."
+        ),
+    },
+    "projects": {
+        "folder": "Projects",
+        "label": "projects",
+        "system": (
+            "You are given names referenced in a personal Obsidian vault. Group the "
+            "ones that refer to the SAME project, product, or initiative (e.g. "
+            "'Be Cleaned', 'Brightpoint Campaign'). IGNORE names that are individual "
+            "people, companies/organizations, or generic topics."
         ),
     },
 }
@@ -139,7 +156,7 @@ def _apply_cluster(c: dict, folder: str) -> tuple[str, list[str], list[str]]:
 
 
 def run(
-    *, kinds: tuple[str, ...] = ("people", "projects"), apply: bool = False,
+    *, kinds: tuple[str, ...] = ("people", "companies", "projects"), apply: bool = False,
     model: str | None = None, clusterer=None,
 ) -> dict:
     """Cluster and (optionally) consolidate each kind. ``clusterer`` is injectable."""
@@ -192,15 +209,142 @@ def _print_report(out: dict, apply: bool) -> None:
         print("Preview only — nothing written. Re-run with --apply to commit.")
 
 
+# ── Reclassify: move misfiled entity notes into the right folder (uses the API) ──
+# Maps the model's label to the folder a note of that kind belongs in. "meeting"
+# routes to Sessions/ so a meeting recap misfiled as a person/company lands home.
+_LABEL_FOLDER = {
+    "person": "People",
+    "company": "Companies",
+    "project": "Projects",
+    "meeting": "Sessions",
+}
+
+_RECLASSIFY_SYSTEM = (
+    "You are tidying a personal Obsidian vault whose folders have gotten mixed up. "
+    "Each line is an existing note given as 'path — title'. Decide what each note is "
+    "REALLY about, judging by the title (the current folder may be wrong):\n"
+    "  - person  : an individual human being\n"
+    "  - company : an organization, business, client, or team\n"
+    "  - project : a project, product, campaign, or initiative\n"
+    "  - meeting : a meeting, standup, call, or session recap\n\n"
+    'Return ONLY a JSON object: {"classifications": [{"path": "<the exact path '
+    'given>", "type": "person"|"company"|"project"|"meeting"}]}. Include every note.'
+)
+
+
+def gather_entity_notes() -> list[tuple[str, str]]:
+    """``(rel, title)`` for every direct child note in an entity folder.
+
+    These are the notes the reclassify pass judges — a meeting hiding in People/,
+    a company filed under Projects/, etc. Notes nested in a subfolder are left out
+    (they're deliberately scoped) as are non-entity folders.
+    """
+    from integrations import obsidian
+
+    out: list[tuple[str, str]] = []
+    for folder in obsidian.ENTITY_FOLDERS:
+        for rel in obsidian.list_notes(folder=folder):
+            if len(rel.split("/")) != 2:
+                continue
+            try:
+                out.append((rel, obsidian.read_note(rel).title))
+            except Exception:  # noqa: BLE001
+                out.append((rel, obsidian._title_from_stem(Path(rel).stem)))
+    return out
+
+
+def parse_classifications(text: str) -> dict[str, str]:
+    """Parse the model reply into ``{path: label}`` (unknown labels dropped)."""
+    data = _loads_lenient(text)
+    out: dict[str, str] = {}
+    for c in data.get("classifications", []) or []:
+        path = str(c.get("path") or "").strip()
+        label = str(c.get("type") or "").strip().lower()
+        if path and label in _LABEL_FOLDER:
+            out[path] = label
+    return out
+
+
+def _api_classifier(model: str):
+    """Return an ``items -> {path: label}`` classifier backed by the API."""
+    from anthropic import Anthropic
+
+    client = Anthropic(api_key=CONFIG.anthropic_api_key)
+
+    def classify(items: list[tuple[str, str]]) -> dict[str, str]:
+        lines = [f"{rel} — {title}" for rel, title in items]
+        msg = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=_RECLASSIFY_SYSTEM,
+            messages=[{"role": "user", "content": "Notes:\n" + "\n".join(lines)}],
+        )
+        text = msg.content[0].text if msg.content else ""
+        return parse_classifications(text)
+
+    return classify
+
+
+def reclassify(*, apply: bool = False, model: str | None = None, classifier=None) -> dict:
+    """Move misfiled entity notes into the folder that matches what they're about.
+
+    Every note in People/Companies/Projects is classified by the API
+    (person/company/project/meeting); any whose folder disagrees is relocated with
+    :func:`obsidian.relocate_note`, which merges into an existing same-named entity
+    rather than duplicating it. Preview-first — ``apply=False`` writes nothing.
+    ``classifier`` is injectable for tests.
+    """
+    from integrations import obsidian
+
+    classifier = classifier or _api_classifier(model or CONFIG.anthropic_model)
+    items = gather_entity_notes()
+    labels = classifier(items) if items else {}
+    moves: list[tuple[str, str, str]] = []  # (src_rel, label, dest_rel)
+    for rel, _title in items:
+        label = labels.get(rel)
+        if not label:
+            continue
+        dest_folder = _LABEL_FOLDER[label]
+        if rel.split("/", 1)[0] == dest_folder:
+            continue  # already correctly filed
+        dest_rel = (obsidian.relocate_note(rel, dest_folder) if apply
+                    else f"{dest_folder}/{Path(rel).name}")
+        moves.append((rel, label, dest_rel))
+    out = {"moves": moves, "links_rewritten": 0}
+    if apply and moves:
+        out["links_rewritten"] = obsidian.recanonicalize_vault()
+    return out
+
+
+def _print_reclassify(out: dict, apply: bool) -> None:
+    moves = out["moves"]
+    if not moves:
+        print("Nothing misfiled — every entity note is already in the right folder.")
+        return
+    verb = "Moved" if apply else "Would move"
+    for rel, label, dest_rel in moves:
+        print(f"[{label}] {verb}: {rel}  →  {dest_rel}")
+    print(f"\n{len(moves)} note(s) reclassified.")
+    if apply:
+        print(f"Rewrote links in {out['links_rewritten']} note(s); "
+              "duplicates merged into existing entities.")
+    else:
+        print("Preview only — nothing written. Re-run with --reclassify --apply to commit.")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="vault_entities",
-        description="Consolidate people + company/project name variants (uses the API).",
+        description="Consolidate people/company/project name variants, or reclassify "
+                    "misfiled notes (both use the API).",
     )
-    p.add_argument("--kind", choices=["people", "projects", "all"], default="all",
-                   help="Which entities to consolidate (default: all).")
+    p.add_argument("--kind", choices=["people", "companies", "projects", "all"],
+                   default="all", help="Which entities to consolidate (default: all).")
     p.add_argument("--apply", action="store_true",
                    help="Set aliases, merge duplicate notes, and rewrite links.")
+    p.add_argument("--reclassify", action="store_true",
+                   help="Instead of consolidating, move misfiled entity notes into "
+                        "the correct folder (person/company/project/meeting).")
     p.add_argument("--model", default=None, help="Model to use (default: ANTHROPIC_MODEL).")
     args = p.parse_args(argv)
 
@@ -212,7 +356,13 @@ def main(argv: list[str] | None = None) -> int:
         print("This command calls the Claude API. Set ANTHROPIC_API_KEY in .env.")
         return 1
 
-    kinds = ("people", "projects") if args.kind == "all" else (args.kind,)
+    if args.reclassify:
+        print(f"{'Applying' if args.apply else 'Previewing'} reclassification of misfiled "
+              f"notes (model={args.model or CONFIG.anthropic_model}) — this calls the API.\n")
+        _print_reclassify(reclassify(apply=args.apply, model=args.model), args.apply)
+        return 0
+
+    kinds = ("people", "companies", "projects") if args.kind == "all" else (args.kind,)
     print(f"{'Applying' if args.apply else 'Previewing'} consolidation of {', '.join(kinds)} "
           f"(model={args.model or CONFIG.anthropic_model}) — this calls the API.\n")
     _print_report(run(kinds=kinds, apply=args.apply, model=args.model), args.apply)

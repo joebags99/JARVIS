@@ -36,7 +36,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app import vault_taxonomy
+from app import vault_taxonomy, vault_templates
 from app.config import CONFIG, NOTES_DIR, ROOT_DIR
 from app.logging_setup import get_logger
 
@@ -562,19 +562,48 @@ def _invalidate_roster_if_entity(p: Path) -> None:
         _roster_cache = None
 
 
+def _route(rel: str, title: str | None = None) -> str:
+    """Deterministically correct a note's folder *before* it is written.
+
+    The single guard that keeps placement consistent no matter how a note is
+    created — a tool call, a paste, a fact write: a meeting/session note can
+    never land in an entity folder (People/Companies/Projects); it is redirected
+    to ``Sessions/``. Only direct children of an entity folder are rerouted
+    (a note nested in a project subfolder is intentional and left alone), and
+    everything that is already correctly placed is returned unchanged.
+    """
+    parts = rel.split("/")
+    if len(parts) != 2:
+        return rel
+    folder, name = parts
+    if folder in ENTITY_FOLDERS and (
+        looks_like_meeting(Path(name).stem) or looks_like_meeting(title or "")
+    ):
+        return f"Sessions/{name}"
+    return rel
+
+
 def write_note(
     path: str, content: str, title: str | None = None,
     tags: list[str] | None = None, overwrite: bool = True, canonicalize: bool = True,
 ) -> str:
     """Create or overwrite a note (frontmatter stamped, ``# H1`` added if titled).
 
-    With ``overwrite=False`` an existing path is given a numeric suffix instead
-    of being replaced — used when creating a note from a title so JARVIS never
-    silently clobbers an existing note. Plain person ``[[links]]`` are
-    canonicalized against the roster on the way in (``canonicalize=False`` to
+    Placement is corrected first (:func:`_route` — a meeting never lands in an
+    entity folder), and a fresh, body-less note is seeded with its type's
+    template (:mod:`app.vault_templates`) so every note of a kind shares one
+    structure. With ``overwrite=False`` an existing path is given a numeric
+    suffix instead of being replaced — used when creating a note from a title so
+    JARVIS never silently clobbers an existing note. Plain person ``[[links]]``
+    are canonicalized against the roster on the way in (``canonicalize=False`` to
     skip) so the same person never splits across name variants.
     """
     p = _safe_path(path)
+    routed = _route(_rel(p), title)
+    if routed != _rel(p):
+        log.info("routed note %s -> %s (meeting/session kept out of entity folder)",
+                 _rel(p), routed)
+        p = _safe_path(routed)
     existed = p.exists()
     if existed and not overwrite:
         p = _noncolliding(p)
@@ -582,8 +611,13 @@ def write_note(
     p.parent.mkdir(parents=True, exist_ok=True)
     if canonicalize:
         content = canonicalize_links(content or "")
+    note_type = _type_for_path(_rel(p))
+    body = content or ""
+    if not body.strip() and vault_templates.has_template(note_type):
+        # A brand-new, empty note gets its type's section skeleton.
+        body = vault_templates.scaffold(note_type, title=title)
     try:
-        p.write_text(_stamp(content, title, tags, _type_for_path(_rel(p))), encoding="utf-8")
+        p.write_text(_stamp(body, title, tags, note_type), encoding="utf-8")
     except Exception as exc:  # noqa: BLE001
         log.error("could not write note %s: %s", p, exc)
         raise VaultError(f"could not save note: {exc}") from exc
@@ -754,12 +788,13 @@ def record_session_facts(facts: list[dict]) -> int:
     """File each extracted fact under the entity note it's about. Returns the count.
 
     Each fact is ``{"fact","subject","kind"}`` (see ``claude_client.extract_facts``).
-    Facts about a person/project are appended — dated, grouped — to that entity's
-    note in ``People/`` or ``Projects/``; the target is resolved through the roster
-    (alias→canonical) then a slug match (:func:`find_entity_note`) so a typo or
-    nickname reuses the existing note instead of spawning a duplicate, and a
-    correctly-titled stub is created only when the entity is genuinely new. Facts
-    about the user (``kind == "self"``) or with no subject go to ``Memory/Facts.md``.
+    Facts about a person/company/project are appended — dated, grouped — to that
+    entity's note in ``People/``, ``Companies/`` or ``Projects/`` (by ``kind``); the
+    target is resolved through the roster (alias→canonical) then a slug match
+    (:func:`find_entity_note`) so a typo or nickname reuses the existing note
+    instead of spawning a duplicate, and a correctly-titled note is created only
+    when the entity is genuinely new. Facts about the user (``kind == "self"``) or
+    with no subject go to ``Memory/Facts.md``.
     """
     if not facts:
         return 0
@@ -775,7 +810,7 @@ def record_session_facts(facts: list[dict]) -> int:
         if kind == "self" or subject.lower() in _GENERIC_SUBJECTS or subject.lower() == user:
             general.append(text)
             continue
-        folder = "Projects" if kind == "project" else "People"
+        folder = {"project": "Projects", "company": "Companies"}.get(kind, "People")
         canonical = get_roster().get(subject.lower(), subject)
         groups.setdefault((folder, canonical), []).append(text)
 
@@ -783,11 +818,13 @@ def record_session_facts(facts: list[dict]) -> int:
     count = 0
     for (folder, canonical), texts in groups.items():
         rel = find_entity_note(canonical, folder) or path_for_title(canonical, folder)
+        block = f"## Facts ({today})\n" + "\n".join(f"- {t}" for t in texts)
         if not _safe_path(rel).exists():
-            # Titled stub first so casing is preserved (e.g. "CCC Legacy", not "Ccc Legacy").
-            write_note(rel, "", title=canonical, overwrite=False, canonicalize=False)
-            rel = find_entity_note(canonical, folder) or rel
-        append_note(rel, f"## Facts ({today})\n" + "\n".join(f"- {t}" for t in texts))
+            # Create with the first facts block as content (preserves casing, e.g.
+            # "CCC Legacy" not "Ccc Legacy") rather than an empty stub + append.
+            write_note(rel, block, title=canonical, overwrite=False, canonicalize=False)
+        else:
+            append_note(rel, block)
         count += len(texts)
     if general:
         append_note("Memory/Facts.md", f"## {today}\n" + "\n".join(f"- {t}" for t in general))
@@ -920,13 +957,13 @@ def linkify_vault(roster: dict[str, str] | None = None) -> int:
 
     Connects pre-existing notes (sessions, imported, topics, daily) into the graph
     deterministically — no API calls. Frontmatter is preserved verbatim; entity
-    folders (People/Projects) and Maps/ are skipped to avoid self-link noise.
-    Returns the number of notes changed.
+    folders (People/Companies/Projects) and Maps/ are skipped to avoid self-link
+    noise. Returns the number of notes changed.
     """
     roster = roster if roster is not None else get_roster()
     if not roster:
         return 0
-    skip = {"People", "Projects", "Maps"} | INDEX_SKIP_FOLDERS
+    skip = set(ENTITY_FOLDERS) | {"Maps"} | INDEX_SKIP_FOLDERS
     changed = 0
     for p in iter_markdown():
         if _rel(p).split("/", 1)[0] in skip:
@@ -1011,6 +1048,50 @@ def refile_meetings(dry_run: bool = True) -> list[tuple[str, str]]:
     return moved
 
 
+def relocate_note(rel: str, dest_folder: str) -> str:
+    """Move a note into *dest_folder*, merging into an existing entity of the same name.
+
+    The mover behind the reclassify pass (a meeting in People/ → Sessions/, a
+    person in Projects/ → People/). When the destination is an entity folder and
+    a note for the same name already lives there, the bodies are merged and the
+    source archived instead of creating a cross-folder duplicate. Otherwise the
+    file is moved (non-colliding), its ``type`` corrected to the destination's,
+    and the index updated. Returns the note's new vault-relative path.
+    """
+    src = _safe_path(rel)
+    if not src.exists():
+        raise VaultError(f"note '{rel}' not found.")
+    cur_rel = _rel(src)
+    dest_folder = (dest_folder or "").strip().strip("/")
+    if not dest_folder:
+        raise VaultError("relocate_note needs a destination folder.")
+    if cur_rel.split("/", 1)[0] == dest_folder:
+        return cur_rel  # already there
+    meta, body = parse_frontmatter(src.read_text(encoding="utf-8", errors="replace"))
+    title = title_for(cur_rel, meta, body)
+    if dest_folder in ENTITY_FOLDERS:
+        existing = find_entity_note(title, dest_folder)
+        if existing and existing != cur_rel:
+            merge_note_into(cur_rel, title, dest_folder)
+            log.info("relocated %s by merging into existing %s", cur_rel, existing)
+            return existing
+    dest = _noncolliding(vault_root() / dest_folder / Path(cur_rel).name)
+    meta["type"] = vault_taxonomy.type_for_folder(dest_folder)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(f"{build_frontmatter(meta)}{body.strip()}\n", encoding="utf-8")
+    src.unlink()
+    try:
+        from app.vault_index import get_index
+        get_index().remove(cur_rel)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("index remove after relocate failed for %s: %s", cur_rel, exc)
+    _reindex_path(dest)
+    _invalidate_roster_if_entity(src)
+    _invalidate_roster_if_entity(dest)
+    log.info("relocated vault note %s -> %s", cur_rel, _rel(dest))
+    return _rel(dest)
+
+
 def find_orphans() -> list[str]:
     """Notes with no outgoing ``[[links]]`` and no backlinks — graph islands."""
     orphans: list[str] = []
@@ -1060,7 +1141,8 @@ _INDEX_TEMPLATE = (
     "`[[wikilinks]]`.\n\n"
     "- [[Sessions]] — recaps of past conversations\n"
     "- [[Daily]] — daily logs\n"
-    "- [[People]] — notes about people\n"
+    "- [[People]] — notes about individual people\n"
+    "- [[Companies]] — notes about companies/organizations\n"
     "- [[Projects]] — project notes\n"
     "- [[Topics]] — topic/reference notes\n"
     "- [[Memory]] — durable facts JARVIS remembers\n"

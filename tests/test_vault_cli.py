@@ -100,7 +100,10 @@ def test_refile_moves_misfiled_meetings(cli_vault, capsys):
     from integrations import obsidian
 
     obsidian.ensure_scaffold()
-    obsidian.write_note("People/team_meeting_june.md", "x", title="TM", canonicalize=False)
+    # write_note routes meetings away now, so drop the misfiled note on disk directly.
+    (cli_vault / "People").mkdir(parents=True, exist_ok=True)
+    (cli_vault / "People" / "team_meeting_june.md").write_text(
+        "---\ntitle: TM\ntype: person\n---\n\n# TM\n\nx\n", encoding="utf-8")
     assert vault_cli.main(["refile"]) == 0          # preview
     assert "Would move" in capsys.readouterr().out
     assert vault_cli.main(["refile", "--apply"]) == 0

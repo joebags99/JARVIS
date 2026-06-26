@@ -1,8 +1,8 @@
 """Back-compat shim — ``python -m app.vault_people`` consolidates *people* only.
 
-The general command is :mod:`app.vault_entities`, which consolidates people **and**
-companies/projects. This thin wrapper just forces ``--kind people`` so any existing
-muscle memory / docs keep working.
+The general command is :mod:`app.vault_entities`, which consolidates people,
+companies, **and** projects. This thin wrapper just forces ``--kind people`` so any
+existing muscle memory / docs keep working.
 """
 
 from __future__ import annotations
