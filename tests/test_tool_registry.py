@@ -11,11 +11,7 @@ from app import tool_registry as tr
 
 EXPECTED_BASE_TOOLS = [
     "get_calendar_events",
-    "get_recent_notes",
-    "create_note",
     "get_weather",
-    "recall",
-    "remember",
     "update_calendar_event",
     "create_calendar_event",
     "get_todos",
@@ -28,12 +24,29 @@ EXPECTED_BASE_TOOLS = [
     "load_knowledge_pool",
 ]
 
+# The five vault tools, advertised only when an Obsidian vault is configured.
+VAULT_TOOLS = ["search_vault", "read_note", "write_note", "append_note", "list_notes"]
+
 
 def test_base_tools_snapshot():
-    # Gmail/Spotify aren't configured in the test environment, so api_tools()
-    # returns exactly the always-available base tools, in registration order.
+    # Gmail/Spotify/Obsidian aren't configured in the test environment, so
+    # api_tools() returns exactly the always-available base tools, in order.
     names = [t["name"] for t in tr.api_tools()]
     assert names == EXPECTED_BASE_TOOLS
+
+
+def test_vault_tools_appear_when_obsidian_available(monkeypatch):
+    from app.config import CONFIG
+
+    monkeypatch.setattr(CONFIG, "obsidian_enabled", True)
+    monkeypatch.setattr(CONFIG, "obsidian_vault_path", "/tmp/vault")
+    names = [t["name"] for t in tr.api_tools()]
+    assert all(v in names for v in VAULT_TOOLS)
+
+
+def test_vault_tools_hidden_when_obsidian_unavailable():
+    names = [t["name"] for t in tr.api_tools()]
+    assert not any(v in names for v in VAULT_TOOLS)
 
 
 def test_every_spec_has_required_keys():
@@ -47,13 +60,11 @@ def test_execute_unknown_tool():
 
 
 def test_category_enums_match_config():
-    """The note/task category enums are derived from CONFIG.categories."""
+    """The task category enums are derived from CONFIG.categories."""
     from app.config import CONFIG
 
     specs = {t["name"]: t for t in tr.api_tools()}
     for name, prop in (
-        ("get_recent_notes", "category"),
-        ("create_note", "category"),
         ("create_todo", "category"),
         ("update_todo", "new_category"),
     ):

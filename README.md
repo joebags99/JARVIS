@@ -45,10 +45,27 @@ calendars, and meeting notes.
 - **Music** (optional) — control Spotify by voice or chat: play a song, artist,
   album, or playlist, pause/skip, shuffle, set volume, and ask what's playing.
   Requires Spotify Premium. (There's also a hidden incantation… 🎸)
+- **Knowledge vault — a second brain (optional)** — point JARVIS at an
+  [Obsidian](https://obsidian.md) vault and it becomes a single, linked markdown
+  home for both your notes **and** its long-term memory: it searches the vault
+  before answering, writes new notes (with frontmatter, `[[wikilinks]]`, and
+  `#tags`), and records session recaps + durable facts there for you to browse
+  and edit in Obsidian. Notes are organized automatically — people, companies, and
+  projects each get their own canonical note, meetings always land in `Sessions/`,
+  and every note follows a per-type template. Without a vault, it falls back to a
+  local notes folder + recall store.
 - **Cross-session memory** — when you close a longer chat, JARVIS saves a short
-  recap and can recall it later ("pick up where we left off").
+  recap and any durable facts, then recalls them later ("pick up where we left
+  off"). With a vault, the recap is auto-**wikilinked** to the people/projects it
+  mentions, and each fact is filed under the note for the person/project it's
+  **about** (e.g. an allergy lands on that person's note) — facts about you go to
+  `Memory/Facts.md`. Name variants resolve to the canonical note, so a nickname
+  never creates a duplicate. Without a vault, it falls back to a local SQLite store.
 - **Smooth replies** — an animated "thinking" indicator while JARVIS composes,
   then the answer fades in line by line (no half-formed text filling in).
+- **Token & cache diagnostics** — every API call's token usage (including
+  prompt-cache hits) is logged with an estimated cost, so you can see what you're
+  spending and how well caching is working (`python -m app.usage_report`).
 - **Graceful degradation** — missing mic, missing calendar creds, or a missing
   API key are handled with clear messages, never a crash.
 
@@ -230,6 +247,185 @@ playlist", "pause", "skip", "set the volume to 30", "shuffle on", "what's
 playing?". And there may be a certain phrase that summons a certain AC/DC song
 with… maximum attitude. 🎸
 
+### 7g. (Optional) Obsidian knowledge vault (your second brain)
+Give JARVIS a real, browsable memory by pointing it at an
+[Obsidian](https://obsidian.md) vault — which is just a folder of markdown files.
+JARVIS reads and writes it directly on disk (no Obsidian plugin, and Obsidian
+doesn't even need to be running), so the vault becomes one linked home for your
+notes **and** its long-term memory.
+
+1. Pick a folder for the vault — an existing Obsidian vault, or a brand-new empty
+   folder (JARVIS seeds a starter structure on first run).
+2. In `.env`, set both:
+   ```
+   OBSIDIAN_ENABLED=true
+   OBSIDIAN_VAULT_PATH=C:\Users\you\Documents\Brain
+   ```
+3. Run JARVIS. On first launch it scaffolds default folders (`Sessions/`,
+   `Daily/`, `People/`, `Companies/`, `Projects/`, `Topics/`, `Memory/`) plus an
+   `index.md` Map of Content, then does a **one-time, non-destructive** import of
+   any existing `notes/<category>/` files and `memory.db` facts into the vault —
+   your originals are left untouched as a safety net.
+
+Once enabled, the vault **replaces** the per-category notes folder and the SQLite
+recall store as JARVIS's durable brain. Ask it to "make a note about my meeting
+with Sam", "what do you know about the Q3 launch?", or "what did we decide last
+week?" and it searches/writes the vault — then open the same files in Obsidian to
+read, edit, and follow the links yourself. The model-facing tools are
+`search_vault`, `read_note`, `write_note`, `append_note`, and `list_notes`. A
+rebuildable search index (`vault_index.db`) is kept beside the app and is
+gitignored.
+
+**Consistent organization, by design.** Every note lands in the right folder and
+follows a uniform shape, so the vault stays readable as it grows:
+
+- **Entity folders** — `People/` (one individual per note), `Companies/` (an org,
+  client, or team), and `Projects/` (a project, product, or campaign). Notes here
+  are *canonical* identities (de-duplicated by their `aliases:`).
+- **Deterministic routing** — a meeting/standup/call note can **never** land in an
+  entity folder. However it's created (a tool call, a paste, a fact write), it is
+  redirected to `Sessions/`, so people and meetings never get mixed up.
+- **Per-type templates** — a fresh note is seeded with its type's section skeleton
+  (a person gets *Facts · Projects · Notes*; a meeting gets *Summary · Attendees ·
+  Decisions · Action Items · Open Questions*; etc.), and JARVIS is told the same
+  templates so its free-form writing matches. The taxonomy (folders → type → graph
+  color) lives in `app/vault_taxonomy.py` and is extensible via `vault_config.json`.
+
+> JARVIS can create and edit any note **inside** the vault (never outside it —
+> paths that escape the vault are refused). It reads a note before overwriting and
+> prefers appending for logs, but if you want a hands-off zone, keep those notes in
+> a separate vault.
+
+**Verify it first — token-free.** A small management CLI lets you check the wiring
+and preview the import **without spending any Claude tokens** (it never calls the
+API). From the repo root:
+
+```bash
+python -m app.vault_cli check            # config + scaffold + what would import
+python -m app.vault_cli migrate --dry-run  # preview the conversion (writes nothing)
+python -m app.vault_cli migrate          # do the import (idempotent; copies, never moves)
+python -m app.vault_cli search "budget"  # confirm retrieval works
+python -m app.vault_cli list [folder]    # browse the vault
+```
+
+`check` and `migrate --dry-run` are read-only previews — start there. The same
+migration also runs automatically the first time you launch JARVIS with the vault
+enabled, so the CLI is optional; it just lets you look before you leap.
+
+**Tidy up the imported notes (optional, uses the API).** The migration drops your
+old notes into `Imported/` as-is. To have Claude reformat each one (frontmatter,
+tags, `[[wikilinks]]`) and refile it into the right folder, run the cleanup pass.
+Unlike the commands above, **this one calls the Claude API per note, so it costs
+tokens** — it's preview-first and non-destructive:
+
+```bash
+python -m app.vault_organize              # PREVIEW the plan (writes nothing)
+python -m app.vault_organize --limit 5    # try it on the first 5 notes
+python -m app.vault_organize --apply       # tidy + refile; originals move to Archive/
+```
+
+With `--apply`, each tidied note is written to its new home and the original is
+moved to `Archive/` (never deleted, and excluded from search), so you can review in
+Obsidian and delete `Archive/` once you're happy. Faithful cleanup only — it
+preserves every decision, action item, and date rather than summarizing them away.
+
+**Consolidate identities (one note per person, company, and project).** Imported
+notes often refer to the same entity several ways — a person (`Joe`, `Joe K`,
+`Joe Konkle`), a company (`Databyte`/`Daedabyte`), or a project (`CCC`/`CCC Legacy`)
+— splitting them across notes and links. The consolidation pass (also API-backed)
+clusters the variants per kind and fixes them:
+
+```bash
+python -m app.vault_entities                  # PREVIEW people + companies + projects (writes nothing)
+python -m app.vault_entities --apply           # consolidate all kinds, rewrite links
+python -m app.vault_entities --kind companies  # just companies
+```
+
+`--apply` records the canonical name + `aliases:` on one note in the right folder
+(`People/`, `Companies/`, or `Projects/`), folds any duplicate notes into it
+(originals → `Archive/`), and rewrites every `[[alias]]` in the vault to the
+canonical name. Going forward this mostly takes care of itself: JARVIS knows the
+roster (people + companies + projects, in its prompt) and **canonicalizes links
+automatically on every write**, so each entity stays one note. The source of truth
+is the `aliases:` list in each entity note — edit it in Obsidian anytime to teach a
+new nickname. (`python -m app.vault_people` still works as a people-only shortcut.)
+
+**Fix misfiled notes (uses the API).** If notes ended up in the wrong folder (a
+company under `People/`, a meeting under `Projects/`), the reclassify pass asks
+Claude what each entity note is really about and moves it to the matching folder —
+merging into an existing same-named entity instead of duplicating it:
+
+```bash
+python -m app.vault_entities --reclassify          # PREVIEW the folder fixes (writes nothing)
+python -m app.vault_entities --reclassify --apply  # move person/company/project/meeting notes home
+```
+
+**Keep the graph organized (token-free).** A few commands keep the vault tidy and
+make the graph view look like a colored brain:
+
+```bash
+python -m app.vault_cli graph     # color the graph by folder + stamp `type:` on every note
+python -m app.vault_cli moc       # rebuild hub "Maps of Content" that link each folder's notes
+python -m app.vault_cli doctor    # health: orphans, dangling links, misfiled notes, dupes
+python -m app.vault_cli refile    # move meeting notes wrongly filed in an entity folder → Sessions/
+python -m app.vault_cli dedupe    # merge the same name appearing in two entity folders
+python -m app.vault_cli idea "ship a wake word"   # quick-capture an idea into Ideas/Inbox.md
+```
+
+- **`graph`** writes `.obsidian/graph.json` so Obsidian's graph colors nodes by
+  folder (people green, projects cyan, ideas pink, …) — instant visual clusters.
+- **`moc`** generates a `Maps/<Folder>.md` hub linking every note in that folder
+  (and refreshes `index.md`), which forms the bright cluster-centers in the graph
+  and eliminates orphans.
+- **`doctor`** flags islands (notes with no links), dangling `[[links]]`, **misfiled
+  meetings** (a meeting sitting in an entity folder — at any depth), and
+  **cross-folder duplicates** (the same name in two entity folders) so you can keep
+  the brain tidy.
+- **`refile`** moves misfiled meeting notes into `Sessions/` (preview-first;
+  `--apply` to commit) — token-free, and catches meetings nested under a project too.
+- **`dedupe`** merges cross-folder duplicates — the `People/Joe Konkle.md` +
+  `Projects/joe_konkle.md` pairs the old fact-router used to create. It keeps the
+  copy in the highest-priority folder (People → Companies → Projects) and folds the
+  rest in (originals → `Archive/`, reversible). For an entity that's simply in the
+  *wrong* folder (a campaign filed under People), use `vault_entities --reclassify
+  --apply`, which sorts placement with the API.
+
+New notes are now routed and de-duplicated correctly on write — meetings always go
+to `Sessions/`, and a fact about an existing person is never split into a second
+folder even if it's mis-tagged — so these cleanups are one-time. JARVIS also runs
+**`refile` + `graph` + `moc` automatically on startup** (so stray meetings self-heal
+back to `Sessions/`), idempotently — set `OBSIDIAN_AUTO_ORGANIZE=false` to manage it
+yourself.
+
+**Fix everything mechanical in one shot.** `upgrade` is the token-free "clean it all
+up" command: it refiles stray meetings to `Sessions/`, merges cross-folder
+duplicates, type-stamps, canonicalizes + wikilinks bare mentions, and rebuilds the
+hubs + graph colors across the whole vault. Moves/merges are reversible (originals →
+`Archive/`):
+
+```bash
+python -m app.vault_cli upgrade   # refile + dedupe + type-stamp + link + rebuild hubs
+```
+
+For the deeper, content-level cleanup, run the two API-backed passes it points you to
+(`vault_organize --apply` to reformat/refile the `Imported/` dump,
+`vault_entities --reclassify --apply` to move misfiled entities to the right folder).
+
+**Future-proof for new categories.** Folders, their note `type`, whether they hold
+de-duplicated entities, and their graph color all live in the **taxonomy**
+(`app/vault_taxonomy.py`). Add a category without touching code by dropping a
+`vault_config.json` at the repo root:
+
+```json
+{"folders": [
+  {"folder": "Books", "type": "book", "entity": true,  "color": "#ff8a65"},
+  {"folder": "Goals", "type": "goal", "entity": false, "color": "#7e57c2"}
+]}
+```
+
+JARVIS will scaffold the folder, stamp the new `type:`, color it in the graph, and
+(for `entity: true`) de-duplicate names in it — all automatically.
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
@@ -268,7 +464,14 @@ the overlay.
 
 ---
 
-## Using the `/notes/` folder
+## Notes & memory
+
+> **With an Obsidian vault enabled (step 7g), it is the single home for notes and
+> memory** and supersedes everything in this section — JARVIS reads/writes the
+> vault instead of the `/notes/` folder. The folder-based system below is the
+> fallback used only when no vault is configured.
+
+### Using the `/notes/` folder (no-vault fallback)
 
 Notes are split into separate streams, one subfolder each, so they never mix:
 `notes/Daedabyte/`, `notes/Brightpoint/`, `notes/DnD/`, and `notes/General/`
@@ -288,6 +491,31 @@ and it saves a `YYYY-MM-DD_topic.md` file into the right subfolder using what
 you told it, no manual file-dropping required. Tell it the same way to extract
 Todoist tasks from notes you've already dropped in, e.g. "check the Brightpoint
 notes from the 16th and add any action items to Todoist."
+
+---
+
+## Token & cache usage
+
+JARVIS records the `usage` from every Claude API call — input/output tokens plus
+the prompt-cache counters — to `logs/usage.jsonl` (gitignored), and logs a
+one-line summary per turn and per session. To see totals, the **cache hit rate**
+(how much of your input was served cheaply from cache), and an estimated cost:
+
+```bash
+python -m app.usage_report            # all-time totals + per-model / per-kind breakdown
+python -m app.usage_report --by-day   # daily rows, to spot spend spikes
+python -m app.usage_report --since 2026-06-01
+```
+
+This is token-free (it only reads the log). Cost is estimated from Anthropic's
+published per-1M-token rates with the cache multipliers applied (5-min cache
+writes at 1.25×, reads at 0.1×). If prices drift, drop a
+`jarvis_usage_prices.json` at the repo root to override them, e.g.
+`{"claude-sonnet-4-6": {"input": 3.0, "output": 15.0}}` — no code change needed.
+
+A healthy cache hit rate on multi-turn chats confirms the prompt-caching split
+(`app/context_builder.py`) is doing its job; a persistent 0% means something is
+invalidating the cached prefix.
 
 ---
 
@@ -315,6 +543,8 @@ notes from the 16th and add any action items to Todoist."
 | `TODOIST_API_KEY` | Personal API token from Todoist's Developer settings. |
 | `GMAIL_ENABLED` | `true` to enable Gmail read/draft tools (reuses Google `credentials.json`). |
 | `GMAIL_ACCOUNTS` | Comma-separated Gmail account names, e.g. `personal,work,side` (blank = reuse `GOOGLE_ACCOUNTS`). |
+| `OBSIDIAN_ENABLED` | `true` to use an Obsidian vault as the notes + memory store (second brain). Default off. |
+| `OBSIDIAN_VAULT_PATH` | Absolute path to the vault folder (created if missing), e.g. `C:\Users\you\Documents\Brain`. |
 
 ---
 
@@ -327,9 +557,13 @@ This repo is built so your personal data **never** reaches GitHub. The
 - `token.json`, `credentials.json`, `.msal_cache.bin` (auth tokens)
 - `context/*` **except** the `*.example.md` templates (your profile/notes)
 - `notes/*` (your meeting notes)
+- `memory.db` and `vault_index.db` (your recall store and the vault search index)
 - `meal_plans.json` (your dinner plans/shopping lists)
 - `logs/*` (may contain calendar/notes content)
 - recorded `*.wav` audio and downloaded model caches
+
+Your Obsidian vault lives wherever `OBSIDIAN_VAULT_PATH` points (outside this
+repo), so its contents are never part of the project in the first place.
 
 Only code and the `.example` templates are tracked. Verify any time with:
 ```bash
@@ -353,6 +587,13 @@ configured. For `edge`, install `edge-tts` + `miniaudio`; for `system`, install
 **Calendar shows nothing.** Calendars are optional and skip silently when not
 configured. Check `logs/jarvis.log` for auth details.
 
+**Vault tools don't appear / "the knowledge vault isn't configured."** Set
+**both** `OBSIDIAN_ENABLED=true` and `OBSIDIAN_VAULT_PATH` (an absolute path). The
+startup log's readiness table has an "Obsidian vault" row; if the path is blank
+the vault tools stay hidden and JARVIS falls back to the local notes folder +
+recall store. If search comes up empty, the index rebuilds from your files on the
+next launch.
+
 **Global hotkey doesn't work.** The `keyboard` library needs elevated
 privileges on some systems. It's optional — leave `JARVIS_HOTKEY` blank to skip.
 
@@ -370,6 +611,12 @@ jarvis/
 │   ├── logging_setup.py    # Rotating file logger
 │   ├── context_builder.py  # Assembles the system prompt (the brain)
 │   ├── claude_client.py    # Anthropic streaming + session memory
+│   ├── memory.py           # SQLite recall store (no-vault fallback)
+│   ├── vault_index.py      # FTS5 search index over the Obsidian vault
+│   ├── vault_taxonomy.py   # Folder → type → entity → graph-color taxonomy
+│   ├── vault_templates.py  # Per-type note section templates
+│   ├── vault_cli.py        # Token-free vault tools (check/migrate/doctor/refile…)
+│   ├── vault_entities.py   # Consolidate + reclassify entities (uses the API)
 │   ├── recorder.py         # Mic capture (sounddevice)
 │   ├── transcriber.py      # faster-whisper STT
 │   ├── overlay.py          # The floating UI window
@@ -380,7 +627,8 @@ jarvis/
 │   ├── outlook_calendar.py
 │   ├── todoist.py
 │   ├── meal_prep.py
-│   └── notes_watcher.py
+│   ├── obsidian.py         # Obsidian vault engine (second brain)
+│   └── notes_watcher.py    # notes/ folder watcher (no-vault fallback)
 ├── context/                # Your *.md context (gitignored; .example tracked)
 ├── notes/                  # Drop meeting notes here (gitignored)
 ├── logs/                   # jarvis.log (gitignored)

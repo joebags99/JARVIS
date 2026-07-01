@@ -216,6 +216,28 @@ class Config:
         default_factory=lambda: _get("KNOWLEDGE_POOLS_FILE", "knowledge_pools.json")
     )
 
+    # ── Obsidian vault — JARVIS's "second brain" (single home for notes + memory) ──
+    # A local Obsidian vault is just a folder of markdown files (with frontmatter,
+    # [[wikilinks]], #tags). JARVIS reads/writes it directly on disk — no plugin and
+    # no running Obsidian required. When enabled, the vault replaces the legacy
+    # notes/<category>/ folders and memory.db as the durable store. Off by default.
+    obsidian_enabled: bool = field(
+        default_factory=lambda: _get_bool("OBSIDIAN_ENABLED")
+    )
+    # Absolute path to the vault folder, e.g. C:\Users\you\Documents\Brain. Created
+    # on first use if missing, so a brand-new vault path works just as well as an
+    # existing vault.
+    obsidian_vault_path: str = field(
+        default_factory=lambda: _get("OBSIDIAN_VAULT_PATH")
+    )
+    # On startup, keep the vault tidy automatically: stamp `type:` on notes,
+    # refresh the hub Maps of Content + index.md, and write the graph color config.
+    # Idempotent (only rewrites what changed). Set OBSIDIAN_AUTO_ORGANIZE=false to
+    # manage those with the `vault_cli graph`/`moc` commands yourself instead.
+    obsidian_auto_organize: bool = field(
+        default_factory=lambda: _get_bool("OBSIDIAN_AUTO_ORGANIZE", True)
+    )
+
     # ── Proactivity (optional, off by default) ───────────────────────────────
     # Master switch for the background scheduler (scheduled briefing, meeting
     # alerts, important-email pings). Nothing proactive runs unless this is true.
@@ -325,6 +347,22 @@ class Config:
         """Gmail account names, falling back to the calendar's GOOGLE_ACCOUNTS."""
         return self.gmail_accounts or self.google_accounts
 
+    @property
+    def obsidian_vault(self) -> Path | None:
+        """The vault folder as a Path, or None when no path is configured."""
+        return Path(self.obsidian_vault_path).expanduser() if self.obsidian_vault_path else None
+
+    @property
+    def obsidian_available(self) -> bool:
+        """Vault tools are usable when opted in AND a vault path is configured.
+
+        The folder itself is created on first use if missing (like notes/), so a
+        brand-new path works — point JARVIS at an existing vault or a fresh one.
+        Mirrors spotify_available: enabled + minimally configured, existence handled
+        at use time.
+        """
+        return self.obsidian_enabled and bool(self.obsidian_vault_path)
+
     def save_categories(self, categories: list[str]) -> list[str]:
         """Validate, persist, and apply a new category set (settings panel).
 
@@ -376,6 +414,9 @@ class Config:
              else "set SPOTIFY_ENABLED=true + SPOTIFY_CLIENT_ID"),
             ("Monarch Money", self.monarch_enabled,
              "enabled (MCP)" if self.monarch_enabled else "set MONARCH_ENABLED=true"),
+            ("Obsidian vault", self.obsidian_available,
+             f"vault={self.obsidian_vault_path}" if self.obsidian_available
+             else "set OBSIDIAN_ENABLED=true + OBSIDIAN_VAULT_PATH"),
             ("Proactive", self.proactive_enabled,
              "scheduler on" if self.proactive_enabled
              else "set JARVIS_PROACTIVE_ENABLED=true"),

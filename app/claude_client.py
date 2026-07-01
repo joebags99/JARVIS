@@ -25,6 +25,7 @@ from .config import CONFIG
 from .context_builder import ContextBuilder
 from .logging_setup import get_logger
 from .tool_registry import api_tools, execute_tool
+from . import usage
 
 log = get_logger("claude")
 
@@ -148,13 +149,18 @@ def _is_transient_api_error(exc: Exception) -> bool:
 
 # ── Memory: durable-fact extraction ──────────────────────────────────────────
 _FACT_EXTRACTION_PROMPT = (
-    "From this JARVIS conversation, extract any DURABLE facts or stable "
-    "preferences about the user that are worth remembering for future "
-    'conversations — e.g. "Allergic to shellfish", "Prefers concise answers", '
-    '"Daughter is named Mia", "Works at Daedabyte as CTO". Exclude transient, '
-    "one-off details (today's schedule, this week's tasks, the current "
-    "question). Return ONLY a JSON array of short plain-string facts, e.g. "
-    '["...", "..."]. Return [] if there are no durable facts.'
+    "From this JARVIS conversation, extract DURABLE facts and stable preferences "
+    "worth remembering long-term — about the user, or about the people, companies, "
+    "and projects they mention. Examples: \"Allergic to shellfish\", \"Prefers "
+    "concise answers\", \"Leads infrastructure at Daedabyte\", \"Targeting ~$50k a "
+    "year in web revenue\". Exclude transient one-off details (today's schedule, "
+    "this week's tasks, the current question).\n\n"
+    "Return ONLY a JSON array; each item is an object "
+    '{"fact": "<concise fact>", "subject": "<the person, company, or project it '
+    'is about>", "kind": "person" | "company" | "project" | "self"}. Use "person" '
+    'for an individual, "company" for an organization/business, "project" for a '
+    'project or initiative, and "self" (with the user as the subject) for a fact '
+    "about the user. Return [] if nothing is durable."
 )
 
 
@@ -175,8 +181,13 @@ def _history_to_lines(history: list[dict]) -> list[str]:
     return lines
 
 
-def _parse_fact_list(text: str) -> list[str]:
-    """Best-effort parse of a JSON array of fact strings from model output."""
+def _parse_facts(text: str) -> list[dict]:
+    """Parse the extraction reply into ``[{fact, subject, kind}]`` (best-effort).
+
+    Accepts the structured object form and, for resilience, a bare JSON array of
+    strings (treated as subjectless facts). Unknown ``kind`` values and blank
+    facts are dropped.
+    """
     if not text:
         return []
     start, end = text.find("["), text.rfind("]")
@@ -189,7 +200,21 @@ def _parse_fact_list(text: str) -> list[str]:
         return []
     if not isinstance(data, list):
         return []
-    return [item.strip() for item in data if isinstance(item, str) and item.strip()][:20]
+    out: list[dict] = []
+    for item in data:
+        if isinstance(item, str):
+            fact, subject, kind = item.strip(), "", ""
+        elif isinstance(item, dict):
+            fact = str(item.get("fact") or "").strip()
+            subject = str(item.get("subject") or "").strip()
+            kind = str(item.get("kind") or "").strip().lower()
+            if kind not in ("person", "company", "project", "self"):
+                kind = ""
+        else:
+            continue
+        if fact:
+            out.append({"fact": fact, "subject": subject, "kind": kind})
+    return out[:20]
 
 
 # ── Client ────────────────────────────────────────────────────────────────────
@@ -251,6 +276,7 @@ class ClaudeClient:
         # so a fresh session restores the saved defaults.
         from .persona import PERSONA
         PERSONA.reset()
+        usage.get_tracker().reset_session()  # logs the session usage/cost total
         log.info("session history cleared")
 
     def reload_context(self) -> None:
@@ -279,13 +305,14 @@ class ClaudeClient:
                     ),
                 }],
             )
+            usage.record(CONFIG.summary_model, getattr(response, "usage", None), kind="summary")
             return response.content[0].text if response.content else ""
         except Exception as exc:  # noqa: BLE001
             log.error("summarize_session failed: %s", exc)
             return ""
 
-    def extract_facts(self, history: list[dict]) -> list[str]:
-        """Extract durable user facts/preferences from a session. [] on failure."""
+    def extract_facts(self, history: list[dict]) -> list[dict]:
+        """Extract durable facts as ``[{fact, subject, kind}]``. [] on failure."""
         if not self.ready or not history:
             return []
         lines = _history_to_lines(history)
@@ -300,8 +327,9 @@ class ClaudeClient:
                     "content": _FACT_EXTRACTION_PROMPT + "\n\n" + "\n".join(lines),
                 }],
             )
+            usage.record(CONFIG.summary_model, getattr(response, "usage", None), kind="facts")
             text = response.content[0].text if response.content else ""
-            facts = _parse_fact_list(text)
+            facts = _parse_facts(text)
             if facts:
                 log.info("extracted %d durable fact(s) from session", len(facts))
             return facts
@@ -544,6 +572,7 @@ class ClaudeClient:
                             on_delta(text)
                     final_msg = stream.get_final_message()
 
+                usage.record(CONFIG.anthropic_model, getattr(final_msg, "usage", None), kind="turn")
                 log.info(
                     "round %d content block types: %s",
                     round_num, [b.type for b in final_msg.content],
@@ -634,6 +663,7 @@ class ClaudeClient:
                             if on_delta:
                                 on_delta(text)
                         final_msg = stream.get_final_message()
+                    usage.record(CONFIG.anthropic_model, getattr(final_msg, "usage", None), kind="turn")
                     self.history.append({
                         "role": "assistant",
                         "content": [history.block_to_dict(b) for b in final_msg.content],

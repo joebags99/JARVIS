@@ -1,7 +1,8 @@
 """JARVIS — entry point.
 
 Wires together the tray icon, overlay window, Claude client, voice pipeline, and
-notes watcher, then hands control to the webview event loop. ``python main.py``
+the knowledge store (an Obsidian vault when configured, else the legacy notes +
+SQLite memory), then hands control to the webview event loop. ``python main.py``
 starts everything; the app lives in the system tray until you quit it.
 """
 
@@ -26,14 +27,10 @@ def main() -> int:
         log.info("  [%s] %-24s %s", "ON " if ok else "off", name, detail)
     log.info("  Categories: %s", ", ".join(CONFIG.categories))
 
-    # Long-term memory store (SQLite). Import any legacy session summaries once.
-    try:
-        from app.memory import get_memory
-        mem = get_memory()
-        mem.import_legacy_sessions()
-        log.info("  Memory: %d item(s)", mem.count())
-    except Exception as exc:  # noqa: BLE001
-        log.warning("memory init failed: %s", exc)
+    # Durable knowledge store: the Obsidian vault when configured (scaffold +
+    # one-time migration + search index + watcher), else the legacy SQLite memory
+    # and notes watcher. Returns the file watcher to stop on quit.
+    knowledge_watcher = _init_knowledge(log)
 
     if not CONFIG.has_anthropic_key:
         log.warning(
@@ -85,18 +82,12 @@ def main() -> int:
     def schedule(fn) -> None:
         overlay.schedule(fn)
 
-    # Notes watcher (optional) — refreshes nothing directly, just logs activity.
-    from integrations.notes_watcher import NotesWatcher
-
-    notes_watcher = NotesWatcher()
-    notes_watcher.start()
-
     # System tray.
     from app.tray import Tray
 
     def on_quit() -> None:
         log.info("quit requested")
-        notes_watcher.stop()
+        knowledge_watcher.stop()
         scheduler = scheduler_holder.get("scheduler")
         if scheduler is not None:
             scheduler.stop()
@@ -131,6 +122,57 @@ def main() -> int:
         on_quit()
     log.info("JARVIS shut down")
     return 0
+
+
+def _init_knowledge(log):
+    """Set up JARVIS's durable knowledge store and return its file watcher.
+
+    With an Obsidian vault configured, the vault is the brain: seed its scaffold,
+    run the one-time (idempotent, non-destructive) migration of legacy notes +
+    facts, build the FTS5 search index, and return a vault watcher that keeps the
+    index fresh. Otherwise fall back to the legacy SQLite memory + notes watcher
+    so users who haven't enabled a vault keep their existing recall. Each piece is
+    best-effort — a failure here must never stop JARVIS from starting.
+    """
+    if CONFIG.obsidian_available:
+        try:
+            from integrations import obsidian
+            obsidian.ensure_scaffold()
+            migrated = obsidian.migrate_legacy()
+            if migrated:
+                log.info("  Vault: migrated %d legacy item(s)", migrated)
+            if CONFIG.obsidian_auto_organize:
+                # Keep the vault tidy: refile meetings that slipped into an entity
+                # folder back to Sessions/, type-stamp notes, refresh the hub Maps
+                # of Content, and (re)write the graph color config. Idempotent —
+                # only rewrites what changed — so it's cheap on every launch.
+                refiled = obsidian.refile_meetings(dry_run=False)
+                typed = obsidian.backfill_types()
+                maps = obsidian.rebuild_mocs()
+                obsidian.write_graph_config()
+                log.info("  Vault: organized (%d meetings refiled, %d newly typed, "
+                         "%d maps, graph colored)", len(refiled), typed, maps)
+            indexed = obsidian.reindex()
+            log.info("  Vault: %s (%d note(s) indexed)",
+                     CONFIG.obsidian_vault_path, indexed)
+            watcher = obsidian.ObsidianWatcher()
+            watcher.start()
+            return watcher
+        except Exception as exc:  # noqa: BLE001
+            log.warning("vault init failed; falling back to legacy memory: %s", exc)
+
+    # Legacy fallback: SQLite long-term memory + notes-folder watcher.
+    try:
+        from app.memory import get_memory
+        mem = get_memory()
+        mem.import_legacy_sessions()
+        log.info("  Memory: %d item(s)", mem.count())
+    except Exception as exc:  # noqa: BLE001
+        log.warning("memory init failed: %s", exc)
+    from integrations.notes_watcher import NotesWatcher
+    watcher = NotesWatcher()
+    watcher.start()
+    return watcher
 
 
 def _setup_hotkey(overlay, schedule, log) -> None:

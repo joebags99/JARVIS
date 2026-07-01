@@ -18,6 +18,7 @@ tokens/
 
 # Personal context (your jobs, profile, D&D notes, etc.)
 knowledge_pools.json
+JARVIS/
 
 # Meal-prep cycles (your dinner plans/shopping lists)
 meal_plans.json
@@ -36,6 +37,12 @@ memory.db
 memory.db-journal
 memory.db-wal
 memory.db-shm
+
+# Obsidian vault search index (rebuildable cache over your vault's markdown)
+vault_index.db
+vault_index.db-journal
+vault_index.db-wal
+vault_index.db-shm
 
 # Everything in /context except the committed example templates.
 context/*
@@ -89,3 +96,9 @@ Thumbs.db
 *.wav
 temp/
 tmp/
+
+# Usage-pricing overrides (optional, personal)
+jarvis_usage_prices.json
+
+# Vault taxonomy overrides (optional, personal categories)
+vault_config.json

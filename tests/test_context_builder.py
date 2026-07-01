@@ -50,3 +50,19 @@ def test_truncate_keeps_short_prompt(monkeypatch):
     cb = ContextBuilder()
     monkeypatch.setattr(CONFIG, "max_context_chars", 1000)
     assert cb._truncate("short") == "short"
+
+
+def test_vault_section_absent_when_unavailable(monkeypatch):
+    monkeypatch.setattr(CONFIG, "obsidian_enabled", False)
+    cb = _builder({"profile.md": "I am Joe."})
+    assert "Your Knowledge Vault" not in cb.build_system_prompt()[0]["text"]
+
+
+def test_vault_section_present_when_available(monkeypatch, tmp_path):
+    monkeypatch.setattr(CONFIG, "obsidian_enabled", True)
+    monkeypatch.setattr(CONFIG, "obsidian_vault_path", str(tmp_path / "vault"))
+    cb = _builder({"profile.md": "I am Joe."})
+    stable = cb.build_system_prompt()[0]["text"]
+    assert "Your Knowledge Vault" in stable
+    # It's a pointer (mentions the tools/habits), not preloaded note contents.
+    assert "search_vault" in stable

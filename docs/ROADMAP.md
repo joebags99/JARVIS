@@ -63,11 +63,12 @@ memory, and a wake-word voice loop safe and cheap to build afterward.
    are baked into tool enums (`claude_client.py`), directory creation
    (`app/config.py:37-38`), and `integrations/notes_watcher.py`. Blocks reuse by
    anyone else and is brittle to change.
-4. **Shallow memory.** `recall_session_history` returns the *most recent 3* flat
-   markdown summaries (`claude_client.py:965-977`; written by
-   `overlay.py:362-378`) with no relevance ranking, no durable facts/preferences
-   store, and no transcript persistence. Conversation history is in-memory only
-   and lost on close.
+4. ~~**Shallow memory.**~~ **Addressed.** Long-term memory is a relevance-ranked
+   SQLite/FTS5 store (Phase 3), and is now superseded by an optional **Obsidian
+   vault "second brain"** (`integrations/obsidian.py` + `app/vault_index.py`):
+   one linked-markdown home for notes *and* memory that JARVIS reads/writes and
+   the user can browse/edit in Obsidian. The SQLite store remains as the no-vault
+   fallback.
 5. **Purely reactive.** The daily briefing is a manual tray click
    (`app/overlay.py:290-303`). There is no scheduler, no reminders, no
    background monitoring of calendar or email.
@@ -153,7 +154,15 @@ the rest; Phases 3–5 are independent and can be reordered freely on top of it.
 - **DoD:** a fresh user configures categories/integrations without editing
   Python; dial panel and settings panel share one UI pattern.
 
-### Phase 3 — Long-term memory _(marquee feature)_
+### Phase 3 — Long-term memory _(marquee feature — ✅ delivered)_
+
+**Mechanism:** an optional **Obsidian vault** (direct filesystem access) is the
+durable store — a single, human-readable, inter-linked markdown home for both
+notes and memory, kept searchable by a local **FTS5 index** over the vault files
+(`app/vault_index.py`), with the original SQLite store (`app/memory.py`) retained
+as the no-vault fallback. Session summaries become `Sessions/` notes and extracted
+facts append to `Memory/Facts.md`; the model reads/writes via the `search_vault` /
+`read_note` / `write_note` / `append_note` / `list_notes` tools.
 
 **Goal:** durable, relevance-ranked memory instead of "last 3 files."
 
@@ -204,8 +213,11 @@ the rest; Phases 3–5 are independent and can be reordered freely on top of it.
 
 ### Phase 6 — Reach (future / optional)
 
-- Mobile or remote access to the same assistant; additional integrations
-  (Slack, smart home); richer multi-modal I/O (images, screen context).
+- **Mobile / remote access to the same assistant** (e.g. JARVIS on a Google
+  Pixel) — see [§7 Portability & the path to mobile](#7-portability--the-path-to-mobile-pixel--android)
+  for the full analysis, blockers, and the client–server design that gets there.
+- Additional integrations (Slack, smart home); richer multi-modal I/O (images,
+  screen context).
 - Sequenced last because each is large and none blocks the others.
 
 ### Cross-cutting (alongside any phase)
@@ -215,6 +227,13 @@ the rest; Phases 3–5 are independent and can be reordered freely on top of it.
   rate).
 - **Security:** migrate `OUTLOOK_CLIENT_SECRET` (`app/config.py:208-210`) to a
   device-code/PKCE public-client flow, matching Spotify's secret-free pattern.
+- **Portability rule (keeps mobile cheap):** keep all UI/OS-specific code inside
+  `app/overlay.py` + `app/tray.py`; the core (`claude_client`, `context_builder`,
+  `tool_registry`, `memory`, `vault_index`, `integrations/*`) must stay
+  import-clean of the shell, and vault IO must stay behind
+  `obsidian.vault_root()` / `_safe_path()`. Following this one rule today is what
+  makes §7 a port, not a rewrite. (Already true as of the vault work — verified:
+  no core module imports `pywebview`/`pystray`/`ctypes`.)
 
 ---
 
@@ -254,3 +273,80 @@ Phase 1 (Foundation) ──┬─> Phase 2 (Configurable)
 - **Anticipates:** scheduled briefings and timely, quiet-hours-aware alerts.
 - **Conversational, hands-free:** wake-word activation with streaming voice I/O.
 - **Trustworthy & private:** local-first data, secret-free OAuth, traceable logs.
+
+---
+
+## 7. Portability & the path to mobile (Pixel / Android)
+
+_Goal: one day run JARVIS on a Google Pixel. This section records what's portable,
+what isn't, and the design that gets there — so future decisions don't quietly
+paint mobile into a corner._
+
+### 7.1 Verdict
+
+**Nothing about the current setup is a hard blocker for mobile, and the Obsidian
+vault is one of the more mobile-friendly choices in the codebase.** The real
+hurdles are the Windows UI/voice shell — and they are already isolated. The single
+most important fact: every Windows/UI import (`pywebview`, `pystray`,
+`ctypes`/`wintypes`, `pythonnet`) lives in **only two files** —
+`app/overlay.py` and `app/tray.py`. The brain imports none of them.
+
+### 7.2 What's portable vs. not
+
+| Layer | Mobile status | Where |
+| --- | --- | --- |
+| Claude brain, tools, history, persona | ✅ Pure Python — portable | `app/claude_client.py`, `context_builder.py`, `tool_registry.py`, `persona.py`, `history.py` |
+| Long-term memory + vault search | ✅ `sqlite3`/FTS5 is native on Android | `app/memory.py`, `app/vault_index.py` |
+| Obsidian vault store | ✅ Markdown folder; Obsidian has a native Android app | `integrations/obsidian.py` |
+| Cloud integrations | ✅ REST/OAuth over HTTP — portable | `integrations/google_*`, `outlook_*`, `gmail`, `todoist`, `spotify`, `weather`, `monarch_oauth` |
+| Overlay UI | ❌ pywebview + Win32 layered window | `app/overlay.py` |
+| Tray | ❌ no system tray on Android | `app/tray.py` |
+| Local voice (STT) | ⚠️ `faster-whisper`/`sounddevice` are heavy native deps — use the phone mic + cloud/on-device STT | `app/recorder.py`, `app/transcriber.py` |
+| TTS | ⚠️ `edge`/`elevenlabs` are HTTP (portable); `pyttsx3` is desktop-only | `app/tts.py` |
+| Global hotkey, desktop-browser OAuth, tray toasts | ⚠️ Different primitives on Android (Quick Settings/WorkManager/Custom Tabs/notifications) | `keyboard`, `proactive.py` |
+
+### 7.3 The Obsidian vault on Android — specifics
+
+The vault is portable, with two contained adaptations:
+
+- **Filesystem access.** Desktop Python points `Path` at any folder; Android 11+
+  *scoped storage* forbids that. But all vault IO already funnels through one
+  chokepoint (`obsidian.vault_root()` / `_safe_path()`), so the storage backend
+  (Storage Access Framework, a synced folder, or a remote backend) is a swap in
+  one place — not a rewrite. **Keep it that way** (portability rule, §Cross-cutting).
+- **File watching.** `watchdog`/inotify may not fire on Android shared storage —
+  but `ObsidianWatcher` is a *freshness optimization, not correctness*: every
+  write upserts the index and startup runs a full `reindex()`/`sync()`, so search
+  stays correct with the watcher disabled. It already degrades gracefully.
+- **Format is already cross-platform.** Obsidian's own Android app reads/writes
+  the same vault, so the phone and desktop can share one brain via any sync
+  (Obsidian Sync, Syncthing, Git, or — preferably — a JARVIS backend).
+
+### 7.4 Recommended architecture: phone-as-client to a JARVIS core
+
+The cleanest mobile build is **not** "Python on the phone." It's a **client–server
+split**: the brain + vault + API key + OAuth tokens live in one trusted place (a
+home PC or a small always-on box), and the Pixel runs a thin chat/voice client.
+This sidesteps Android Python packaging *and* scoped storage at once, and keeps
+secrets off the device.
+
+Enabling step (do when mobile work actually starts, not before): extract a
+**UI-agnostic core facade** — `JarvisCore` / `AssistantSession` — exposing
+`send_message(...)`, tool dispatch, and session lifecycle, then expose it over a
+small local API (FastAPI + websocket for streaming). `app/overlay.py` becomes just
+*one* client of that facade; the Android app is another.
+
+- **We're ~90% there:** the brain has no UI imports. The only remaining coupling
+  is that `overlay.py` instantiates and drives `ClaudeClient` directly and owns
+  session save/close.
+- **Alternative (heavier):** fully on-device via Kivy/BeeWare — possible, but
+  you'd drop `faster-whisper`/`pywebview`/`pystray` and fight scoped storage.
+  Documented only as a fallback; the client–server path is preferred.
+
+### 7.5 Definition of done (when we pursue it)
+
+- A `JarvisCore` facade with no import of `overlay`/`tray`; the Windows overlay
+  rebuilt as a thin client of it (no behavior change on desktop).
+- A small authenticated local API streaming replies and dispatching tools.
+- A Pixel client (native or web) that chats, captures voice, and reaches the
+  shared vault/brain through the backend — no secrets stored on the phone.

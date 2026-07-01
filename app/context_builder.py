@@ -11,11 +11,11 @@ Dynamic (always included — tiny):
     * current date & time
 On-demand via tools:
     * calendar events (get_calendar_events)
-    * meeting notes  (get_recent_notes)
-    * finances       (get_financial_summary)
-    * todos          (get_todos / create_todo / update_todo / complete_todo)
-    * meal plans     (get_meal_history / create_meal_plan)
-    * knowledge docs (load_knowledge_pool)
+    * knowledge vault (search_vault / read_note / write_note / append_note / list_notes)
+    * finances        (get_financial_summary)
+    * todos           (get_todos / create_todo / update_todo / complete_todo)
+    * meal plans      (get_meal_history / create_meal_plan)
+    * knowledge docs  (load_knowledge_pool)
 """
 
 from __future__ import annotations
@@ -95,6 +95,84 @@ class ContextBuilder:
         now = dt.datetime.now().astimezone()
         return now.strftime("%A, %B %d, %Y — %I:%M %p %Z (UTC%z)")
 
+    def _vault_section(self) -> str:
+        """A tiny, cached pointer to the Obsidian vault — never its contents.
+
+        Tells Claude the vault exists, shows its top-level folders so it knows
+        where to look/write, and sets the working habits (search before
+        answering, record durable knowledge as linked notes). Note *bodies* are
+        always fetched on demand via the vault tools, never preloaded here.
+        """
+        if not CONFIG.obsidian_available:
+            return ""
+        try:
+            from integrations import obsidian
+            root = obsidian.vault_root()
+            folders = sorted(
+                p.name for p in root.iterdir()
+                if p.is_dir() and not p.name.startswith(".")
+            )
+            people = obsidian.canonical_people()
+            companies = obsidian.canonical_entities("Companies")
+            projects = obsidian.canonical_entities("Projects")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not inspect vault for context: %s", exc)
+            folders, people, companies, projects = [], {}, {}, {}
+        folder_line = (
+            f"Top-level folders: {', '.join(folders)}.\n" if folders else ""
+        )
+        roster = (
+            self._entity_line("Known people", people)
+            + self._entity_line("Known companies", companies)
+            + self._entity_line("Known projects", projects)
+        )
+        from . import vault_templates
+        return (
+            "You keep a single Obsidian knowledge vault — the user's 'second brain' "
+            "— that is BOTH your long-term memory and your notes on people, "
+            "companies, projects, meetings, and topics. It replaces any older "
+            "notes/recall tools.\n"
+            f"{folder_line}{roster}"
+            "Where things go (put every new note in the right folder):\n"
+            "- `People/` — ONE individual human per note (never a meeting, company, "
+            "or project).\n"
+            "- `Companies/` — an organization, business, client, or team.\n"
+            "- `Projects/` — a project, product, campaign, or initiative.\n"
+            "- `Sessions/` — meeting/standup/call recaps. A meeting is NEVER a "
+            "person/company/project, so it never goes in those folders.\n"
+            "- `Topics/` reference notes · `Ideas/` fleeting ideas · `Daily/` logs.\n"
+            "Each note type follows a consistent template (use these section "
+            "headings so notes stay uniform):\n"
+            f"{vault_templates.prompt_summary()}\n"
+            "Working habits:\n"
+            "- Before answering anything that might be recorded (past decisions, "
+            "people, projects, 'what did we discuss'), `search_vault` first, then "
+            "`read_note` the most relevant hit.\n"
+            "- When the user tells you something durable (a decision, a fact, "
+            "meeting notes, a preference), capture it with `write_note` (new) or "
+            "`append_note` (adding to a daily/running note) instead of only "
+            "replying. Record what they actually said — don't invent detail.\n"
+            "- Connect notes with `[[wikilinks]]` and `#tags` so the brain stays "
+            "interconnected; read a note before overwriting it. Always link a person, "
+            "company, or project by the canonical name listed above (never an alias), "
+            "so each stays one note.\n"
+            "- Capture a fleeting idea the user wants kept as a short note in the "
+            "`Ideas/` folder, linked to anything related."
+        )
+
+    @staticmethod
+    def _entity_line(label: str, mapping: dict[str, list[str]], limit: int = 40) -> str:
+        """Render an entity roster as '<label> (use the canonical name): A (aka …)'."""
+        if not mapping:
+            return ""
+        names = sorted(mapping)[:limit]
+        parts = []
+        for name in names:
+            aliases = ", ".join(mapping[name])
+            parts.append(f"{name} (aka {aliases})" if aliases else name)
+        more = "" if len(mapping) <= limit else f", +{len(mapping) - limit} more"
+        return f"{label} (use the canonical name): {'; '.join(parts)}{more}.\n"
+
     def _knowledge_pools_section(self) -> str:
         pools_file = ROOT_DIR / CONFIG.knowledge_pools_file
         if not pools_file.exists():
@@ -139,6 +217,10 @@ class ContextBuilder:
             f"## Your Persona & Voice\n{self._persona_section()}",
             f"## Who You Are Assisting\n{self._profile_section()}",
         ]
+
+        vault = self._vault_section()
+        if vault:
+            stable_sections.append(f"## Your Knowledge Vault\n{vault}")
 
         pools = self._knowledge_pools_section()
         if pools:
