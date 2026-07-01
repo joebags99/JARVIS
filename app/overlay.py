@@ -445,14 +445,16 @@ class Overlay:
         self._eval("setInputsEnabled", False)
 
         def worker() -> None:
-            # Deliberately no live streaming: the thinking animation stays up
-            # the whole time JARVIS composes, then finishAssistantMessage reveals
-            # the complete reply with a smooth line-by-line fade-in. Showing a
-            # half-formed answer fill in token by token is exactly what we don't
-            # want here.
-            reply = self.claude.send(text)
-            # Start speaking as the reply reveals (Speaker cleans markdown and
-            # plays on its own thread, so this doesn't block the UI update).
+            # Stream text as Claude generates it; on_reset rolls the live text
+            # back to the thinking state when a round's pre-tool narration gets
+            # discarded (the model spoke, then decided to call a tool instead).
+            reply = self.claude.send(
+                text,
+                on_delta=lambda chunk: self._eval("appendAssistantDelta", chunk),
+                on_reset=lambda: self._eval("resetAssistantStream"),
+            )
+            # Start speaking once the reply is complete (Speaker cleans markdown
+            # and plays on its own thread, so this doesn't block the UI update).
             if self._tts_enabled and self.speaker is not None:
                 self.speaker.speak(reply)
             self._eval("finishAssistantMessage", reply)

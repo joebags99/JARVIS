@@ -4,8 +4,11 @@ _A codebase-grounded analysis and phased plan. Every recommendation references
 the real file (and where useful, the line range) it touches, so this document is
 executable, not aspirational._
 
-> **Status:** planning document. No source code has been changed by this review.
-> Implementation happens in later sessions, phase by phase, after review.
+> **Status:** Phases 1–4 are implemented and merged (tool registry, tests + CI,
+> config-driven categories, SQLite/FTS5 memory superseded by the Obsidian
+> vault, and proactive scheduling). §2.2 below is kept as a historical record
+> of the gaps that motivated those phases — see the strikethroughs. Phases 5–6
+> and the cross-cutting items remain open.
 
 ---
 
@@ -52,36 +55,42 @@ memory, and a wake-word voice loop safe and cheap to build afterward.
 
 ### 2.2 Gaps and risks (prioritized)
 
-1. **No tests, no CI — highest risk.** Any refactor of the tool loop or history
-   logic can break silently until it crashes mid-conversation. Nothing guards
-   `app/claude_client.py`.
-2. **Monolith + 3-place tool edits.** Adding one tool means touching the `TOOLS`
-   list (`claude_client.py:92-733`), the `_execute_tool` if/elif chain
-   (`:913-1119`), and config gating (`:815-896`). This is the single biggest
-   drag on future feature velocity.
-3. **Hardcoded personal categories.** `Daedabyte / General / Brightpoint / DnD`
-   are baked into tool enums (`claude_client.py`), directory creation
-   (`app/config.py:37-38`), and `integrations/notes_watcher.py`. Blocks reuse by
-   anyone else and is brittle to change.
+1. ~~**No tests, no CI.**~~ **Addressed (Phase 1).** `pytest` + `ruff` run in CI
+   (`.github/workflows/ci.yml`); the tool loop, history compaction, persona,
+   and every integration's pure helpers have unit coverage under `tests/`.
+2. ~~**Monolith + 3-place tool edits.**~~ **Addressed (Phase 1).** Tools are
+   declared once in `app/tool_registry.py` and dispatched by name;
+   `claude_client.py` only orchestrates streaming, the bounded loop, and
+   history.
+3. ~~**Hardcoded personal categories.**~~ **Addressed (Phase 2).** Categories
+   are config-driven with an in-app settings panel to edit them, rather than
+   baked into code.
 4. ~~**Shallow memory.**~~ **Addressed.** Long-term memory is a relevance-ranked
    SQLite/FTS5 store (Phase 3), and is now superseded by an optional **Obsidian
    vault "second brain"** (`integrations/obsidian.py` + `app/vault_index.py`):
    one linked-markdown home for notes *and* memory that JARVIS reads/writes and
    the user can browse/edit in Obsidian. The SQLite store remains as the no-vault
    fallback.
-5. **Purely reactive.** The daily briefing is a manual tray click
-   (`app/overlay.py:290-303`). There is no scheduler, no reminders, no
-   background monitoring of calendar or email.
-6. **Push-to-talk only.** No wake word; the overlay also *deliberately* disables
-   live streaming and reveals the full reply at once (`overlay.py:396-407`) even
-   though `claude_client.send` already supports an `on_delta` stream callback.
-7. **Duplicated retry/backoff** across `integrations/todoist.py`, `spotify.py`,
-   and `google_api.py`.
-8. **Dependency hygiene.** All `requirements.txt` pins are `>=` with no upper
-   bounds and no lockfile; `OUTLOOK_CLIENT_SECRET` lives in plaintext `.env`
-   (prefer device-code/PKCE like Spotify already uses).
-9. **Thin observability.** File logging only (`app/logging_setup.py`); no
-   correlation IDs to trace one question across its tool calls, no metrics.
+5. ~~**Purely reactive.**~~ **Addressed (Phase 4).** `app/proactive.py` runs a
+   background scheduler for the daily briefing, meeting alerts, and
+   important-email pings, with quiet hours and dedup.
+6. **Push-to-talk only.** No wake word yet (Phase 5, still open).
+   ~~The overlay disables live streaming~~ **Addressed.** The overlay now
+   streams text live via `claude_client.send`'s `on_delta`/`on_reset`
+   callbacks (`app/overlay.py:_submit`, `assets/ui/app.js`); wake-word
+   activation is the remaining piece of this item.
+7. ~~**Duplicated retry/backoff**~~ **Addressed (Phase 1).** `todoist.py`,
+   `spotify.py`, and `google_api.py` share one helper in `integrations/_http.py`.
+8. **Dependency hygiene — partially addressed.** `requirements.txt` now has
+   upper bounds on the three riskiest pins (`anthropic`, `pywebview`, `numpy`)
+   and `pyproject.toml` configures `ruff`/`pytest`, but there is still no full
+   lockfile and `OUTLOOK_CLIENT_SECRET` still lives in plaintext `.env` (prefer
+   device-code/PKCE like Spotify already uses). Both remain open.
+9. **Thin observability — partially addressed.** Every log line now carries a
+   per-turn correlation id (`app/logging_setup.py:new_turn_id`, set once per
+   `ClaudeClient.send`), so `grep '[a1b2c3d4]' logs/jarvis.log` traces one
+   question across all the tool calls it made. Still no metrics
+   (tool latency, error rate) — that part remains open.
 
 ---
 

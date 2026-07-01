@@ -14,6 +14,7 @@ const header = document.getElementById("header");
 
 let userName = "User";
 let streamEl = null;
+let streamBuffer = "";
 
 const THINKING_HTML = `
     <span class="thinking-dots"><i></i><i></i><i></i></span>
@@ -261,28 +262,58 @@ function startAssistantMessage() {
 
   transcript.appendChild(wrap);
   streamEl = content;
+  streamBuffer = "";
   scrollToBottom();
 }
 
-// Reveal the finished reply. Nothing is shown while JARVIS works (the thinking
-// dots stay up the whole time); when the full text arrives we render it, then
-// stagger each top-level block so the answer fades in line by line.
+// Append one streamed text chunk and re-render from the accumulated buffer
+// (cheap at chat length, and re-parsing the whole buffer means a markdown
+// marker split across two chunks still renders correctly once complete).
+// The first chunk of a round replaces the thinking dots with live text.
+function appendAssistantDelta(chunk) {
+  if (!streamEl) return;
+  streamEl.classList.remove("thinking");
+  streamBuffer += chunk;
+  streamEl.innerHTML = renderMarkdown(streamBuffer);
+  scrollToBottom();
+}
+
+// Claude sometimes narrates before deciding to call a tool ("Let me check
+// that...") — that text isn't the real answer, so the backend discards it and
+// calls this to roll the live stream back to the thinking state before the
+// next round's text starts arriving.
+function resetAssistantStream() {
+  if (!streamEl) return;
+  streamBuffer = "";
+  streamEl.classList.add("thinking");
+  streamEl.innerHTML = THINKING_HTML;
+}
+
+// Finalize the reply. If it streamed in live, the text is already on screen —
+// just swap to the fully-rendered markdown as a safety net (formatting can
+// differ slightly once the trailing chunk lands) and attach the copy button.
+// If nothing streamed (e.g. a very fast/tool-only round), fall back to the
+// original stagger fade-in so the reply doesn't just pop in unstyled.
 function finishAssistantMessage(fullText) {
   if (!streamEl) return;
   const el = streamEl;
   streamEl = null;
+  const didStream = streamBuffer.length > 0;
+  streamBuffer = "";
 
   el.classList.remove("thinking");
   el.innerHTML = renderMarkdown(fullText);
   attachCopyButton(el.parentElement, el);
 
-  const blocks = Array.from(el.children);
-  blocks.forEach((block, i) => {
-    block.style.animationDelay = i * 60 + "ms";
-    block.classList.add("reveal");
-  });
+  if (!didStream) {
+    const blocks = Array.from(el.children);
+    blocks.forEach((block, i) => {
+      block.style.animationDelay = i * 60 + "ms";
+      block.classList.add("reveal");
+    });
+  }
 
-  // Keep the view pinned to the newest content as the lines settle in.
+  // Keep the view pinned to the newest content as it settles in.
   scrollToBottom();
   setTimeout(scrollToBottom, 140);
   setTimeout(scrollToBottom, 400);

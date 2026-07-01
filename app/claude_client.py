@@ -23,7 +23,7 @@ from typing import Callable
 from . import history
 from .config import CONFIG
 from .context_builder import ContextBuilder
-from .logging_setup import get_logger
+from .logging_setup import get_logger, new_turn_id
 from .tool_registry import api_tools, execute_tool
 from . import usage
 
@@ -363,9 +363,11 @@ class ClaudeClient:
         decided to call a tool) so the UI can roll its live stream back to a
         "thinking" state instead of showing text that's about to be replaced.
         """
+        new_turn_id()
         if not self.ready:
             return self._init_error or "Claude client is not available."
 
+        log.info("turn start: %r", user_message[:120])
         # Fire the easter egg (if the phrase was said) before the prompt is
         # built, so the boosted dials land in this turn — then restore them once
         # the one snarky reply is done.
