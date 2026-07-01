@@ -73,6 +73,7 @@ class WakeWordListener:
         self._on_wake = on_wake
         self._sd = None
         self._model = None
+        self._model_name = ""
         self._stream = None
         self._available = False
         self._paused = threading.Event()
@@ -82,11 +83,33 @@ class WakeWordListener:
     def _probe(self) -> None:
         try:
             import sounddevice as sd
+            import openwakeword.utils
             from openwakeword.model import Model
         except Exception as exc:  # noqa: BLE001
-            log.warning("wake-word deps missing (%s); wake word disabled", exc)
+            log.warning(
+                "wake-word deps missing (%s); install openwakeword + onnxruntime "
+                "(see requirements.txt); wake word disabled", exc,
+            )
             return
         self._sd = sd
+
+        # openWakeWord's pretrained models (e.g. "hey_jarvis") ship as metadata
+        # only — the actual weights aren't bundled in the pip package and
+        # Model() does NOT fetch them itself, unlike faster-whisper's
+        # auto-download. This downloads them on first use (idempotent — skips
+        # files that already exist, so it's a fast no-op on every later
+        # launch) so wake word "just works" the same way voice input does. A
+        # custom absolute path in JARVIS_WAKE_WORD_PHRASE isn't one of the
+        # bundled names, so this is a harmless no-op for that case.
+        try:
+            openwakeword.utils.download_models([CONFIG.wake_word_phrase])
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "could not download wake-word model %r (needs internet the "
+                "first time): %s", CONFIG.wake_word_phrase, exc,
+            )
+            return
+
         try:
             # onnx (not tflite): matches the project's numpy 2.x-compatible
             # pin (requirements.txt caps at <3, not <2) without pulling in a
@@ -94,6 +117,12 @@ class WakeWordListener:
             self._model = Model(
                 wakeword_models=[CONFIG.wake_word_phrase], inference_framework="onnx",
             )
+            # The dict key predict() returns is the model's registered name —
+            # "hey_jarvis" for a bundled phrase, but a custom path's file stem
+            # (e.g. "my_model_v1") for a custom model, never the path string
+            # itself. Read it back rather than assuming it matches the config
+            # value, or a custom-path model would never trigger.
+            self._model_name = next(iter(self._model.models.keys()))
             self._available = True
         except Exception as exc:  # noqa: BLE001
             log.error(
@@ -119,7 +148,7 @@ class WakeWordListener:
             except Exception as exc:  # noqa: BLE001
                 log.debug("wake-word scoring failed: %s", exc)
                 return
-            score = scores.get(CONFIG.wake_word_phrase, 0.0)
+            score = scores.get(self._model_name, 0.0)
             if not wake_score_triggers(score, CONFIG.wake_word_threshold):
                 return
             now = time.monotonic()

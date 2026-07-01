@@ -295,9 +295,10 @@ def _start_wake_word(overlay, recorder, wakeword_holder, schedule, log) -> None:
     listener = WakeWordListener(on_wake=lambda: schedule(on_wake))
     if not listener.available:
         log.warning(
-            "wake word enabled but openwakeword isn't installed/couldn't load "
-            "model %r; skipping (voice still works via push-to-talk)",
-            CONFIG.wake_word_phrase,
+            "wake word enabled but the listener didn't come up — see the "
+            "'wake-word' log line just above for the specific reason "
+            "(missing deps, a failed model download, or a load error); "
+            "skipping (voice still works via push-to-talk)",
         )
         return
     overlay.wake_word_listener = listener
