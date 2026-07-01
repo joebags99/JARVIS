@@ -164,6 +164,21 @@ class Config:
     audio_input_device: str = field(
         default_factory=lambda: _get("AUDIO_INPUT_DEVICE", "")
     )
+    # Wake word ("Hey JARVIS") — off by default, same opt-in convention as
+    # every other voice/proactive flag. Needs the openwakeword package.
+    wake_word_enabled: bool = field(
+        default_factory=lambda: _get_bool("JARVIS_WAKE_WORD_ENABLED")
+    )
+    # One of openwakeword's bundled pretrained models (e.g. "hey_jarvis",
+    # "alexa", "hey_mycroft") or a path to a custom .onnx model.
+    wake_word_phrase: str = field(
+        default_factory=lambda: _get("JARVIS_WAKE_WORD_PHRASE", "hey_jarvis")
+    )
+    # Confidence (0-1) the model must reach to count as a detection. Lower =
+    # more sensitive (more false triggers); higher = more misses.
+    wake_word_threshold: float = field(
+        default_factory=lambda: _get_float("JARVIS_WAKE_WORD_THRESHOLD", 0.5)
+    )
     # Glossary of canonical fantasy/proper names + known misspellings, used to
     # correct transcription/typed input and bias Whisper. See the .example file.
     name_corrections_file: str = field(
@@ -451,6 +466,9 @@ class Config:
             ("Proactive", self.proactive_enabled,
              "scheduler on" if self.proactive_enabled
              else "set JARVIS_PROACTIVE_ENABLED=true"),
+            ("Wake word", self.wake_word_enabled,
+             f"phrase={self.wake_word_phrase}" if self.wake_word_enabled
+             else "set JARVIS_WAKE_WORD_ENABLED=true (needs openwakeword)"),
         ]
 
 

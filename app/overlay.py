@@ -211,6 +211,11 @@ class Overlay:
         self._pending_screenshot_b64: str | None = None
         self._selector_window = None
 
+        # Set by main.py after construction (mutual reference: the listener's
+        # on_wake needs this Overlay, and this Overlay needs the listener to
+        # pause/resume around every recording). None when wake word is off.
+        self.wake_word_listener = None
+
         self._js_api = _JSApi(self)
         self.window = webview.create_window(
             "JARVIS",
@@ -610,11 +615,19 @@ class Overlay:
         # Stop any in-progress speech so it doesn't bleed into the mic.
         if self.speaker is not None:
             self.speaker.stop()
+        # The wake-word listener's own mic stream must never be open at the
+        # same time as this one (regardless of what triggered this recording
+        # — button, hotkey, or the wake word itself), so pause it here, the
+        # one place every recording path goes through.
+        if self.wake_word_listener is not None:
+            self.wake_word_listener.pause()
         if self.recorder.start():
             self._recording = True
             self.set_status(STATUS_LISTENING)
             self._set_state("listening")
             self._eval("setRecording", True)
+        elif self.wake_word_listener is not None:
+            self.wake_word_listener.resume()  # start failed — don't leave it paused
 
     def _stop_recording(self) -> None:
         if not self._recording:
@@ -622,6 +635,8 @@ class Overlay:
         self._recording = False
         self._eval("setRecording", False)
         wav_path = self.recorder.stop()
+        if self.wake_word_listener is not None:
+            self.wake_word_listener.resume()
         self.set_status(STATUS_TRANSCRIBING)
         self._set_state("thinking")
 

@@ -20,6 +20,12 @@ scipy>=1.11.0
 numpy>=1.24.0,<3
 faster-whisper>=1.0.0
 
+# ── Wake word (optional — "Hey JARVIS" hands-free activation) ─
+# onnx (not tflite): matches the numpy>=1.24,<3 pin above without pulling in
+# a second, less broadly-compatible inference runtime.
+openwakeword>=0.6.0
+onnxruntime>=1.17.0
+
 # ── Text-to-speech (optional — only what your chosen TTS_ENGINE needs) ──
 # edge  → edge-tts + miniaudio (free neural, online).  system → pyttsx3 (offline).
 # elevenlabs needs no extra package (uses requests, already above).

@@ -113,6 +113,30 @@ class Recorder:
     def available(self) -> bool:
         return self._available
 
+    @property
+    def is_recording(self) -> bool:
+        return self._stream is not None
+
+    def current_level(self, window_frames: int = 5) -> float:
+        """RMS of the most recently captured audio chunks (best-effort).
+
+        Lets a caller poll "is it quiet right now" while a recording is in
+        progress — e.g. a wake-word-triggered recording's silence-timeout
+        auto-stop (see app.wakeword.watch_for_silence), which has no button
+        release to know when the user's done talking. 0.0 when nothing's
+        been captured yet or recording isn't active. Same RMS math as
+        ``stop()`` already computes over the full recording, just scoped to
+        a recent window instead.
+        """
+        if not self.is_recording or not self._frames:
+            return 0.0
+        try:
+            recent = self._np.concatenate(self._frames[-window_frames:], axis=0)
+            return float(self._np.sqrt(self._np.mean(recent.astype("float32") ** 2)))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("current_level failed: %s", exc)
+            return 0.0
+
     def start(self) -> bool:
         """Begin capturing audio. Returns False if recording can't start."""
         if not self._available:

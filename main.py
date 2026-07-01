@@ -64,6 +64,7 @@ def main() -> int:
 
     tray_holder: dict = {}
     scheduler_holder: dict = {}
+    wakeword_holder: dict = {}
 
     def on_state_change(state: str) -> None:
         tray = tray_holder.get("tray")
@@ -91,6 +92,9 @@ def main() -> int:
         scheduler = scheduler_holder.get("scheduler")
         if scheduler is not None:
             scheduler.stop()
+        listener = wakeword_holder.get("listener")
+        if listener is not None:
+            listener.stop()
         tray = tray_holder.get("tray")
         if tray is not None:
             tray.stop()
@@ -114,6 +118,11 @@ def main() -> int:
 
     # Optional global hotkey to toggle the overlay from anywhere.
     _setup_hotkey(overlay, schedule, log)
+
+    # Wake word (optional) — "Hey JARVIS" starts a recording hands-free, on
+    # top of the existing push-to-talk pipeline. No-ops unless
+    # JARVIS_WAKE_WORD_ENABLED is set.
+    _start_wake_word(overlay, recorder, wakeword_holder, schedule, log)
 
     log.info("JARVIS ready — click the tray icon to open the overlay.")
     try:
@@ -258,6 +267,42 @@ def _start_proactive(overlay, speaker, tray_holder, scheduler_holder, schedule, 
     )
     scheduler.start()
     scheduler_holder["scheduler"] = scheduler
+
+
+def _start_wake_word(overlay, recorder, wakeword_holder, schedule, log) -> None:
+    """Wire "Hey JARVIS" to start a hands-free recording on top of push-to-talk.
+
+    The listener pauses itself automatically whenever ANY recording starts
+    (push-to-talk button/hotkey included — see Overlay._start_recording/
+    _stop_recording) so its own mic stream and Recorder's are never open at
+    the same time. A wake fires overlay._start_recording(); since there's no
+    button to release, a silence-timeout watchdog calls _stop_recording() once
+    the user's stopped talking (or a hard duration cap is hit either way).
+    """
+    if not CONFIG.wake_word_enabled:
+        return
+    if not recorder.available:
+        log.warning("wake word enabled but the microphone isn't available; skipping")
+        return
+    from app.wakeword import WakeWordListener, watch_for_silence
+
+    def on_wake() -> None:
+        overlay.show()
+        overlay._start_recording()
+        if overlay._recording:
+            watch_for_silence(recorder, on_timeout=overlay._stop_recording)
+
+    listener = WakeWordListener(on_wake=lambda: schedule(on_wake))
+    if not listener.available:
+        log.warning(
+            "wake word enabled but openwakeword isn't installed/couldn't load "
+            "model %r; skipping (voice still works via push-to-talk)",
+            CONFIG.wake_word_phrase,
+        )
+        return
+    overlay.wake_word_listener = listener
+    listener.start()
+    wakeword_holder["listener"] = listener
 
 
 if __name__ == "__main__":
