@@ -160,6 +160,14 @@ class Config:
 
     # Voice
     whisper_model: str = field(default_factory=lambda: _get("WHISPER_MODEL", "small"))
+    # Drop a transcribed segment when Whisper itself is this unsure it
+    # contains real speech (0-1 "no speech" probability) — a defense against
+    # hallucinated text on silence/near-silence audio, which gets worse when
+    # `hotwords` nudges the model toward specific vocabulary (name_corrections
+    # glossary) that was never actually said. Lower = more aggressive filtering.
+    whisper_no_speech_cutoff: float = field(
+        default_factory=lambda: _get_float("WHISPER_NO_SPEECH_CUTOFF", 0.6)
+    )
     # Device index (int) or partial name string. Empty = system default.
     audio_input_device: str = field(
         default_factory=lambda: _get("AUDIO_INPUT_DEVICE", "")

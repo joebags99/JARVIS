@@ -46,8 +46,10 @@ class _FakeRecorder:
         # repeats once exhausted, so a short script still stops the loop).
         self._levels = levels
         self.is_recording = True
+        self.calls = 0
 
     def current_level(self) -> float:
+        self.calls += 1
         return self._levels.pop(0) if len(self._levels) > 1 else self._levels[0]
 
 
@@ -73,6 +75,41 @@ def test_watch_for_silence_hits_max_duration_even_if_never_quiet():
     )
     thread.join(timeout=2)
     assert fired == [1]
+
+
+def test_watch_for_silence_ignores_leading_silence_before_speech_starts():
+    # 4 quiet polls up front (would already exceed required_quiet_polls=3
+    # under the old buggy behavior, stopping before any speech happened),
+    # THEN speech, THEN real trailing silence.
+    levels = [2, 2, 2, 2, 50, 50, 2, 2, 2]
+    recorder = _FakeRecorder(levels)
+    fired = []
+    thread = watch_for_silence(
+        recorder, on_timeout=lambda: fired.append(1),
+        poll_interval_s=0.005, silence_rms=15.0, required_quiet_polls=3,
+        max_duration_s=5.0,
+    )
+    thread.join(timeout=2)
+    assert fired == [1]
+    # Proves the leading silence didn't fire early at poll 3: it must have
+    # consumed the loud polls plus the post-speech quiet countdown too.
+    assert recorder.calls >= 9
+
+
+def test_watch_for_silence_before_speech_only_max_duration_applies():
+    # Never crosses the loud threshold at all (e.g. a false wake trigger with
+    # only ambient noise) — a low required_quiet_polls must NOT stop it early;
+    # only the hard duration cap may.
+    recorder = _FakeRecorder([2])
+    fired = []
+    thread = watch_for_silence(
+        recorder, on_timeout=lambda: fired.append(1),
+        poll_interval_s=0.01, silence_rms=15.0, required_quiet_polls=2,
+        max_duration_s=0.05,
+    )
+    thread.join(timeout=2)
+    assert fired == [1]
+    assert recorder.calls >= 5  # ~0.05s / 0.01s, not the 2 quiet_polls would allow
 
 
 def test_watch_for_silence_exits_quietly_if_recording_already_stopped():

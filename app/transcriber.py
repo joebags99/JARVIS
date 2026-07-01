@@ -15,6 +15,20 @@ from .logging_setup import get_logger
 log = get_logger("transcriber")
 
 
+def _filter_hallucinated_segments(segments: list, cutoff: float) -> list:
+    """Drop segments Whisper itself flags as likely not real speech.
+
+    faster-whisper's ``Segment`` carries ``no_speech_prob`` (0-1) per segment;
+    a high value means the model thinks that stretch of audio was silence or
+    noise, yet still emitted *some* text for it — a well-known Whisper
+    failure mode on silence/near-silence audio, and one that gets worse when
+    ``hotwords`` nudges the model toward specific vocabulary (this project's
+    name_corrections glossary) that was never actually said. ``getattr`` with
+    a safe default in case a future faster-whisper version renames the field.
+    """
+    return [s for s in segments if getattr(s, "no_speech_prob", 0.0) < cutoff]
+
+
 class Transcriber:
     def __init__(self) -> None:
         self._model = None
@@ -76,7 +90,15 @@ class Transcriber:
                 vad_filter=False,
                 hotwords=hotwords or None,
             )
-            text = " ".join(seg.text.strip() for seg in segments).strip()
+            all_segments = list(segments)
+            kept = _filter_hallucinated_segments(all_segments, CONFIG.whisper_no_speech_cutoff)
+            if len(kept) < len(all_segments):
+                log.info(
+                    "dropped %d/%d segment(s) with high no-speech probability "
+                    "(likely silence/noise, not real speech)",
+                    len(all_segments) - len(kept), len(all_segments),
+                )
+            text = " ".join(seg.text.strip() for seg in kept).strip()
             log.info(
                 "transcription: %d chars (lang=%s prob=%.2f)",
                 len(text), info.language, info.language_probability,

@@ -42,8 +42,8 @@ _RETRIGGER_COOLDOWN_S = 3.0
 # these are starting points the user should tune after trying it for real.
 DEFAULT_POLL_INTERVAL_S = 0.3
 DEFAULT_SILENCE_RMS = 15.0
-DEFAULT_REQUIRED_QUIET_POLLS = 5          # ~1.5s of quiet at the default interval
-DEFAULT_MAX_DURATION_S = 12.0
+DEFAULT_REQUIRED_QUIET_POLLS = 7           # ~2.1s of quiet AFTER speech has started
+DEFAULT_MAX_DURATION_S = 15.0
 
 
 # ── Pure decision helpers ─────────────────────────────────────────────────────
@@ -213,26 +213,46 @@ def watch_for_silence(
     doesn't need a button release. Exits quietly without calling
     ``on_timeout`` if the recording already ended some other way (e.g. the
     mic button). Returns the (already-started) watchdog thread.
+
+    The quiet-polls countdown only starts counting *after* real speech has
+    been detected at least once — otherwise the natural pause right after
+    saying the wake phrase (before the user starts their actual request)
+    reads as "already finished talking," stopping the recording before
+    they've said anything and feeding a truncated clip to transcription.
+    Before speech is detected, only the hard ``max_duration_s`` cap applies
+    (a safety net for a false wake trigger that never gets a real command).
     """
     start = time.monotonic()
     quiet_polls = 0
+    has_spoken = False
 
     def _loop() -> None:
-        nonlocal quiet_polls
+        nonlocal quiet_polls, has_spoken
         while True:
             time.sleep(poll_interval_s)
             if not recorder.is_recording:
                 return  # ended some other way — nothing to do
             elapsed = time.monotonic() - start
             level = recorder.current_level()
+            if level >= silence_rms:
+                has_spoken = True
+            if not has_spoken:
+                if elapsed >= max_duration_s:
+                    _fire(on_timeout)
+                    return
+                continue
             quiet_polls = quiet_polls + 1 if level < silence_rms else 0
             if silence_auto_stop_due(quiet_polls, required_quiet_polls, elapsed, max_duration_s):
-                try:
-                    on_timeout()
-                except Exception as exc:  # noqa: BLE001
-                    log.error("auto-stop callback failed: %s", exc)
+                _fire(on_timeout)
                 return
 
     thread = threading.Thread(target=_loop, daemon=True)
     thread.start()
     return thread
+
+
+def _fire(on_timeout: Callable[[], None]) -> None:
+    try:
+        on_timeout()
+    except Exception as exc:  # noqa: BLE001
+        log.error("auto-stop callback failed: %s", exc)
