@@ -74,11 +74,13 @@ memory, and a wake-word voice loop safe and cheap to build afterward.
 5. ~~**Purely reactive.**~~ **Addressed (Phase 4).** `app/proactive.py` runs a
    background scheduler for the daily briefing, meeting alerts, and
    important-email pings, with quiet hours and dedup.
-6. **Push-to-talk only.** No wake word yet (Phase 5, still open).
-   ~~The overlay disables live streaming~~ **Addressed.** The overlay now
-   streams text live via `claude_client.send`'s `on_delta`/`on_reset`
-   callbacks (`app/overlay.py:_submit`, `assets/ui/app.js`); wake-word
-   activation is the remaining piece of this item.
+6. ~~**Push-to-talk only.**~~ **Addressed (Phase 5).** The overlay streams
+   text live via `claude_client.send`'s `on_delta`/`on_reset` callbacks
+   (`app/overlay.py:_submit`, `assets/ui/app.js`), speech now streams
+   sentence-by-sentence too (`app/tts.py`'s `start_utterance`/`feed`/
+   `finish`), and "Hey JARVIS" hands-free activation is live via
+   `app/wakeword.py` (openWakeWord, off by default —
+   `JARVIS_WAKE_WORD_ENABLED`).
 7. ~~**Duplicated retry/backoff**~~ **Addressed (Phase 1).** `todoist.py`,
    `spotify.py`, and `google_api.py` share one helper in `integrations/_http.py`.
 8. **Dependency hygiene — partially addressed.** `requirements.txt` now has
@@ -188,45 +190,67 @@ facts append to `Memory/Facts.md`; the model reads/writes via the `search_vault`
 - **DoD:** "what did we decide about X weeks ago" retrieves the right session by
   relevance; stable user facts persist across sessions and inform replies.
 
-### Phase 4 — Proactivity & automation _(marquee feature)_
+### Phase 4 — Proactivity & automation _(marquee feature — ✅ delivered)_
 
 **Goal:** JARVIS acts without being asked.
 
-- Add a background scheduler (a daemon thread, or `APScheduler`) wired in
-  `main.py` alongside the notes watcher. Jobs:
-  - **Scheduled morning briefing** at a configured time — reuse
-    `overlay.daily_briefing` (`app/overlay.py:290-303`).
-  - **Meeting alerts** — poll calendar for "leave now" / "starts in 15 min."
-  - **Important-email pings** — poll Gmail for high-signal unread mail.
-- Surface via **Windows toast notifications** + tray state
-  (`app/tray.py`, `app/icon.py`) and optional TTS; honor **quiet hours** and
-  rate-limit so it never nags.
-- **DoD:** briefing fires on schedule; a meeting alert and an important-email
-  ping appear as toasts; quiet hours suppress them.
+- ✅ A background scheduler (`app/proactive.py`'s `ProactiveScheduler`,
+  wired in `main.py`). Jobs:
+  - ✅ **Scheduled morning briefing** at a configured time.
+  - ✅ **Meeting alerts** — poll calendar for "starts in N min."
+  - ✅ **Important-email pings** — poll Gmail for high-signal unread mail.
+  - ✅ **Vault callbacks** (bonus, beyond the original scope) — nudge once
+    when a `Sessions/` note's Action Items/Open Questions go stale, purely
+    local/no API calls, dedup stamped in the note's own frontmatter.
+- ✅ Surface via tray balloon (`app/tray.py`) + optional TTS; honors **quiet
+  hours** and dedups so it never nags.
+- **DoD:** briefing fires on schedule; a meeting alert, an important-email
+  ping, and a stale-vault-item nudge all appear as notifications; quiet
+  hours suppress the interrupting ones.
 
-### Phase 5 — Wake-word voice _(marquee feature)_
+### Phase 5 — Wake-word voice _(marquee feature — ✅ delivered)_
 
 **Goal:** a true hands-free voice loop.
 
-- Always-listening **wake word** ("Hey JARVIS") via a local engine
-  (openWakeWord or Porcupine) plus continuous VAD, feeding the existing
-  `app/recorder.py` → `app/transcriber.py` pipeline.
-- Flip the overlay to **live token streaming** — the path already exists
-  (`claude_client.send(..., on_delta=...)`); `overlay._submit`
-  (`app/overlay.py:396-407`) currently discards it by design, so make streaming
-  a mode toggle.
-- Full **barge-in** (already partly handled by `speaker.stop()` in
-  `overlay._submit` / `_start_recording`).
+- ✅ **Live token streaming** — `claude_client.send(..., on_delta=...)` now
+  drives the overlay live (`app/overlay.py:_submit`,
+  `assets/ui/app.js`'s `appendAssistantDelta`/`resetAssistantStream`) instead
+  of being discarded.
+- ✅ **Sentence-streamed speech** — `app/tts.py`'s `Speaker.start_utterance`/
+  `feed`/`finish` speak each sentence as soon as it's complete instead of
+  waiting for the full reply, via `split_ready_sentences()` (a conservative
+  boundary detector — abbreviations/decimals don't misfire).
+- ✅ **Always-listening wake word** ("Hey JARVIS") via `app/wakeword.py`
+  using openWakeWord (local, no account/API key — matches the existing
+  `faster-whisper` choice), feeding the existing `app/recorder.py` →
+  `app/transcriber.py` pipeline through `overlay._start_recording`. A
+  silence-timeout watchdog (`watch_for_silence`) auto-stops the recording
+  since there's no button release to signal "done talking." Off by default
+  (`JARVIS_WAKE_WORD_ENABLED`).
+- ✅ **Barge-in** — `speaker.stop()` in `overlay._submit`/`_start_recording`
+  now also drains the sentence-streaming queue, and `_start_recording`/
+  `_stop_recording` pause/resume the wake-word listener automatically so its
+  mic stream and push-to-talk's are never open at once.
 - **DoD:** speaking the wake word starts a conversation hands-free; replies
-  stream as audio + text; speaking over JARVIS interrupts cleanly.
+  stream as audio + text; speaking over JARVIS interrupts cleanly. ⚠️ Built
+  and unit-tested on the pure logic, but sounddevice needs a native
+  PortAudio lib not present in the build/CI sandbox, so the actual
+  hands-free feel and wake-word accuracy need to be confirmed on real
+  hardware — treat the threshold/timeout defaults as starting points to tune.
 
 ### Phase 6 — Reach (future / optional)
 
 - **Mobile / remote access to the same assistant** (e.g. JARVIS on a Google
   Pixel) — see [§7 Portability & the path to mobile](#7-portability--the-path-to-mobile-pixel--android)
   for the full analysis, blockers, and the client–server design that gets there.
-- Additional integrations (Slack, smart home); richer multi-modal I/O (images,
-  screen context).
+- Additional integrations (Slack, smart home).
+- ~~richer multi-modal I/O (images, screen context)~~ **Addressed.** A
+  drag-to-select screenshot capture (`app/screenshot.py`, the selector window
+  in `assets/ui/selector.html`) attaches to the next message as a vision
+  content block — `claude_client.send(image_b64=...)`. Verified the image+text
+  content-block shape flows correctly through `history.py`'s existing
+  cache-breakpoint/compaction logic (already handles list content for
+  assistant/tool_result messages) with zero changes needed there.
 - Sequenced last because each is large and none blocks the others.
 
 ### Cross-cutting (alongside any phase)

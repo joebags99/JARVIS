@@ -19,9 +19,18 @@ calendars, and meeting notes.
   (`#0f0f0f` + cyan `#00bcd4`). Closes on `Esc` or click-away.
 - **Type or talk** — push-to-talk voice via local `faster-whisper` (no audio
   ever leaves your machine; transcription is free and offline).
+- **Wake word (optional)** — say "Hey JARVIS" for hands-free activation, on top
+  of (not instead of) push-to-talk. Fully local via
+  [openWakeWord](https://github.com/dscripka/openWakeWord), no account needed;
+  off by default (`JARVIS_WAKE_WORD_ENABLED`).
 - **Talk back (optional)** — JARVIS can read replies aloud, off by default and
-  toggled live with the speaker button or the tray. Pick your engine: free
-  neural `edge-tts`, fully-offline `pyttsx3`, or premium ElevenLabs.
+  toggled live with the speaker button or the tray. Speech starts sentence by
+  sentence as the reply streams in, not after the whole answer arrives. Pick
+  your engine: free neural `edge-tts`, fully-offline `pyttsx3`, or premium
+  ElevenLabs.
+- **Vision (optional)** — drag-to-select any part of your screen (camera
+  button, or a global hotkey) and ask about it; the capture rides along with
+  your next message as an image Claude can see.
 - **Name corrections** — a glossary of your fantasy/proper names fixes Whisper's
   (and your typos') misspellings, and biases transcription toward the right
   spelling. "Cailynn" → "Kailin" everywhere it matters.
@@ -52,7 +61,10 @@ calendars, and meeting notes.
   `#tags`), and records session recaps + durable facts there for you to browse
   and edit in Obsidian. Notes are organized automatically — people, companies, and
   projects each get their own canonical note, meetings always land in `Sessions/`,
-  and every note follows a per-type template. Without a vault, it falls back to a
+  and every note follows a per-type template. A `Maps/Dashboard.md` (note counts,
+  most-linked notes, recent activity) and a `Vault Overview.canvas` (people/
+  companies/projects laid out and linked) refresh automatically — see
+  `python -m app.vault_cli stats` / `canvas`. Without a vault, it falls back to a
   local notes folder + recall store.
 - **Cross-session memory** — when you close a longer chat, JARVIS saves a short
   recap and any durable facts, then recalls them later ("pick up where we left
@@ -61,8 +73,13 @@ calendars, and meeting notes.
   **about** (e.g. an allergy lands on that person's note) — facts about you go to
   `Memory/Facts.md`. Name variants resolve to the canonical note, so a nickname
   never creates a duplicate. Without a vault, it falls back to a local SQLite store.
-- **Smooth replies** — an animated "thinking" indicator while JARVIS composes,
-  then the answer fades in line by line (no half-formed text filling in).
+- **Proactive vault callbacks (optional)** — if a `Sessions/` note's Action
+  Items/Open Questions sit untouched for a few days, JARVIS nudges you once
+  (never repeats itself for that note). Purely local, no API calls
+  (`JARVIS_VAULT_CALLBACKS_ENABLED`).
+- **Smooth, streamed replies** — text appears as JARVIS composes it, not after
+  the full answer arrives; a thinking indicator covers any gap before the
+  first token.
 - **Token & cache diagnostics** — every API call's token usage (including
   prompt-cache hits) is logged with an estimated cost, so you can see what you're
   spending and how well caching is working (`python -m app.usage_report`).
@@ -529,10 +546,14 @@ invalidating the cached prefix.
 | `JARVIS_USER_NAME` | Your name, used in the prompt + UI. |
 | `JARVIS_WINDOW_POSITION` | `top-right` / `top-left` / `bottom-right` / `bottom-left`. |
 | `JARVIS_HOTKEY` | Global toggle hotkey, e.g. `ctrl+space` (blank = off). |
+| `JARVIS_SCREENSHOT_HOTKEY` | Global hotkey for the drag-to-select screenshot capture (blank = camera button only). |
 | `JARVIS_LOCATION` | Default city for weather / daily briefing (blank = JARVIS asks). |
 | `JARVIS_MAX_CONTEXT_CHARS` | Hard cap on assembled context (default 32000). |
 | `JARVIS_TIMEZONE` | IANA zone override for calendar events (blank = auto-detect). |
 | `WHISPER_MODEL` | `tiny` / `base` / `small` / `medium`. |
+| `JARVIS_WAKE_WORD_ENABLED` | `true` for hands-free "Hey JARVIS" activation on top of push-to-talk. Default off. |
+| `JARVIS_WAKE_WORD_PHRASE` | A bundled openWakeWord phrase, default `hey_jarvis`. |
+| `JARVIS_WAKE_WORD_THRESHOLD` | Detection confidence 0-1 (default `0.5`) — tune after trying it live. |
 | `TTS_ENABLED` | `true` to start with spoken replies on (toggle live anytime). Default off. |
 | `TTS_ENGINE` | `edge` (free neural) / `system` (offline pyttsx3) / `elevenlabs` (premium). |
 | `TTS_VOICE` | Engine-specific voice (blank = engine default). |
@@ -545,6 +566,8 @@ invalidating the cached prefix.
 | `GMAIL_ACCOUNTS` | Comma-separated Gmail account names, e.g. `personal,work,side` (blank = reuse `GOOGLE_ACCOUNTS`). |
 | `OBSIDIAN_ENABLED` | `true` to use an Obsidian vault as the notes + memory store (second brain). Default off. |
 | `OBSIDIAN_VAULT_PATH` | Absolute path to the vault folder (created if missing), e.g. `C:\Users\you\Documents\Brain`. |
+| `JARVIS_VAULT_CALLBACKS_ENABLED` | `true` to nudge once when a Sessions/ note's open items go stale. Default off. |
+| `JARVIS_VAULT_CALLBACK_DAYS` | How many days untouched before a nudge (default `4`). |
 
 ---
 
@@ -619,6 +642,10 @@ jarvis/
 │   ├── vault_entities.py   # Consolidate + reclassify entities (uses the API)
 │   ├── recorder.py         # Mic capture (sounddevice)
 │   ├── transcriber.py      # faster-whisper STT
+│   ├── wakeword.py         # "Hey JARVIS" hands-free activation (openWakeWord)
+│   ├── tts.py              # Text-to-speech (edge/pyttsx3/elevenlabs), sentence-streamed
+│   ├── screenshot.py       # Screen capture + encoding for vision-aware questions
+│   ├── proactive.py        # Background scheduler (briefing/meetings/email/vault callbacks)
 │   ├── overlay.py          # The floating UI window
 │   ├── tray.py             # System tray icon + menu
 │   └── icon.py             # Runtime tray-icon drawing
