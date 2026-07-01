@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app import vault_index
@@ -183,6 +185,52 @@ def test_write_graph_config(vault):
     assert all("rgb" in g["color"] for g in data["colorGroups"])
 
 
+def test_compute_stats_counts_types_links_and_recency(vault):
+    obsidian.write_note("People/Joe Konkle.md", "notes", title="Joe Konkle", canonicalize=False)
+    obsidian.write_note(
+        "Sessions/planning.md", "Met with [[Joe Konkle]] and [[Joe Konkle]] again.",
+        title="Planning", canonicalize=False,
+    )
+    stats = obsidian.compute_stats()
+    assert stats.total == 2
+    assert ("person", 1) in stats.by_type and ("session", 1) in stats.by_type
+    # A double-mention in one note is still a single inbound edge from that note.
+    assert stats.most_linked[0] == ("People/Joe Konkle.md", "Joe Konkle", 1)
+    assert stats.recent[0][0] == "Sessions/planning.md"  # written most recently
+    assert stats.orphans == 0
+    assert stats.dangling_links == 0
+
+
+def test_write_dashboard_is_idempotent(vault):
+    obsidian.write_note("Topics/X.md", "a", title="X")
+    dest = obsidian.write_dashboard()
+    path = vault / "Maps" / "Dashboard.md"
+    assert str(path) == dest
+    body = obsidian.read_note("Maps/Dashboard.md").body
+    assert "Vault Dashboard" in body and "By type" in body
+    mtime = path.stat().st_mtime_ns
+    obsidian.write_dashboard()  # nothing changed -> no rewrite (no startup churn)
+    assert path.stat().st_mtime_ns == mtime
+
+
+def test_write_canvas_groups_and_links_entities(vault):
+    obsidian.write_note("People/Joe Konkle.md", "Works with [[Daedabyte]].", title="Joe Konkle")
+    obsidian.write_note("Companies/Daedabyte.md", "notes", title="Daedabyte")
+    obsidian.write_note("Projects/Solo.md", "unrelated", title="Solo")  # no links -> no edge
+    path = obsidian.write_canvas()
+    import json as _json
+    data = _json.loads(Path(path).read_text(encoding="utf-8"))
+    file_nodes = {n["file"]: n["id"] for n in data["nodes"] if n["type"] == "file"}
+    groups = {n["label"]: n for n in data["nodes"] if n["type"] == "group"}
+    assert set(file_nodes) == {"People/Joe Konkle.md", "Companies/Daedabyte.md", "Projects/Solo.md"}
+    assert "👤 People" in groups and "🏢 Companies" in groups
+    assert len(data["edges"]) == 1
+    edge = data["edges"][0]
+    assert {edge["fromNode"], edge["toNode"]} == {
+        file_nodes["People/Joe Konkle.md"], file_nodes["Companies/Daedabyte.md"],
+    }
+
+
 def test_find_misfiled_and_refile(vault):
     # A real person + a meeting wrongly in People, and the same person duplicated in Projects.
     obsidian.write_note("People/Felicity Kline.md", "person", title="Felicity Kline", canonicalize=False)
@@ -232,6 +280,27 @@ def test_nested_entity_note_not_routed(vault):
     # A note nested under a project is intentional — never rerouted.
     obsidian.write_note("Projects/Brightpoint/team_meeting.md", "ok", title="TM")
     assert (vault / "Projects" / "Brightpoint" / "team_meeting.md").exists()
+
+
+def test_looks_like_meeting_catches_session_and_sync_titles():
+    # "session"/"sync"/"1:1" must match as whole words, not just filename prefixes
+    # (a title ending in "Session" was previously missed — see looks_like_meeting).
+    assert obsidian.looks_like_meeting("Planning Session")
+    assert obsidian.looks_like_meeting("Q3 Review Session")
+    assert obsidian.looks_like_meeting("session_2026-06-30")
+    assert obsidian.looks_like_meeting("Weekly Sync")
+    assert obsidian.looks_like_meeting("1:1 with Sam")
+    assert obsidian.looks_like_meeting("Check-in with Joe")
+    # Real entity names must never false-positive on a "sync"/"session" substring.
+    assert not obsidian.looks_like_meeting("Synchronicity Corp")
+    assert not obsidian.looks_like_meeting("Joe Konkle")
+
+
+def test_write_routes_by_session_title(vault):
+    # A title that merely *ends* in "Session" was the gap this heuristic used to miss.
+    obsidian.write_note("People/planning.md", "notes", title="Planning Session")
+    assert not (vault / "People" / "planning.md").exists()
+    assert (vault / "Sessions" / "planning.md").exists()
 
 
 def test_empty_note_gets_type_template(vault):

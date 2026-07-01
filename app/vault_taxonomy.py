@@ -15,8 +15,10 @@ repo root to extend or override them, e.g.::
     ]}
 
 Fields per entry: ``folder`` (name), ``type`` (frontmatter ``type:`` value),
-``entity`` (true → notes here are canonical, alias-de-duplicated identities), and
-``color`` (hex for the graph). ``skip`` lists folders excluded from the index/graph.
+``entity`` (true → notes here are canonical, alias-de-duplicated identities),
+``color`` (hex for the graph), and ``icon`` (an emoji used in generated Maps/
+hubs and the stats dashboard — cosmetic only, never required). ``skip`` lists
+folders excluded from the index/graph.
 """
 
 from __future__ import annotations
@@ -28,22 +30,22 @@ from .logging_setup import get_logger
 
 log = get_logger("vault-taxonomy")
 
-# folder · type · entity? · graph color
+# folder · type · entity? · graph color · icon
 DEFAULT_TAXONOMY: list[dict] = [
-    {"folder": "People", "type": "person", "entity": True, "color": "#4caf79"},
-    {"folder": "Companies", "type": "company", "entity": True, "color": "#ff8a65"},
-    {"folder": "Projects", "type": "project", "entity": True, "color": "#00bcd4"},
-    {"folder": "Sessions", "type": "session", "entity": False, "color": "#e0a458"},
-    {"folder": "Daily", "type": "daily", "entity": False, "color": "#9e9e9e"},
-    {"folder": "Topics", "type": "topic", "entity": False, "color": "#b39ddb"},
-    {"folder": "Ideas", "type": "idea", "entity": False, "color": "#f06292"},
-    {"folder": "Maps", "type": "map", "entity": False, "color": "#ffd54f"},
-    {"folder": "Memory", "type": "memory", "entity": False, "color": "#26a69a"},
-    {"folder": "Imported", "type": "note", "entity": False, "color": "#607d8b"},
+    {"folder": "People", "type": "person", "entity": True, "color": "#4caf79", "icon": "👤"},
+    {"folder": "Companies", "type": "company", "entity": True, "color": "#ff8a65", "icon": "🏢"},
+    {"folder": "Projects", "type": "project", "entity": True, "color": "#00bcd4", "icon": "🚀"},
+    {"folder": "Sessions", "type": "session", "entity": False, "color": "#e0a458", "icon": "💬"},
+    {"folder": "Daily", "type": "daily", "entity": False, "color": "#9e9e9e", "icon": "📅"},
+    {"folder": "Topics", "type": "topic", "entity": False, "color": "#b39ddb", "icon": "📚"},
+    {"folder": "Ideas", "type": "idea", "entity": False, "color": "#f06292", "icon": "💡"},
+    {"folder": "Maps", "type": "map", "entity": False, "color": "#ffd54f", "icon": "🗺️"},
+    {"folder": "Memory", "type": "memory", "entity": False, "color": "#26a69a", "icon": "🧠"},
+    {"folder": "Imported", "type": "note", "entity": False, "color": "#607d8b", "icon": "📥"},
 ]
 DEFAULT_SKIP = ["Archive"]
 _CONFIG_FILE = ROOT_DIR / "vault_config.json"
-_DEFAULT_ENTRY = {"type": "note", "entity": False, "color": "#607d8b"}
+_DEFAULT_ENTRY = {"type": "note", "entity": False, "color": "#607d8b", "icon": "📄"}
 
 _cache: tuple[list[dict], list[str]] | None = None
 
@@ -110,6 +112,22 @@ def color_for_folder(folder: str) -> str | None:
         if t["folder"] == folder:
             return t.get("color")
     return None
+
+
+def icon_for_folder(folder: str) -> str:
+    """The folder's emoji (cosmetic only), or a generic page icon if unlisted."""
+    for t in taxonomy():
+        if t["folder"] == folder:
+            return t.get("icon") or _DEFAULT_ENTRY["icon"]
+    return _DEFAULT_ENTRY["icon"]
+
+
+def icon_for_type(note_type: str) -> str:
+    """The emoji for a frontmatter ``type:`` value (looked up via its folder)."""
+    for t in taxonomy():
+        if t.get("type") == note_type:
+            return t.get("icon") or _DEFAULT_ENTRY["icon"]
+    return _DEFAULT_ENTRY["icon"]
 
 
 def color_groups() -> list[tuple[str, str]]:

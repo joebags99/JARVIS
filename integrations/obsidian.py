@@ -33,6 +33,7 @@ import datetime as dt
 import json
 import re
 import sqlite3
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -946,9 +947,10 @@ def rebuild_mocs() -> int:
         rels = [r for r in list_notes(folder=folder) if not r.startswith(f"{folder}/.")]
         if not rels:
             continue
+        icon = vault_taxonomy.icon_for_folder(folder)
         lines = [
             "---", "title: " + f"{folder} Map", "type: map", "tags: [moc]", "---", "",
-            f"# {folder} Map", "",
+            f"# {icon} {folder} Map", "",
             f"_Auto-generated hub linking every note in {folder}/._", "",
         ]
         for rel in sorted(rels):
@@ -968,11 +970,224 @@ def rebuild_mocs() -> int:
         "# Index — Map of Content", "",
         "JARVIS's knowledge vault. Each map below is a hub linking every note in that area.", "",
     ]
-    idx += [f"- [[Maps/{folder}|{folder}]]" for folder in maps]
+    idx += [
+        f"- {vault_taxonomy.icon_for_folder(folder)} [[Maps/{folder}|{folder}]]"
+        for folder in maps
+    ]
     if _write_if_changed(root / "index.md", "\n".join(idx) + "\n"):
         _reindex_path(root / "index.md")
     log.info("rebuilt %d map(s) of content", len(maps))
     return len(maps)
+
+
+_DASHBOARD_REL = "Maps/Dashboard.md"
+
+
+@dataclass
+class VaultStats:
+    """A snapshot of the vault's shape, for the ``stats``/dashboard report."""
+
+    total: int
+    by_type: list[tuple[str, int]]                 # (type, count), most common first
+    most_linked: list[tuple[str, str, int]]         # (rel, title, inbound link count)
+    recent: list[tuple[str, str, str]]               # (rel, title, YYYY-MM-DD)
+    orphans: int
+    dangling_links: int
+
+
+def compute_stats(top: int = 8) -> VaultStats:
+    """Compute vault-wide stats in one pass: type counts, link fan-in, recency.
+
+    ``most_linked``/``orphans``/``dangling_links`` all resolve ``[[wikilinks]]``
+    the same way as :func:`find_dangling_links` (title/filename-stem/aliases,
+    best-effort) in one pass, rather than calling the separate detectors and
+    re-scanning the vault twice more.
+
+    The dashboard note itself (``_DASHBOARD_REL``) is excluded from the scan —
+    otherwise a stat like "total notes" would count the dashboard describing it,
+    and its own "recently active"/backlink-adding links would shift the very
+    orphan/dangling counts it reports, so the file would never settle: each
+    write would make the next write's numbers stale before the file was even
+    closed.
+    """
+    entries: list[tuple[str, str, str, float, list[str]]] = []  # rel,title,type,mtime,links
+    resolve: dict[str, str] = {}
+    for p in iter_markdown():
+        try:
+            meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:  # noqa: BLE001
+            continue
+        rel = _rel(p)
+        if rel == _DASHBOARD_REL:
+            continue
+        title = title_for(rel, meta, body)
+        note_type = str(meta.get("type") or _type_for_path(rel))
+        entries.append((rel, title, note_type, p.stat().st_mtime, extract_wikilinks(body)))
+        for key in _dedupe([title, Path(rel).stem, rel[:-len(NOTE_EXT)], *extract_aliases(meta)]):
+            resolve[key.lower()] = rel
+
+    inbound: Counter[str] = Counter()
+    titles: dict[str, str] = {}
+    dangling_links = 0
+    for rel, title, _type, _mtime, links in entries:
+        titles[rel] = title
+        for target in links:
+            hit = resolve.get(target.strip().lower())
+            if not hit:
+                dangling_links += 1
+            elif hit != rel:  # a self-link isn't a real backlink
+                inbound[hit] += 1
+
+    orphans = sum(1 for rel, _t, _ty, _m, links in entries if not links and not inbound.get(rel))
+    by_type = Counter(t for _, _, t, _, _ in entries)
+    most_linked = [
+        (rel, titles[rel], n) for rel, n in sorted(inbound.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
+    ]
+    recent = [
+        (rel, title, dt.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d"))
+        for rel, title, _type, mtime, _links in sorted(entries, key=lambda e: e[3], reverse=True)[:top]
+    ]
+    return VaultStats(
+        total=len(entries),
+        by_type=by_type.most_common(),
+        most_linked=most_linked,
+        recent=recent,
+        orphans=orphans,
+        dangling_links=dangling_links,
+    )
+
+
+def render_dashboard(stats: VaultStats) -> str:
+    """Render a :class:`VaultStats` snapshot as a Maps/Dashboard.md note body."""
+    lines = [
+        "---", "title: Dashboard", "type: map", "tags: [moc, dashboard]", "---", "",
+        "# 📊 Vault Dashboard", "",
+        "_Auto-generated snapshot — refreshed by `vault_cli stats` and on every "
+        "organize pass._", "",
+        f"**{stats.total}** note(s) across **{len(stats.by_type)}** type(s).", "",
+    ]
+    lines.append("## By type")
+    for note_type, count in stats.by_type:
+        lines.append(f"- {vault_taxonomy.icon_for_type(note_type)} {note_type}: {count}")
+    lines.append("")
+
+    lines.append("## Most-linked notes")
+    if stats.most_linked:
+        for i, (rel, title, count) in enumerate(stats.most_linked, start=1):
+            plural = "backlink" if count == 1 else "backlinks"
+            lines.append(f"{i}. [[{rel[:-len(NOTE_EXT)]}|{title}]] — {count} {plural}")
+    else:
+        lines.append("_(nothing linked yet)_")
+    lines.append("")
+
+    lines.append("## Recently active")
+    for rel, title, day in stats.recent:
+        lines.append(f"- {day} — [[{rel[:-len(NOTE_EXT)]}|{title}]]")
+    lines.append("")
+
+    lines.append("## Health")
+    lines.append(f"- Orphans: {stats.orphans} note(s) with no links in or out")
+    lines.append(f"- Dangling links: {stats.dangling_links} reference(s) to a missing note")
+    lines.append("")
+    lines.append("Run `vault_cli doctor` for the full health report.")
+    return "\n".join(lines) + "\n"
+
+
+def write_dashboard() -> str:
+    """Compute vault stats and refresh ``Maps/Dashboard.md``. Returns its path."""
+    stats = compute_stats()
+    dest = vault_root() / _DASHBOARD_REL
+    if _write_if_changed(dest, render_dashboard(stats)):
+        _reindex_path(dest)
+        log.info("refreshed vault dashboard (%d notes)", stats.total)
+    return str(dest)
+
+
+# ── Canvas: a spatial map of the entity graph ─────────────────────────────────
+_CANVAS_NODE_W, _CANVAS_NODE_H = 260, 60
+_CANVAS_COL_GAP, _CANVAS_ROW_GAP, _CANVAS_BAND_GAP = 30, 20, 100
+_CANVAS_COLS = 4
+
+
+def write_canvas() -> str:
+    """Regenerate ``Vault Overview.canvas`` — a spatial map of the entity graph.
+
+    Obsidian's built-in graph view shows *every* note; this Canvas is a curated,
+    always-fresh alternative scoped to what usually matters most: every
+    People/Companies/Projects entity, grouped and colored by folder (matching
+    :func:`write_graph_config`'s palette), with an edge drawn wherever one
+    entity's note links to another's. Regenerated fresh each run — token-free,
+    and safe to move/resize by hand in Obsidian since it's fully overwritten
+    next time (position edits won't be preserved across a rerun). Returns the
+    file's path. Uses the `JSON Canvas <https://jsoncanvas.org/>`_ format that
+    Obsidian's Canvas core plugin reads directly — no plugin required.
+    """
+    by_folder: dict[str, list[tuple[str, str]]] = {}
+    resolve: dict[str, str] = {}          # lowercased title/stem/alias -> rel
+    body_by_rel: dict[str, str] = {}
+    for folder in ENTITY_FOLDERS:
+        items: list[tuple[str, str]] = []
+        for rel in list_notes(folder=folder):
+            if len(rel.split("/")) != 2:
+                continue  # only the entity note itself, not notes nested under it
+            try:
+                raw = (vault_root() / rel).read_text(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                continue
+            meta, body = parse_frontmatter(raw)
+            title = title_for(rel, meta, body)
+            items.append((rel, title))
+            body_by_rel[rel] = body
+            for key in _dedupe([title, Path(rel).stem, *extract_aliases(meta)]):
+                resolve[key.lower()] = rel
+        by_folder[folder] = sorted(items, key=lambda x: x[1].lower())
+
+    nodes: list[dict] = []
+    node_id: dict[str, str] = {}
+    y = 0
+    for folder in ENTITY_FOLDERS:
+        items = by_folder[folder]
+        if not items:
+            continue
+        color = vault_taxonomy.color_for_folder(folder) or "#607d8b"
+        rows = -(-len(items) // _CANVAS_COLS)  # ceil division
+        band_h = rows * (_CANVAS_NODE_H + _CANVAS_ROW_GAP) + 70
+        nodes.append({
+            "id": f"group-{folder}", "type": "group",
+            "label": f"{vault_taxonomy.icon_for_folder(folder)} {folder}",
+            "x": -20, "y": y - 50,
+            "width": _CANVAS_COLS * (_CANVAS_NODE_W + _CANVAS_COL_GAP) + 20,
+            "height": band_h, "color": color,
+        })
+        for i, (rel, _title) in enumerate(items):
+            col, row = i % _CANVAS_COLS, i // _CANVAS_COLS
+            nid = f"n{len(node_id)}"
+            node_id[rel] = nid
+            nodes.append({
+                "id": nid, "type": "file", "file": rel,
+                "x": col * (_CANVAS_NODE_W + _CANVAS_COL_GAP),
+                "y": y + row * (_CANVAS_NODE_H + _CANVAS_ROW_GAP),
+                "width": _CANVAS_NODE_W, "height": _CANVAS_NODE_H, "color": color,
+            })
+        y += band_h + _CANVAS_BAND_GAP
+
+    edges: list[dict] = []
+    drawn: set[frozenset] = set()
+    for rel, body in body_by_rel.items():
+        for target in extract_wikilinks(body):
+            other = resolve.get(target.strip().lower())
+            if not other or other == rel or other not in node_id:
+                continue
+            pair = frozenset((rel, other))
+            if pair in drawn:
+                continue
+            drawn.add(pair)
+            edges.append({"id": f"e{len(edges)}", "fromNode": node_id[rel], "toNode": node_id[other]})
+
+    dest = vault_root() / "Vault Overview.canvas"
+    if _write_if_changed(dest, json.dumps({"nodes": nodes, "edges": edges}, indent=2)):
+        log.info("refreshed entity canvas (%d nodes, %d edges)", len(nodes), len(edges))
+    return str(dest)
 
 
 def linkify_vault(roster: dict[str, str] | None = None) -> int:
@@ -1002,15 +1217,18 @@ def linkify_vault(roster: dict[str, str] | None = None) -> int:
 
 
 # Meeting/session-style note names that should never be a People/Projects *entity*.
+# "session" is a whole word here (not just a prefix) so a title like "Planning
+# Session" or "Q3 Review Session" is caught too, not just filenames that start
+# with it (e.g. "session_2026-06-30").
 _MEETING_RE = re.compile(
     r"(?:^|[\s_-])(meeting|standup|stand-up|huddle|retro|retrospective|"
-    r"1on1|1-on-1|kickoff|kick-off)(?:$|[\s_-])", re.I)
+    r"1on1|1-on-1|1:1|1-1|kickoff|kick-off|sync|check-in|checkin|session)"
+    r"(?:$|[\s_-])", re.I)
 
 
 def looks_like_meeting(name: str) -> bool:
     """True if *name* reads like a meeting/session note (not a person/project)."""
-    n = name or ""
-    return bool(_MEETING_RE.search(n)) or n.lower().startswith("session")
+    return bool(_MEETING_RE.search(name or ""))
 
 
 def find_misfiled() -> dict:

@@ -10,6 +10,8 @@ without spending any tokens. Run from the repo root:
     python -m app.vault_cli reindex                  # rebuild the search index
     python -m app.vault_cli search "kitchen remodel" # FTS search, token-free
     python -m app.vault_cli list [folder]            # browse notes
+    python -m app.vault_cli stats                    # counts, most-linked, recent activity
+    python -m app.vault_cli canvas                   # visual entity graph (.canvas file)
 
 The migration is the same one JARVIS runs automatically on first launch with the
 vault enabled — running it here just lets you do it deliberately and preview it
@@ -207,7 +209,8 @@ def cmd_doctor(_args) -> int:
               "Sessions/).")
     if cross:
         print("  Merge duplicates (token-free): `vault_cli dedupe --apply` (keeps the "
-              "People copy; merges the rest).")
+              "copy in the highest-priority folder — People, then Companies, then "
+              "Projects — and merges the rest into it).")
     if cross or meetings:
         print("  Or fix folder mistakes with the API: `vault_entities --reclassify --apply` "
               "(reclassifies person/company/project/meeting and merges duplicates).")
@@ -272,6 +275,50 @@ def cmd_graph(_args) -> int:
     return 0
 
 
+def cmd_stats(_args) -> int:
+    """Vault stats: note counts by type, most-linked notes, recent activity."""
+    if not _require_vault():
+        return 1
+    from integrations import obsidian
+
+    stats = obsidian.compute_stats()
+    dest = obsidian.write_dashboard()
+
+    print("JARVIS — vault stats")
+    print("-" * 44)
+    print(f"total notes      : {stats.total}")
+    print("by type          : " + ", ".join(f"{t}×{n}" for t, n in stats.by_type))
+
+    print("\nmost-linked notes:")
+    if stats.most_linked:
+        for i, (rel, title, count) in enumerate(stats.most_linked, start=1):
+            plural = "backlink" if count == 1 else "backlinks"
+            print(f"    {i}. {title}  ({count} {plural})  — {rel}")
+    else:
+        print("    (nothing linked yet)")
+
+    print("\nrecently active:")
+    for rel, title, day in stats.recent:
+        print(f"    {day}  {title}  — {rel}")
+
+    print(f"\norphans: {stats.orphans}   dangling links: {stats.dangling_links}")
+    print(f"\nDashboard refreshed: {dest}")
+    return 0
+
+
+def cmd_canvas(_args) -> int:
+    """Write/refresh a Canvas visualizing how People/Companies/Projects link."""
+    if not _require_vault():
+        return 1
+    from integrations import obsidian
+
+    path = obsidian.write_canvas()
+    print(f"Wrote entity canvas to {path}.")
+    print("Open it in Obsidian (Ctrl/Cmd+O → 'Vault Overview') to see the "
+          "people/companies/projects graph laid out and colored by folder.")
+    return 0
+
+
 def cmd_moc(_args) -> int:
     """Rebuild Maps of Content — hub notes that link every note in each folder."""
     if not _require_vault():
@@ -310,6 +357,8 @@ def cmd_upgrade(_args) -> int:
     connected = obsidian.linkify_vault()
     maps = obsidian.rebuild_mocs()
     obsidian.write_graph_config()
+    obsidian.write_dashboard()
+    obsidian.write_canvas()
     print("Upgraded existing notes to the current conventions:")
     print(f"    meetings → Sessions/    : {len(refiled)} note(s)")
     print(f"    cross-folder dupes merged : {len(deduped)} note(s)")
@@ -317,6 +366,8 @@ def cmd_upgrade(_args) -> int:
     print(f"    alias links → canonical : {relinked} note(s)")
     print(f"    newly wikilinked to entities : {connected} note(s)")
     print(f"    hub maps rebuilt        : {maps}")
+    print("    stats dashboard         : Maps/Dashboard.md")
+    print("    entity canvas           : Vault Overview.canvas")
     print("\nThe deeper, content-level cleanup uses the API (preview-first):")
     print("    python -m app.vault_organize --apply       # reformat + refile the Imported/ dump")
     print("    python -m app.vault_entities --reclassify --apply  # move misfiled entities to the right folder")
@@ -350,7 +401,9 @@ def build_parser() -> argparse.ArgumentParser:
     ls.set_defaults(func=cmd_list)
 
     sub.add_parser("doctor", help="Health report: orphans, dangling links, counts.").set_defaults(func=cmd_doctor)
+    sub.add_parser("stats", help="Note counts, most-linked notes, recent activity.").set_defaults(func=cmd_stats)
     sub.add_parser("graph", help="Type-stamp notes + write graph color config.").set_defaults(func=cmd_graph)
+    sub.add_parser("canvas", help="Write a Canvas visualizing People/Companies/Projects links.").set_defaults(func=cmd_canvas)
     sub.add_parser("moc", help="Rebuild hub Maps of Content + index.md.").set_defaults(func=cmd_moc)
     sub.add_parser("upgrade", help="Bring old notes up to current conventions (token-free).").set_defaults(func=cmd_upgrade)
 

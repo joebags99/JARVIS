@@ -144,14 +144,18 @@ def _init_knowledge(log):
             if CONFIG.obsidian_auto_organize:
                 # Keep the vault tidy: refile meetings that slipped into an entity
                 # folder back to Sessions/, type-stamp notes, refresh the hub Maps
-                # of Content, and (re)write the graph color config. Idempotent —
-                # only rewrites what changed — so it's cheap on every launch.
+                # of Content, the graph color config, the stats dashboard, and the
+                # entity Canvas. Idempotent — only rewrites what changed — so it's
+                # cheap on every launch.
                 refiled = obsidian.refile_meetings(dry_run=False)
                 typed = obsidian.backfill_types()
                 maps = obsidian.rebuild_mocs()
                 obsidian.write_graph_config()
+                obsidian.write_dashboard()
+                obsidian.write_canvas()
                 log.info("  Vault: organized (%d meetings refiled, %d newly typed, "
-                         "%d maps, graph colored)", len(refiled), typed, maps)
+                         "%d maps, graph colored, dashboard + canvas refreshed)",
+                         len(refiled), typed, maps)
             indexed = obsidian.reindex()
             log.info("  Vault: %s (%d note(s) indexed)",
                      CONFIG.obsidian_vault_path, indexed)

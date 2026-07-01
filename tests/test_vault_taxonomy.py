@@ -44,3 +44,19 @@ def test_config_extends_and_overrides(tmp_path, monkeypatch):
     assert vt.type_for_folder("Books") == "book"
     assert vt.color_for_folder("People") == "#111111"    # override applied
     assert vt.skip_folders() == {"Archive", "Scratch"}
+
+
+def test_icons():
+    assert vt.icon_for_folder("People") == "👤"
+    assert vt.icon_for_type("project") == "🚀"
+    assert vt.icon_for_folder("Nonexistent") == "📄"      # default fallback
+    assert vt.icon_for_type("nonexistent") == "📄"
+
+
+def test_icon_falls_back_when_config_omits_it(tmp_path, monkeypatch):
+    cfg = tmp_path / "vault_config.json"
+    cfg.write_text(json.dumps({"folders": [{"folder": "Books", "type": "book"}]}),
+                    encoding="utf-8")
+    monkeypatch.setattr(vt, "_CONFIG_FILE", cfg)
+    vt.reload()
+    assert vt.icon_for_folder("Books") == "📄"

@@ -133,5 +133,37 @@ def test_upgrade_modernizes_old_notes(cli_vault, capsys):
     obsidian.set_aliases("Joe Konkle", ["Joe"])
     obsidian.write_note("Sessions/old.md", "Met Joe.", title="Old")  # bare mention
     assert vault_cli.main(["upgrade"]) == 0
-    assert "Upgraded existing notes" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Upgraded existing notes" in out
+    assert "stats dashboard" in out and "entity canvas" in out
     assert "[[Joe Konkle|Joe]]" in obsidian.read_note("Sessions/old.md").body
+
+
+def test_stats(cli_vault, capsys):
+    from integrations import obsidian
+
+    obsidian.ensure_scaffold()
+    obsidian.write_note("People/Joe Konkle.md", "notes", title="Joe Konkle", canonicalize=False)
+    obsidian.write_note("Sessions/planning.md", "with [[Joe Konkle]]", title="Planning",
+                         canonicalize=False)
+    assert vault_cli.main(["stats"]) == 0
+    out = capsys.readouterr().out
+    assert "total notes      : 3" in out
+    assert "Joe Konkle" in out and "1 backlink" in out
+    assert (cli_vault / "Maps" / "Dashboard.md").exists()
+
+
+def test_canvas(cli_vault, capsys):
+    from integrations import obsidian
+
+    obsidian.ensure_scaffold()
+    obsidian.write_note("People/Joe Konkle.md", "works with [[Daedabyte]]", title="Joe Konkle")
+    obsidian.write_note("Companies/Daedabyte.md", "notes", title="Daedabyte")
+    assert vault_cli.main(["canvas"]) == 0
+    out = capsys.readouterr().out
+    assert "Wrote entity canvas" in out
+    canvas = cli_vault / "Vault Overview.canvas"
+    assert canvas.exists()
+    import json as _json
+    data = _json.loads(canvas.read_text(encoding="utf-8"))
+    assert len(data["edges"]) == 1
