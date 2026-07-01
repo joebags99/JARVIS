@@ -159,6 +159,7 @@ def _bare_speaker(delay: float = 0.05) -> Speaker:
     speaker._sentence_queue = None
     speaker._done = threading.Event()
     speaker._done.set()
+    speaker._speech_generation = 0
     return speaker
 
 
@@ -194,4 +195,71 @@ def test_stop_marks_done_even_when_interrupted_mid_utterance():
     assert not speaker._done.is_set()
     speaker.stop()
     speaker.wait_idle(timeout=2)  # interrupts promptly, not after the full 5s
+    assert speaker._done.is_set()
+
+
+# ── Speech-generation race (the wake-word "never stops responding" bug) ─────
+# overlay.py's on_reset restarts speech mid-turn (Claude discarding pre-tool
+# narration once it decides to call a tool — common on wake-word-triggered
+# questions like "what's on my calendar", which is exactly why this hit hard
+# via voice): start_utterance() gets called twice in one turn. The first
+# call's background thread is stopped but isn't guaranteed to notice
+# promptly; if its `finally` block reached `_done.set()` unconditionally, it
+# could mark speech "done" while the *second, real* utterance was still
+# actively playing, letting wait_idle() (and therefore wake-word resume)
+# fire early and reopen the mic mid-speech -> JARVIS's own voice re-triggers
+# "Hey JARVIS" -> the loop the user reported never stopping.
+
+class _SlowUnstoppableBackend:
+    """Ignores stop_event entirely and always sleeps the full delay — stands
+    in for a stopped, superseded utterance's synth call that's slow to
+    notice it was cancelled, so its thread's `finally` can land well after a
+    newer utterance has already started speaking. Sets `started` the moment
+    synth() is actually entered, so a test can wait on that instead of
+    racing a fixed sleep against thread scheduling."""
+
+    def __init__(self, delay: float):
+        self.delay = delay
+        self.started = threading.Event()
+
+    def synth(self, text, stop_event):
+        self.started.set()
+        time.sleep(self.delay)
+        return [0, 0, 0], 16000
+
+
+def test_superseded_streamed_utterance_cannot_mark_a_newer_one_done_early():
+    speaker = _bare_speaker()
+    stale_backend = _SlowUnstoppableBackend(delay=0.05)
+    speaker._backend = stale_backend
+    speaker.start_utterance()  # generation 1
+    speaker.feed("First. ")
+    assert stale_backend.started.wait(timeout=2)  # gen 1 has committed to its slow synth
+
+    speaker._backend = _FakeBackend(delay=0.3)
+    speaker.start_utterance()  # generation 2 — stops gen 1, which ignores it
+    speaker.feed("Second. ")
+    speaker.finish()
+
+    time.sleep(0.15)  # gen 1's 0.05s synth has long since returned; gen 2 (0.3s) still speaking
+    assert not speaker._done.is_set(), "a superseded utterance marked speech done early"
+
+    speaker.wait_idle(timeout=2)
+    assert speaker._done.is_set()
+
+
+def test_superseded_one_shot_speak_cannot_mark_a_newer_one_done_early():
+    speaker = _bare_speaker()
+    stale_backend = _SlowUnstoppableBackend(delay=0.05)
+    speaker._backend = stale_backend
+    speaker.speak("First")  # generation 1
+    assert stale_backend.started.wait(timeout=2)
+
+    speaker._backend = _FakeBackend(delay=0.3)
+    speaker.speak("Second")  # generation 2 — stops gen 1, which ignores it
+
+    time.sleep(0.15)
+    assert not speaker._done.is_set(), "a superseded speak() call marked speech done early"
+
+    speaker.wait_idle(timeout=2)
     assert speaker._done.is_set()

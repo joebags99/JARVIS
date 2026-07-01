@@ -306,6 +306,16 @@ class Speaker:
         # audio playback (not just synthesis) has truly finished.
         self._done = threading.Event()
         self._done.set()
+        # Bumped on every speak()/start_utterance() call. A superseded
+        # utterance (barge-in, or overlay.py's on_reset restarting speech
+        # mid-turn when pre-tool narration gets discarded) is stopped but its
+        # background thread can take a moment to notice — if that stale
+        # thread's `finally` block reached `_done.set()` unconditionally, it
+        # could mark speech "done" while the *new* utterance is still
+        # actively playing, letting wait_idle() (and therefore wake-word
+        # resume) fire early and reopen the mic mid-speech. Each generation
+        # only sets `_done` if it's still the current one.
+        self._speech_generation = 0
 
         if not self._audio_ok():
             return
@@ -347,8 +357,10 @@ class Speaker:
         stop_event = threading.Event()
         self._stop_event = stop_event
         self._done.clear()
+        self._speech_generation += 1
+        gen = self._speech_generation
         self._thread = threading.Thread(
-            target=self._run, args=(text, stop_event), daemon=True
+            target=self._run, args=(text, stop_event, gen), daemon=True
         )
         self._thread.start()
 
@@ -376,7 +388,7 @@ class Speaker:
         except Exception:  # noqa: BLE001
             pass
 
-    def _run(self, text: str, stop_event: threading.Event) -> None:
+    def _run(self, text: str, stop_event: threading.Event, gen: int) -> None:
         try:
             # Spell out degree signs/dashes before markdown-stripping, which
             # would otherwise drop the em/en dash characters this needs.
@@ -394,7 +406,11 @@ class Speaker:
                 return
             _play(samples, samplerate, stop_event)
         finally:
-            self._done.set()
+            # Only the current generation may mark speech idle — a stopped,
+            # superseded call reaching this late must not stomp on a newer
+            # utterance's still-in-flight _done.clear() (see __init__).
+            if gen == self._speech_generation:
+                self._done.set()
 
     # ── Streamed utterance (speak-as-you-go) ──────────────────────────────────
     # start_utterance() / feed() / finish() let the caller speak a reply as it
@@ -417,8 +433,10 @@ class Speaker:
         self._buffer = ""
         self._sentence_queue = queue.Queue()
         self._done.clear()
+        self._speech_generation += 1
+        gen = self._speech_generation
         self._thread = threading.Thread(
-            target=self._consume_sentences, args=(stop_event, self._sentence_queue),
+            target=self._consume_sentences, args=(stop_event, self._sentence_queue, gen),
             daemon=True,
         )
         self._thread.start()
@@ -449,7 +467,7 @@ class Speaker:
         self._buffer = ""
         self._sentence_queue.put(None)  # sentinel: no more sentences coming
 
-    def _consume_sentences(self, stop_event: threading.Event, q: "queue.Queue") -> None:
+    def _consume_sentences(self, stop_event: threading.Event, q: "queue.Queue", gen: int) -> None:
         try:
             while not stop_event.is_set():
                 try:
@@ -470,4 +488,9 @@ class Speaker:
                     continue
                 _play(samples, samplerate, stop_event)
         finally:
-            self._done.set()
+            # See _run()'s comment — only the current generation may mark
+            # speech idle, so a superseded (e.g. on_reset-restarted) call
+            # can't prematurely unblock wait_idle() while the real, newer
+            # utterance is still actively playing.
+            if gen == self._speech_generation:
+                self._done.set()
