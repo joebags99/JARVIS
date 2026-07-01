@@ -50,6 +50,28 @@ def _strip_markdown(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def _normalize_for_speech(text: str) -> str:
+    """Spell out symbols that some engines (ElevenLabs especially) mispronounce
+    or glitch on, instead of leaving the raw glyph for the engine to guess at.
+
+    - The degree symbol has no natural spoken form, so "72°F"/"75°" become
+      "72 degrees Fahrenheit"/"75 degrees".
+    - An em/en dash used as a clause break ("done — for now") reads as an
+      audible "dash" on some engines; a comma is the natural spoken pause.
+    - A hyphen directly between two digits ("70-75") is a range, not a
+      hyphenated word, so it's read as "70 to 75".
+    """
+    if not text:
+        return text
+    text = re.sub(r"°\s*F\b", " degrees Fahrenheit", text, flags=re.I)
+    text = re.sub(r"°\s*C\b", " degrees Celsius", text, flags=re.I)
+    text = text.replace("°", " degrees")
+    text = re.sub(r"\s*[—–]\s*", ", ", text)
+    text = re.sub(r"\s+--\s+", ", ", text)
+    text = re.sub(r"(?<=\d)-(?=\d)", " to ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
 # ── Playback (shared by all backends) ───────────────────────────────────────
 
 def _play(samples, samplerate: int, stop_event: threading.Event) -> None:
@@ -271,7 +293,9 @@ class Speaker:
             pass
 
     def _run(self, text: str, stop_event: threading.Event) -> None:
-        clean = _strip_markdown(text)
+        # Spell out degree signs/dashes before markdown-stripping, which would
+        # otherwise drop the em/en dash characters this depends on matching.
+        clean = _strip_markdown(_normalize_for_speech(text))
         if not clean or stop_event.is_set():
             return
         if len(clean) > MAX_SPEAK_CHARS:
