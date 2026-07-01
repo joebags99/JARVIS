@@ -8,14 +8,14 @@ faster-whisper) and calls back once the phrase is heard. Off by default —
 set ``JARVIS_WAKE_WORD_ENABLED=true`` to turn it on.
 
 ``WakeWordListener`` owns its own ``sounddevice.InputStream``, separate from
-``Recorder``'s. The two must never be open at once (most audio backends
-tolerate two simultaneous input streams on one device poorly, and there's no
-reason to keep scoring for the wake phrase while an utterance triggered by it
-is already being captured) — ``pause()``/``resume()`` let a caller suspend
-scoring without tearing the stream down and rebuilding it, so resuming is
-instant. ``app/overlay.py``'s ``_start_recording``/``_stop_recording`` call
-these automatically for *any* recording (push-to-talk included), so the
-caller doesn't need to reason about it per trigger source.
+``Recorder``'s. The two must never be open at once — sharing one physical
+device across two concurrent streams is unreliable in practice (seen
+firsthand: duplicate "recording started" log lines and a spurious detection
+firing during the *next* turn's processing, right when a second stream was
+opened while the first was still technically live). So ``pause()`` fully
+tears the stream down and ``resume()`` reopens it, rather than just gating
+the callback with a flag — a few hundred ms of extra latency on resume in
+exchange for never having two streams on the device at once.
 """
 
 from __future__ import annotations
@@ -133,51 +133,64 @@ class WakeWordListener:
     def available(self) -> bool:
         return self._available
 
+    def _callback(self, indata, frames, time_info, status):  # noqa: ANN001
+        if status:
+            log.debug("wake-word audio status: %s", status)
+        try:
+            scores = self._model.predict(indata.reshape(-1))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("wake-word scoring failed: %s", exc)
+            return
+        score = scores.get(self._model_name, 0.0)
+        if not wake_score_triggers(score, CONFIG.wake_word_threshold):
+            return
+        now = time.monotonic()
+        if now - self._last_trigger < _RETRIGGER_COOLDOWN_S:
+            return
+        self._last_trigger = now
+        log.info("wake word detected (score=%.2f)", score)
+        # Never run on_wake() (which pauses/closes this very stream) directly
+        # on this callback thread — sounddevice/PortAudio explicitly warns
+        # against calling stop()/close() from within the stream's own
+        # callback (the audio thread can't safely join itself). Dispatch to a
+        # fresh thread so pause() is always called from outside the callback.
+        threading.Thread(target=self._fire_on_wake, daemon=True).start()
+
+    def _fire_on_wake(self) -> None:
+        try:
+            self._on_wake()
+        except Exception as exc:  # noqa: BLE001
+            log.error("on_wake callback failed: %s", exc)
+
+    def _open_stream(self) -> bool:
+        """Create and start the InputStream. Returns False on failure."""
+        try:
+            self._stream = self._sd.InputStream(
+                samplerate=SAMPLE_RATE, channels=1, dtype="int16",
+                blocksize=CHUNK_SAMPLES, callback=self._callback,
+            )
+            self._stream.start()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            log.error("could not open wake-word stream: %s", exc)
+            self._stream = None
+            return False
+
     def start(self) -> bool:
         """Begin listening. Returns False if the stream couldn't start."""
         if not self._available or self._stream is not None:
             return False
-
-        def _callback(indata, frames, time_info, status):  # noqa: ANN001
-            if status:
-                log.debug("wake-word audio status: %s", status)
-            if self._paused.is_set():
-                return
-            try:
-                scores = self._model.predict(indata.reshape(-1))
-            except Exception as exc:  # noqa: BLE001
-                log.debug("wake-word scoring failed: %s", exc)
-                return
-            score = scores.get(self._model_name, 0.0)
-            if not wake_score_triggers(score, CONFIG.wake_word_threshold):
-                return
-            now = time.monotonic()
-            if now - self._last_trigger < _RETRIGGER_COOLDOWN_S:
-                return
-            self._last_trigger = now
-            log.info("wake word detected (score=%.2f)", score)
-            try:
-                self._on_wake()
-            except Exception as exc:  # noqa: BLE001
-                log.error("on_wake callback failed: %s", exc)
-
-        try:
-            self._stream = self._sd.InputStream(
-                samplerate=SAMPLE_RATE, channels=1, dtype="int16",
-                blocksize=CHUNK_SAMPLES, callback=_callback,
-            )
-            self._stream.start()
+        self._paused.clear()
+        if self._open_stream():
             log.info(
                 "wake-word listener started (phrase=%s, threshold=%.2f)",
                 CONFIG.wake_word_phrase, CONFIG.wake_word_threshold,
             )
             return True
-        except Exception as exc:  # noqa: BLE001
-            log.error("could not start wake-word listener: %s", exc)
-            self._stream = None
-            return False
+        return False
 
     def stop(self) -> None:
+        self._paused.set()
         if self._stream is None:
             return
         try:
@@ -189,11 +202,27 @@ class WakeWordListener:
             self._stream = None
 
     def pause(self) -> None:
-        """Suspend scoring (stream stays open — resume() is instant)."""
+        """Suspend listening — closes the stream so it can never be open at
+        the same time as Recorder's (see the module docstring). A no-op if
+        already paused or never started."""
+        if self._paused.is_set():
+            return
         self._paused.set()
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as exc:  # noqa: BLE001
+                log.debug("error pausing wake-word stream: %s", exc)
+            finally:
+                self._stream = None
 
     def resume(self) -> None:
+        """Reopen the stream if it was listening before pause()."""
+        if not self._paused.is_set() or not self._available:
+            return
         self._paused.clear()
+        self._open_stream()
 
 
 # ── Hands-free auto-stop ──────────────────────────────────────────────────────

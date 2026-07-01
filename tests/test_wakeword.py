@@ -3,13 +3,21 @@
 wake_score_triggers()/silence_auto_stop_due() are pure and fully covered.
 watch_for_silence() only calls methods on whatever `recorder` it's given, so
 it's tested here with a small fake — no real sounddevice/microphone needed.
-WakeWordListener itself needs sounddevice + openwakeword (a native PortAudio
-dependency not present in this environment, same reason the rest of the audio
-pipeline has no coverage here); its `available` probe is checked instead,
-since that's the one behavior a real run can't skip either.
+
+WakeWordListener's real `_probe()` needs sounddevice + openwakeword (a
+native PortAudio dependency not present in this environment); its
+`available` probe is checked for that path. Its pause()/resume()/callback
+plumbing, however, is pure enough to test by constructing a listener and
+swapping in fake sounddevice/model objects post-probe — exactly the
+threading behavior a real bug (two InputStreams briefly open on one device,
+and pause() being called unsafely from within its own stream's audio
+callback) was found and fixed in.
 """
 
 from __future__ import annotations
+
+import threading
+import time
 
 from app.wakeword import (
     WakeWordListener,
@@ -17,6 +25,59 @@ from app.wakeword import (
     wake_score_triggers,
     watch_for_silence,
 )
+
+
+class _FakeStream:
+    def __init__(self, **kwargs):
+        self.callback = kwargs.get("callback")
+        self.started = False
+        self.closed = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.started = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeSd:
+    def __init__(self):
+        self.streams: list[_FakeStream] = []
+
+    def InputStream(self, **kwargs):
+        s = _FakeStream(**kwargs)
+        self.streams.append(s)
+        return s
+
+
+class _FakeModel:
+    def __init__(self, score=0.0):
+        self.score = score
+
+    def predict(self, x):
+        return {"hey_jarvis": self.score}
+
+
+class _FakeIndata:
+    """Stands in for the numpy array sounddevice passes to the callback —
+    _callback only calls .reshape(-1) on it, so a real numpy array (a heavy
+    dependency this test suite otherwise avoids) isn't needed."""
+
+    def reshape(self, *args):
+        return self
+
+
+def _fake_listener(on_wake=lambda: None, score=0.0) -> WakeWordListener:
+    """A listener with a fake (post-probe) sounddevice + model, no real audio."""
+    listener = WakeWordListener(on_wake=on_wake)
+    listener._available = True
+    listener._sd = _FakeSd()
+    listener._model = _FakeModel(score)
+    listener._model_name = "hey_jarvis"
+    return listener
 
 
 # ── Pure decision helpers ─────────────────────────────────────────────────────
@@ -137,3 +198,95 @@ def test_listener_unavailable_without_audio_deps():
     listener.pause()
     listener.resume()
     listener.stop()
+
+
+# ── pause()/resume() never leave two streams open (fake sounddevice) ────────
+
+def test_start_opens_exactly_one_stream():
+    listener = _fake_listener()
+    assert listener.start() is True
+    assert len(listener._sd.streams) == 1
+    assert listener._sd.streams[0].started is True
+
+
+def test_pause_fully_closes_the_stream_not_just_flags_it():
+    listener = _fake_listener()
+    listener.start()
+    stream = listener._sd.streams[0]
+    listener.pause()
+    assert stream.closed is True
+    assert listener._stream is None  # nothing left "open" to race with Recorder's
+
+
+def test_resume_after_pause_opens_a_new_stream():
+    listener = _fake_listener()
+    listener.start()
+    listener.pause()
+    listener.resume()
+    assert len(listener._sd.streams) == 2  # the old one, plus a fresh one
+    assert listener._sd.streams[1].started is True
+
+
+def test_pause_when_not_paused_is_idempotent():
+    listener = _fake_listener()
+    listener.start()
+    listener.pause()
+    listener.pause()  # must not double-close or raise
+    assert listener._sd.streams[0].closed is True
+
+
+def test_resume_without_a_prior_pause_is_a_noop():
+    listener = _fake_listener()
+    listener.start()
+    listener.resume()  # never paused -> must not open a second stream
+    assert len(listener._sd.streams) == 1
+
+
+def test_resume_before_start_is_a_noop():
+    listener = _fake_listener()
+    listener.resume()
+    assert listener._sd.streams == []
+
+
+# ── on_wake dispatches off the audio callback thread (deadlock avoidance) ───
+
+def test_callback_never_calls_on_wake_on_the_calling_thread():
+    # Regression test: pause() (called from on_wake -> _start_recording) now
+    # stops/closes this very stream, which sounddevice/PortAudio warns is
+    # unsafe to do from within the stream's own callback thread. The callback
+    # must hand off to a fresh thread instead of calling on_wake() inline.
+    caller_thread = threading.current_thread()
+    seen_threads = []
+    done = threading.Event()
+
+    def on_wake():
+        seen_threads.append(threading.current_thread())
+        done.set()
+
+    listener = _fake_listener(on_wake=on_wake, score=1.0)
+    listener.start()
+
+    listener._callback(_FakeIndata(), 1280, None, None)
+
+    assert done.wait(timeout=2)
+    assert seen_threads[0] is not caller_thread
+
+
+def test_callback_respects_retrigger_cooldown():
+    calls = []
+    listener = _fake_listener(on_wake=lambda: calls.append(1), score=1.0)
+    listener.start()
+    listener._last_trigger = time.monotonic()  # just triggered
+
+    listener._callback(_FakeIndata(), 1280, None, None)
+    time.sleep(0.05)
+    assert calls == []  # still inside the cooldown window
+
+
+def test_callback_does_not_trigger_below_threshold():
+    calls = []
+    listener = _fake_listener(on_wake=lambda: calls.append(1), score=0.1)
+
+    listener._callback(_FakeIndata(), 1280, None, None)
+    time.sleep(0.05)
+    assert calls == []

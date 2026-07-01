@@ -198,6 +198,7 @@ class Overlay:
 
         self._visible = False
         self._recording = False
+        self._wake_triggered_recording = False
         # TTS starts on only if both opted-in via config AND actually available.
         self._tts_enabled = bool(
             CONFIG.tts_enabled and speaker is not None and speaker.available
@@ -468,7 +469,7 @@ class Overlay:
 
     # ── Input handling ────────────────────────────────────────────────────────
 
-    def _submit(self, text: str) -> None:
+    def _submit(self, text: str, on_done: Callable[[], None] | None = None) -> None:
         # Fix misheard/misspelled proper names (voice + typed) before it reaches
         # the chat, the session notes, or any tool call.
         from . import name_corrector
@@ -518,6 +519,17 @@ class Overlay:
             self.set_status(STATUS_DONE)
             self._set_state("idle")
             self._eval("setInputsEnabled", True)
+            if speaking:
+                # finish() only queues the last sentence — the audio itself
+                # may still be playing. Block (we're on a background thread
+                # already) until it's truly done before on_done runs, so
+                # JARVIS's own voice can never be mistaken for a fresh wake.
+                self.speaker.wait_idle(timeout=30.0)
+            if on_done:
+                try:
+                    on_done()
+                except Exception as exc:  # noqa: BLE001
+                    log.error("submit on_done callback failed: %s", exc)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -609,7 +621,7 @@ class Overlay:
         else:
             self._start_recording()
 
-    def _start_recording(self) -> None:
+    def _start_recording(self, wake_triggered: bool = False) -> None:
         if not self.recorder.available or self._recording:
             return
         # Stop any in-progress speech so it doesn't bleed into the mic.
@@ -623,20 +635,29 @@ class Overlay:
             self.wake_word_listener.pause()
         if self.recorder.start():
             self._recording = True
+            self._wake_triggered_recording = wake_triggered
             self.set_status(STATUS_LISTENING)
             self._set_state("listening")
             self._eval("setRecording", True)
         elif self.wake_word_listener is not None:
             self.wake_word_listener.resume()  # start failed — don't leave it paused
 
+    def _resume_wake_word(self) -> None:
+        if self.wake_word_listener is not None:
+            self.wake_word_listener.resume()
+
     def _stop_recording(self) -> None:
         if not self._recording:
             return
         self._recording = False
         self._eval("setRecording", False)
+        wake_triggered = self._wake_triggered_recording
         wav_path = self.recorder.stop()
-        if self.wake_word_listener is not None:
-            self.wake_word_listener.resume()
+        # Deliberately NOT resuming the wake-word listener here: it stays
+        # paused through transcription + the full Claude turn (+ speech, via
+        # _submit's on_done) so "Hey JARVIS" can't false-trigger again while
+        # JARVIS is still thinking or talking — resume happens once the whole
+        # turn is truly over, in every branch below.
         self.set_status(STATUS_TRANSCRIBING)
         self._set_state("thinking")
 
@@ -644,6 +665,7 @@ class Overlay:
             if wav_path is None:
                 self.set_status("No audio captured — check mic")
                 self._set_state("idle")
+                self._resume_wake_word()
                 return
 
             def on_status(msg: str) -> None:
@@ -651,10 +673,18 @@ class Overlay:
 
             text = self.transcriber.transcribe(wav_path, on_status=on_status)
             if text:
-                self._submit(text)
+                if wake_triggered:
+                    # The wake engine consumes "Hey JARVIS" as the activation
+                    # trigger, so it's never part of the recorded/transcribed
+                    # command — restore it so phrase-matching (e.g. the "Hey
+                    # Jarvis, what's on the calendar for today?" easter egg)
+                    # sees the same text push-to-talk would have produced.
+                    text = f"Hey JARVIS, {text}"
+                self._submit(text, on_done=self._resume_wake_word)
             else:
                 self.set_status("No speech detected — check logs")
                 self._set_state("idle")
+                self._resume_wake_word()
 
         threading.Thread(target=worker, daemon=True).start()
 

@@ -301,6 +301,11 @@ class Speaker:
         # Streamed-utterance state (start_utterance/feed/finish) — see below.
         self._buffer = ""
         self._sentence_queue: queue.Queue | None = None
+        # Set while idle (nothing speaking); cleared for the duration of any
+        # speak()/start_utterance() call so wait_idle() can block until actual
+        # audio playback (not just synthesis) has truly finished.
+        self._done = threading.Event()
+        self._done.set()
 
         if not self._audio_ok():
             return
@@ -341,10 +346,18 @@ class Speaker:
         self.stop()
         stop_event = threading.Event()
         self._stop_event = stop_event
+        self._done.clear()
         self._thread = threading.Thread(
             target=self._run, args=(text, stop_event), daemon=True
         )
         self._thread.start()
+
+    def wait_idle(self, timeout: float | None = None) -> None:
+        """Block until any in-flight speech (one-shot or streamed) finishes
+        playing — not just until synthesis is queued. Used before treating a
+        turn as fully over (e.g. before resuming wake-word listening), so
+        JARVIS's own voice can't be picked back up as a new activation."""
+        self._done.wait(timeout)
 
     def stop(self) -> None:
         """Barge-in: cancel the current utterance and halt playback."""
@@ -364,21 +377,24 @@ class Speaker:
             pass
 
     def _run(self, text: str, stop_event: threading.Event) -> None:
-        # Spell out degree signs/dashes before markdown-stripping, which would
-        # otherwise drop the em/en dash characters this depends on matching.
-        clean = _strip_markdown(_normalize_for_speech(text))
-        if not clean or stop_event.is_set():
-            return
-        if len(clean) > MAX_SPEAK_CHARS:
-            clean = clean[:MAX_SPEAK_CHARS].rsplit(" ", 1)[0] + "…"
         try:
-            samples, samplerate = self._backend.synth(clean, stop_event)
-        except Exception as exc:  # noqa: BLE001
-            log.error("TTS synthesis failed: %s", exc)
-            return
-        if samples is None or stop_event.is_set():
-            return
-        _play(samples, samplerate, stop_event)
+            # Spell out degree signs/dashes before markdown-stripping, which
+            # would otherwise drop the em/en dash characters this needs.
+            clean = _strip_markdown(_normalize_for_speech(text))
+            if not clean or stop_event.is_set():
+                return
+            if len(clean) > MAX_SPEAK_CHARS:
+                clean = clean[:MAX_SPEAK_CHARS].rsplit(" ", 1)[0] + "…"
+            try:
+                samples, samplerate = self._backend.synth(clean, stop_event)
+            except Exception as exc:  # noqa: BLE001
+                log.error("TTS synthesis failed: %s", exc)
+                return
+            if samples is None or stop_event.is_set():
+                return
+            _play(samples, samplerate, stop_event)
+        finally:
+            self._done.set()
 
     # ── Streamed utterance (speak-as-you-go) ──────────────────────────────────
     # start_utterance() / feed() / finish() let the caller speak a reply as it
@@ -400,6 +416,7 @@ class Speaker:
         self._stop_event = stop_event
         self._buffer = ""
         self._sentence_queue = queue.Queue()
+        self._done.clear()
         self._thread = threading.Thread(
             target=self._consume_sentences, args=(stop_event, self._sentence_queue),
             daemon=True,
@@ -433,21 +450,24 @@ class Speaker:
         self._sentence_queue.put(None)  # sentinel: no more sentences coming
 
     def _consume_sentences(self, stop_event: threading.Event, q: "queue.Queue") -> None:
-        while not stop_event.is_set():
-            try:
-                sentence = q.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if sentence is None:
-                return
-            clean = _strip_markdown(_normalize_for_speech(sentence))
-            if not clean or stop_event.is_set():
-                continue
-            try:
-                samples, samplerate = self._backend.synth(clean, stop_event)
-            except Exception as exc:  # noqa: BLE001
-                log.error("TTS streamed synthesis failed: %s", exc)
-                continue
-            if samples is None or stop_event.is_set():
-                continue
-            _play(samples, samplerate, stop_event)
+        try:
+            while not stop_event.is_set():
+                try:
+                    sentence = q.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if sentence is None:
+                    return
+                clean = _strip_markdown(_normalize_for_speech(sentence))
+                if not clean or stop_event.is_set():
+                    continue
+                try:
+                    samples, samplerate = self._backend.synth(clean, stop_event)
+                except Exception as exc:  # noqa: BLE001
+                    log.error("TTS streamed synthesis failed: %s", exc)
+                    continue
+                if samples is None or stop_event.is_set():
+                    continue
+                _play(samples, samplerate, stop_event)
+        finally:
+            self._done.set()

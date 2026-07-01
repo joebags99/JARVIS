@@ -288,7 +288,7 @@ def _start_wake_word(overlay, recorder, wakeword_holder, schedule, log) -> None:
 
     def on_wake() -> None:
         overlay.show()
-        overlay._start_recording()
+        overlay._start_recording(wake_triggered=True)
         if overlay._recording:
             watch_for_silence(recorder, on_timeout=overlay._stop_recording)
 

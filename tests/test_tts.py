@@ -1,12 +1,22 @@
 """Tests for the TTS text-cleanup helpers (app/tts.py).
 
-Only the pure string functions are covered here — no sounddevice/numpy/network,
-so these run in the light CI environment like the rest of the suite.
+Most of this file covers the pure string functions — no sounddevice/numpy/
+network, so these run in the light CI environment like the rest of the suite.
+
+Speaker.wait_idle()'s clear/set bookkeeping is also covered: constructing a
+Speaker via __new__ (skipping __init__'s hardware probe entirely) and giving
+it a fake backend. _play() itself already degrades gracefully when
+sounddevice is missing (logs and returns), so this exercises the real
+speak()/start_utterance()/feed()/finish() code paths end to end without
+needing real audio hardware.
 """
 
 from __future__ import annotations
 
-from app.tts import _normalize_for_speech, _strip_markdown, split_ready_sentences
+import threading
+import time
+
+from app.tts import Speaker, _normalize_for_speech, _strip_markdown, split_ready_sentences
 
 
 # ── _normalize_for_speech ────────────────────────────────────────────────────
@@ -115,3 +125,73 @@ def test_question_and_exclamation_marks_split():
 
 def test_empty_buffer():
     assert split_ready_sentences("") == ([], "")
+
+
+# ── Speaker.wait_idle() ───────────────────────────────────────────────────────
+
+class _FakeBackend:
+    """synth() takes ~delay seconds (so wait_idle()'s timing is observable),
+    polling stop_event like the real backends do so barge-in interrupts
+    promptly instead of waiting out the full delay."""
+
+    def __init__(self, delay: float = 0.05):
+        self.delay = delay
+
+    def synth(self, text, stop_event):
+        waited, step = 0.0, 0.01
+        while waited < self.delay:
+            if stop_event.is_set():
+                return None, 0
+            time.sleep(step)
+            waited += step
+        return [0, 0, 0], 16000
+
+
+def _bare_speaker(delay: float = 0.05) -> Speaker:
+    """A Speaker with __init__'s hardware probe skipped entirely, so this
+    works regardless of whether sounddevice/numpy are installed."""
+    speaker = Speaker.__new__(Speaker)
+    speaker._stop_event = None
+    speaker._thread = None
+    speaker._backend = _FakeBackend(delay)
+    speaker._available = True
+    speaker._buffer = ""
+    speaker._sentence_queue = None
+    speaker._done = threading.Event()
+    speaker._done.set()
+    return speaker
+
+
+def test_wait_idle_blocks_until_one_shot_speech_finishes():
+    speaker = _bare_speaker(delay=0.1)
+    speaker.speak("hello there")
+    assert not speaker._done.is_set()  # synthesis is still "in flight"
+    speaker.wait_idle(timeout=2)
+    assert speaker._done.is_set()
+
+
+def test_wait_idle_blocks_until_streamed_utterance_finishes():
+    speaker = _bare_speaker(delay=0.1)
+    speaker.start_utterance()
+    speaker.feed("Hello there. ")
+    assert not speaker._done.is_set()
+    speaker.finish()
+    speaker.wait_idle(timeout=2)
+    assert speaker._done.is_set()
+
+
+def test_wait_idle_returns_immediately_when_nothing_speaking():
+    speaker = _bare_speaker()
+    start = time.monotonic()
+    speaker.wait_idle(timeout=2)
+    assert time.monotonic() - start < 0.5
+
+
+def test_stop_marks_done_even_when_interrupted_mid_utterance():
+    speaker = _bare_speaker(delay=5.0)  # long enough to still be "speaking"
+    speaker.start_utterance()
+    speaker.feed("This will be interrupted. ")
+    assert not speaker._done.is_set()
+    speaker.stop()
+    speaker.wait_idle(timeout=2)  # interrupts promptly, not after the full 5s
+    assert speaker._done.is_set()
