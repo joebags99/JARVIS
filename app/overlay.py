@@ -445,18 +445,30 @@ class Overlay:
         self._eval("setInputsEnabled", False)
 
         def worker() -> None:
+            speaking = self._tts_enabled and self.speaker is not None
+            if speaking:
+                self.speaker.start_utterance()
+
             # Stream text as Claude generates it; on_reset rolls the live text
             # back to the thinking state when a round's pre-tool narration gets
             # discarded (the model spoke, then decided to call a tool instead).
-            reply = self.claude.send(
-                text,
-                on_delta=lambda chunk: self._eval("appendAssistantDelta", chunk),
-                on_reset=lambda: self._eval("resetAssistantStream"),
-            )
-            # Start speaking once the reply is complete (Speaker cleans markdown
-            # and plays on its own thread, so this doesn't block the UI update).
-            if self._tts_enabled and self.speaker is not None:
-                self.speaker.speak(reply)
+            def on_delta(chunk: str) -> None:
+                self._eval("appendAssistantDelta", chunk)
+                if speaking:
+                    self.speaker.feed(chunk)
+
+            def on_reset() -> None:
+                self._eval("resetAssistantStream")
+                if speaking:
+                    # The narration spoken so far is about to be replaced by
+                    # the real answer — restart clean so the two don't run
+                    # together mid-sentence.
+                    self.speaker.start_utterance()
+
+            reply = self.claude.send(text, on_delta=on_delta, on_reset=on_reset)
+            # Flush whatever's left in the sentence buffer as the final clip.
+            if speaking:
+                self.speaker.finish()
             self._eval("finishAssistantMessage", reply)
             self.set_status(STATUS_DONE)
             self._set_state("idle")

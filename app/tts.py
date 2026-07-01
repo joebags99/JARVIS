@@ -12,10 +12,17 @@ Engines are pluggable via ``TTS_ENGINE``:
 Every backend returns PCM samples + a samplerate, and a single ``_play`` routine
 plays them through ``sounddevice`` (already a dependency) with barge-in support,
 so we never depend on engine-specific players or ffmpeg.
+
+Two ways to speak: ``speak(text)`` synthesizes and plays a complete text in one
+shot (used for short one-off notifications); ``start_utterance()`` /
+``feed(delta)`` / ``finish()`` speak a reply sentence-by-sentence as it streams
+in from Claude, so playback starts almost immediately instead of waiting for
+the whole answer — see the "Streamed utterance" section of ``Speaker`` below.
 """
 
 from __future__ import annotations
 
+import queue
 import re
 import threading
 
@@ -70,6 +77,60 @@ def _normalize_for_speech(text: str) -> str:
     text = re.sub(r"\s+--\s+", ", ", text)
     text = re.sub(r"(?<=\d)-(?=\d)", " to ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+# ── Sentence splitting (for streamed speech) ─────────────────────────────────
+
+_ABBREVIATIONS = {
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "vs", "st", "approx",
+    "etc", "eg", "ie", "no", "vol",
+}
+# A sentence boundary: one or more of .!?  (optionally followed by a closing
+# quote/paren) then whitespace. Captured so the match's end marks exactly
+# where the next sentence (or the still-incomplete tail) begins.
+_BOUNDARY_RE = re.compile(r"[.!?]+[)\]\"']*(\s+)")
+
+
+def split_ready_sentences(buffer: str) -> tuple[list[str], str]:
+    """Split *buffer* into complete sentences plus a still-incomplete tail.
+
+    Meant to be called repeatedly as more text streams in: keep the returned
+    tail and concatenate the next chunk onto it before calling again.
+    Deliberately conservative, not real NLP — a decimal like "3.5" is never
+    mistaken for a boundary since the period there has no whitespace after it
+    (the regex requires whitespace to even match), and a short list of common
+    abbreviations ("Mr.", "Dr.", ...) is checked so those don't fire an early,
+    awkward pause. A blank line is always treated as a boundary too (e.g.
+    between list items/paragraphs).
+    """
+    if not buffer:
+        return [], buffer
+
+    sentences: list[str] = []
+    pos = 0
+    for m in _BOUNDARY_RE.finditer(buffer):
+        punct_idx = m.start()
+        candidate = buffer[pos:m.end()]
+        words = re.findall(r"[A-Za-z]+", candidate)
+        if buffer[punct_idx] == "." and words and words[-1].lower() in _ABBREVIATIONS:
+            continue
+        stripped = candidate.strip()
+        if stripped:
+            sentences.append(stripped)
+        pos = m.end()
+
+    # A blank line inside the not-yet-emitted tail is a hard boundary too,
+    # independent of punctuation (only the first one — later ones are caught
+    # on the next call once more text has streamed in).
+    tail = buffer[pos:]
+    para_split = re.split(r"\n\s*\n", tail, maxsplit=1)
+    if len(para_split) == 2:
+        piece = para_split[0].strip()
+        if piece:
+            sentences.append(piece)
+        tail = para_split[1]
+
+    return sentences, tail
 
 
 # ── Playback (shared by all backends) ───────────────────────────────────────
@@ -237,6 +298,9 @@ class Speaker:
         self._thread: threading.Thread | None = None
         self._backend = None
         self._available = False
+        # Streamed-utterance state (start_utterance/feed/finish) — see below.
+        self._buffer = ""
+        self._sentence_queue: queue.Queue | None = None
 
         if not self._audio_ok():
             return
@@ -286,6 +350,13 @@ class Speaker:
         """Barge-in: cancel the current utterance and halt playback."""
         if self._stop_event is not None:
             self._stop_event.set()
+        if self._sentence_queue is not None:
+            # Wake the streamed-utterance consumer immediately (it also checks
+            # stop_event on its own, but the sentinel avoids the poll delay).
+            try:
+                self._sentence_queue.put_nowait(None)
+            except Exception:  # noqa: BLE001
+                pass
         try:
             import sounddevice as sd
             sd.stop()
@@ -308,3 +379,75 @@ class Speaker:
         if samples is None or stop_event.is_set():
             return
         _play(samples, samplerate, stop_event)
+
+    # ── Streamed utterance (speak-as-you-go) ──────────────────────────────────
+    # start_utterance() / feed() / finish() let the caller speak a reply as it
+    # streams in from Claude, sentence by sentence, instead of waiting for the
+    # full text (which speak() above still does — unchanged, still used for
+    # one-shot texts like proactive notifications). feed() only *extracts*
+    # ready sentences and queues their text; a dedicated consumer thread does
+    # the actual (blocking) synth + playback, so feed() — called once per
+    # on_delta chunk — never blocks the text-streaming loop that's calling it.
+
+    def start_utterance(self) -> None:
+        """Begin a new streamed utterance: cancels any current speech and
+        arms the sentence-by-sentence pipeline. Call feed() as text streams
+        in, then finish() once the full reply is known."""
+        if not self._available:
+            return
+        self.stop()
+        stop_event = threading.Event()
+        self._stop_event = stop_event
+        self._buffer = ""
+        self._sentence_queue = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._consume_sentences, args=(stop_event, self._sentence_queue),
+            daemon=True,
+        )
+        self._thread.start()
+
+    def feed(self, delta: str) -> None:
+        """Feed one streamed text chunk; queues any sentence it completes."""
+        if (
+            not self._available or not delta
+            or self._stop_event is None or self._stop_event.is_set()
+            or self._sentence_queue is None
+        ):
+            return
+        self._buffer += delta
+        sentences, self._buffer = split_ready_sentences(self._buffer)
+        for sentence in sentences:
+            self._sentence_queue.put(sentence)
+
+    def finish(self) -> None:
+        """Flush any remaining buffered text as the final sentence."""
+        if (
+            not self._available
+            or self._stop_event is None or self._stop_event.is_set()
+            or self._sentence_queue is None
+        ):
+            return
+        if self._buffer.strip():
+            self._sentence_queue.put(self._buffer)
+        self._buffer = ""
+        self._sentence_queue.put(None)  # sentinel: no more sentences coming
+
+    def _consume_sentences(self, stop_event: threading.Event, q: "queue.Queue") -> None:
+        while not stop_event.is_set():
+            try:
+                sentence = q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if sentence is None:
+                return
+            clean = _strip_markdown(_normalize_for_speech(sentence))
+            if not clean or stop_event.is_set():
+                continue
+            try:
+                samples, samplerate = self._backend.synth(clean, stop_event)
+            except Exception as exc:  # noqa: BLE001
+                log.error("TTS streamed synthesis failed: %s", exc)
+                continue
+            if samples is None or stop_event.is_set():
+                continue
+            _play(samples, samplerate, stop_event)

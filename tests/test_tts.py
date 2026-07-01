@@ -6,7 +6,7 @@ so these run in the light CI environment like the rest of the suite.
 
 from __future__ import annotations
 
-from app.tts import _normalize_for_speech, _strip_markdown
+from app.tts import _normalize_for_speech, _strip_markdown, split_ready_sentences
 
 
 # ── _normalize_for_speech ────────────────────────────────────────────────────
@@ -56,3 +56,62 @@ def test_strip_markdown_keeps_degree_and_hyphen_for_normalize_to_handle_first():
 
 def test_strip_markdown_drops_emoji():
     assert "🎉" not in _strip_markdown("Great work! 🎉")
+
+
+# ── split_ready_sentences (streamed speech) ──────────────────────────────────
+def test_splits_multiple_complete_sentences():
+    sentences, tail = split_ready_sentences("Hello there. How are you? I'm fine!")
+    assert sentences == ["Hello there.", "How are you?"]
+    assert tail == "I'm fine!"  # no trailing whitespace yet -> stays buffered
+
+
+def test_incomplete_sentence_stays_in_tail():
+    sentences, tail = split_ready_sentences("Just getting star")
+    assert sentences == []
+    assert tail == "Just getting star"
+
+
+def test_feeding_more_text_completes_the_tail():
+    _, tail = split_ready_sentences("The weather today is ")
+    sentences, tail = split_ready_sentences(tail + "sunny. Enjoy!")
+    assert sentences == ["The weather today is sunny."]
+    assert tail == "Enjoy!"
+
+
+def test_abbreviation_does_not_split():
+    sentences, tail = split_ready_sentences("I met Dr. Smith today. He was nice.")
+    assert sentences == ["I met Dr. Smith today."]
+    assert tail == "He was nice."
+
+
+def test_decimal_number_never_splits():
+    # No whitespace between '.' and the next digit, so the boundary regex
+    # can't match there regardless of what streamed chunk it arrived in.
+    sentences, tail = split_ready_sentences("The value is 3.5 today. Next line.")
+    assert sentences == ["The value is 3.5 today."]
+    assert tail == "Next line."
+
+
+def test_digit_then_space_then_digit_still_splits():
+    # Not a decimal (there's a real space) -> a genuine sentence boundary. The
+    # second sentence has no trailing whitespace yet, so it stays in the tail
+    # (as any not-yet-terminated sentence does) rather than being returned.
+    sentences, tail = split_ready_sentences("The total is 12. 5 items remain.")
+    assert sentences == ["The total is 12."]
+    assert tail == "5 items remain."
+
+
+def test_blank_line_is_a_boundary():
+    sentences, tail = split_ready_sentences("First point\n\nSecond point starts")
+    assert sentences == ["First point"]
+    assert tail == "Second point starts"
+
+
+def test_question_and_exclamation_marks_split():
+    sentences, tail = split_ready_sentences("Really? Yes! Are you sure? ")
+    assert sentences == ["Really?", "Yes!", "Are you sure?"]
+    assert tail == ""
+
+
+def test_empty_buffer():
+    assert split_ready_sentences("") == ([], "")
