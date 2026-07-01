@@ -242,6 +242,30 @@ def extract_aliases(meta: dict) -> list[str]:
     return _dedupe([str(x).lstrip("#").strip() for x in a if str(x).strip()])
 
 
+_OPEN_ITEM_HEADERS = {"action items", "open questions"}
+
+
+def extract_open_items(body: str) -> list[str]:
+    """Bullet lines under a ``## Action Items``/``## Open Questions`` heading.
+
+    Matches the "session" note template (``app/vault_templates.py``). Stops
+    collecting at the next ``##`` heading; an empty/placeholder section (the
+    unfilled template stub) yields nothing.
+    """
+    items: list[str] = []
+    in_section = False
+    for line in (body or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            in_section = stripped[3:].strip().lower() in _OPEN_ITEM_HEADERS
+            continue
+        if in_section and stripped.startswith(("- ", "* ")):
+            text = stripped[2:].strip()
+            if text:
+                items.append(text)
+    return items
+
+
 # ── People roster / name canonicalization ────────────────────────────────────
 # Source of truth = the People/ notes' titles + ``aliases`` frontmatter. The
 # roster maps every lowercased alias (and the canonical name itself) to the one
@@ -882,6 +906,45 @@ def capture_idea(text: str) -> str:
     stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     append_note("Ideas/Inbox.md", f"- {stamp} — {text}")
     return f"Captured to Ideas/Inbox.md: {text}"
+
+
+def list_open_callbacks() -> list[tuple[str, dict, list[str]]]:
+    """Every ``Sessions/`` note with at least one open Action Item/Open Question.
+
+    Raw and unfiltered — includes notes already nudged and notes too fresh to
+    nudge about. ``app.proactive.callback_due`` decides which are actually due,
+    so this stays a plain "what's in the vault" read with no scheduling policy
+    baked in, matching how ``fetch_events`` returns every calendar event and
+    lets a pure decision function pick which are "due soon."
+    """
+    out: list[tuple[str, dict, list[str]]] = []
+    for rel in list_notes(folder="Sessions"):
+        try:
+            raw = (vault_root() / rel).read_text(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            continue
+        meta, body = parse_frontmatter(raw)
+        items = extract_open_items(body)
+        if items:
+            out.append((rel, meta, items))
+    return out
+
+
+def mark_callback_nudged(rel: str) -> None:
+    """Stamp a note so its open items are never nudged about again.
+
+    Frontmatter-only rewrite (same pattern as :func:`backfill_types`) — the
+    dedup state lives in the vault itself rather than a new side file, so it
+    survives a JARVIS restart without any extra persisted state.
+    """
+    p = _safe_path(rel)
+    if not p.exists():
+        return
+    meta, body = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+    meta["callback_nudged"] = _today()
+    p.write_text(f"{build_frontmatter(meta)}{body.strip()}\n", encoding="utf-8")
+    _reindex_path(p)
+    log.info("marked vault callback nudged: %s", rel)
 
 
 def backfill_types() -> int:

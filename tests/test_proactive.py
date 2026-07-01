@@ -8,6 +8,7 @@ from app.config import CONFIG
 from app.proactive import (
     ProactiveScheduler,
     briefing_due,
+    callback_due,
     in_quiet_hours,
     meeting_alerts_due,
     parse_hhmm,
@@ -95,6 +96,22 @@ def test_short_sender():
     assert short_sender("") == "(unknown sender)"
 
 
+def test_callback_due():
+    today = dt.date(2026, 6, 22)
+    stale = {"updated": "2026-06-15"}   # 7 days old
+    fresh = {"updated": "2026-06-20"}   # 2 days old
+    already_nudged = {"updated": "2026-06-01", "callback_nudged": "2026-06-10"}
+    no_date = {}
+    bad_date = {"updated": "not-a-date"}
+    assert callback_due(stale, 4, today)
+    assert not callback_due(fresh, 4, today)
+    assert not callback_due(already_nudged, 4, today)
+    assert not callback_due(no_date, 4, today)
+    assert not callback_due(bad_date, 4, today)
+    # falls back to `created` when `updated` is missing
+    assert callback_due({"created": "2026-06-01"}, 4, today)
+
+
 # ── Scheduler tick behavior ───────────────────────────────────────────────────
 
 def _sched(**fakes):
@@ -103,6 +120,8 @@ def _sched(**fakes):
         briefing=fakes.get("briefing", lambda: None),
         fetch_events=fakes.get("fetch_events", lambda: []),
         fetch_email=fakes.get("fetch_email", lambda: []),
+        fetch_vault_items=fakes.get("fetch_vault_items", lambda: []),
+        mark_vault_nudged=fakes.get("mark_vault_nudged", lambda rel: None),
     )
 
 
@@ -113,6 +132,10 @@ def _enable(monkeypatch, **over):
     monkeypatch.setattr(CONFIG, "meeting_lead_min", 15)
     monkeypatch.setattr(CONFIG, "briefing_time", over.get("briefing_time", ""))
     monkeypatch.setattr(CONFIG, "quiet_hours", over.get("quiet_hours", ""))
+    monkeypatch.setattr(
+        CONFIG, "vault_callbacks_enabled", over.get("vault_callbacks_enabled", False)
+    )
+    monkeypatch.setattr(CONFIG, "vault_callback_days", over.get("vault_callback_days", 4))
 
 
 def test_tick_noop_when_disabled(monkeypatch):
@@ -160,3 +183,60 @@ def test_email_first_poll_seeds_then_pings_new(monkeypatch):
     inbox.append({"id": "b", "sender": "Sam <s@x>", "subject": "New deal"})
     s.tick(now)                 # only the newly-arrived message pings
     assert len(notes) == 1 and "Sam" in notes[0]
+
+
+def _obsidian_available(monkeypatch, value: bool) -> None:
+    monkeypatch.setattr(type(CONFIG), "obsidian_available", property(lambda self: value))
+
+
+def test_vault_callback_fires_once_and_marks_nudged(monkeypatch):
+    _enable(monkeypatch, vault_callbacks_enabled=True, vault_callback_days=4)
+    _obsidian_available(monkeypatch, True)
+    now = dt.datetime(2026, 6, 22, 9, 0)
+    item = ("Sessions/old.md", {"title": "Old Planning", "updated": "2026-06-15"}, ["Follow up with Sam"])
+    notes, marked = [], []
+    s = _sched(
+        notify=lambda t, m: notes.append(m),
+        fetch_vault_items=lambda: [item],
+        mark_vault_nudged=lambda rel: marked.append(rel),
+    )
+    s.tick(now)
+    assert len(notes) == 1
+    assert "Old Planning" in notes[0] and "Follow up with Sam" in notes[0]
+    assert marked == ["Sessions/old.md"]
+
+
+def test_vault_callback_not_due_yet_is_not_nudged(monkeypatch):
+    _enable(monkeypatch, vault_callbacks_enabled=True, vault_callback_days=4)
+    _obsidian_available(monkeypatch, True)
+    now = dt.datetime(2026, 6, 22, 9, 0)
+    item = ("Sessions/fresh.md", {"title": "Fresh", "updated": "2026-06-21"}, ["Todo"])
+    notes = []
+    s = _sched(notify=lambda t, m: notes.append(m), fetch_vault_items=lambda: [item])
+    s.tick(now)
+    assert notes == []
+
+
+def test_vault_callback_disabled_by_default(monkeypatch):
+    _enable(monkeypatch)  # vault_callbacks_enabled defaults False
+    _obsidian_available(monkeypatch, True)
+    now = dt.datetime(2026, 6, 22, 9, 0)
+    item = ("Sessions/old.md", {"title": "Old", "updated": "2026-06-01"}, ["Todo"])
+    notes = []
+    s = _sched(notify=lambda t, m: notes.append(m), fetch_vault_items=lambda: [item])
+    s.tick(now)
+    assert notes == []
+
+
+def test_vault_callback_suppressed_in_quiet_hours(monkeypatch):
+    _enable(
+        monkeypatch, vault_callbacks_enabled=True, vault_callback_days=4,
+        quiet_hours="22:00-07:00",
+    )
+    _obsidian_available(monkeypatch, True)
+    now = dt.datetime(2026, 6, 22, 23, 0)  # inside quiet hours
+    item = ("Sessions/old.md", {"title": "Old", "updated": "2026-06-01"}, ["Todo"])
+    notes = []
+    s = _sched(notify=lambda t, m: notes.append(m), fetch_vault_items=lambda: [item])
+    s.tick(now)
+    assert notes == []

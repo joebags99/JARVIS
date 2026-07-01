@@ -228,11 +228,21 @@ def _start_proactive(overlay, speaker, tray_holder, scheduler_holder, schedule, 
         from integrations import gmail
         return gmail.list_unread()
 
+    def fetch_vault_items() -> list:
+        from integrations import obsidian
+        return obsidian.list_open_callbacks()
+
+    def mark_vault_nudged(rel: str) -> None:
+        from integrations import obsidian
+        obsidian.mark_callback_nudged(rel)
+
     scheduler = ProactiveScheduler(
         notify=notify,
         briefing=lambda: schedule(overlay.daily_briefing),
         fetch_events=fetch_events,
         fetch_email=fetch_email,
+        fetch_vault_items=fetch_vault_items,
+        mark_vault_nudged=mark_vault_nudged,
     )
     scheduler.start()
     scheduler_holder["scheduler"] = scheduler

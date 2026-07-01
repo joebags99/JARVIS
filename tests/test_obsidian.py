@@ -231,6 +231,55 @@ def test_write_canvas_groups_and_links_entities(vault):
     }
 
 
+def test_extract_open_items():
+    body = (
+        "# Planning\n\n## Summary\nWe talked.\n\n"
+        "## Action Items\n- Follow up with Sam\n- Send the doc\n\n"
+        "## Open Questions\n- Is budget approved?\n\n"
+        "## Decisions\n- Ship next week\n"
+    )
+    assert obsidian.extract_open_items(body) == [
+        "Follow up with Sam", "Send the doc", "Is budget approved?",
+    ]
+
+
+def test_extract_open_items_empty_section_yields_nothing():
+    body = "## Action Items\n\n## Decisions\n- Something else\n"
+    assert obsidian.extract_open_items(body) == []
+
+
+def test_list_open_callbacks_only_returns_sessions_with_open_items(vault):
+    obsidian.write_note(
+        "Sessions/planning.md",
+        "## Action Items\n- Follow up with Sam\n",
+        title="Planning", canonicalize=False,
+    )
+    obsidian.write_note(
+        "Sessions/empty.md", "## Summary\nNothing outstanding.\n",
+        title="Empty", canonicalize=False,
+    )
+    obsidian.write_note("Topics/unrelated.md", "## Action Items\n- Not a session\n",
+                         title="Unrelated", canonicalize=False)
+
+    out = {rel: items for rel, _meta, items in obsidian.list_open_callbacks()}
+    assert out == {"Sessions/planning.md": ["Follow up with Sam"]}
+
+
+def test_mark_callback_nudged_stamps_frontmatter_and_excludes_from_next_list(vault):
+    obsidian.write_note(
+        "Sessions/planning.md", "## Action Items\n- Follow up with Sam\n",
+        title="Planning", canonicalize=False,
+    )
+    obsidian.mark_callback_nudged("Sessions/planning.md")
+    note = obsidian.read_note("Sessions/planning.md")
+    assert note.meta.get("callback_nudged")
+    # still listed (list_open_callbacks is unfiltered by design — the pure
+    # proactive.callback_due() is what excludes an already-nudged note), but
+    # the stamp it wrote is exactly what that decision function checks for.
+    out = {rel: meta for rel, meta, _items in obsidian.list_open_callbacks()}
+    assert out["Sessions/planning.md"].get("callback_nudged")
+
+
 def test_find_misfiled_and_refile(vault):
     # A real person + a meeting wrongly in People, and the same person duplicated in Projects.
     obsidian.write_note("People/Felicity Kline.md", "person", title="Felicity Kline", canonicalize=False)

@@ -1,22 +1,25 @@
 """Proactive scheduler — JARVIS acts without being asked.
 
 A lightweight background daemon thread (no extra dependency) that ticks once a
-minute and runs three opt-in jobs:
+minute and runs four opt-in jobs:
 
   * **Scheduled briefing** — fires the daily briefing once at a configured time.
   * **Meeting alerts** — "<title> starts in N min" before calendar events.
   * **Important-email pings** — a balloon when high-signal unread mail arrives.
+  * **Vault callbacks** — a nudge when a Sessions/ note's Action Items/Open
+    Questions have sat untouched for a few days.
 
-The side-effecting work (fetching events/mail, showing notifications, triggering
-the briefing) is injected as callables so the decision logic can be unit-tested
-with fakes. All scheduling *decisions* — quiet hours, "is the briefing due", "is
-a meeting close enough", dedup — are pure module functions below.
+The side-effecting work (fetching events/mail/vault notes, showing
+notifications, triggering the briefing) is injected as callables so the
+decision logic can be unit-tested with fakes. All scheduling *decisions* —
+quiet hours, "is the briefing due", "is a meeting close enough", "is a
+callback stale enough", dedup — are pure module functions below.
 
 Everything respects ``CONFIG``: nothing runs unless ``proactive_enabled`` is
-set, meeting/email alerts are individually gated, and quiet hours suppress the
+set, each job is individually gated, and quiet hours suppress the interrupting
 alerts (but not the explicitly-scheduled briefing). The job is to be helpful,
-never naggy: each meeting is alerted once, each email pinged once, and the
-briefing fires once per day.
+never naggy: each meeting is alerted once, each email pinged once, each vault
+callback nudged once ever, and the briefing fires once per day.
 """
 
 from __future__ import annotations
@@ -141,6 +144,26 @@ def short_sender(sender: str) -> str:
     return sender or "(unknown sender)"
 
 
+def callback_due(meta: dict, threshold_days: int, today: dt.date) -> bool:
+    """True when a vault note's open items are stale enough to nudge about.
+
+    Fires once per note: a note already stamped ``callback_nudged`` (see
+    ``integrations.obsidian.mark_callback_nudged``) never fires again. A
+    missing/malformed date is treated as not-due rather than raising, since a
+    vault note's frontmatter isn't guaranteed clean.
+    """
+    if meta.get("callback_nudged"):
+        return False
+    updated = meta.get("updated") or meta.get("created")
+    if not updated:
+        return False
+    try:
+        updated_date = dt.date.fromisoformat(str(updated))
+    except ValueError:
+        return False
+    return (today - updated_date).days >= threshold_days
+
+
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 
 class ProactiveScheduler:
@@ -153,12 +176,16 @@ class ProactiveScheduler:
         briefing: Callable[[], None],
         fetch_events: Callable[[], list],
         fetch_email: Callable[[], list[dict]],
+        fetch_vault_items: Callable[[], list[tuple[str, dict, list[str]]]] = lambda: [],
+        mark_vault_nudged: Callable[[str], None] = lambda rel: None,
         tick_seconds: int = TICK_SECONDS,
     ) -> None:
         self._notify = notify
         self._briefing = briefing
         self._fetch_events = fetch_events
         self._fetch_email = fetch_email
+        self._fetch_vault_items = fetch_vault_items
+        self._mark_vault_nudged = mark_vault_nudged
         self._tick_seconds = tick_seconds
 
         self._stop = threading.Event()
@@ -178,8 +205,10 @@ class ProactiveScheduler:
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         log.info(
-            "proactive scheduler started (briefing=%s, meeting_alerts=%s, email_alerts=%s)",
+            "proactive scheduler started (briefing=%s, meeting_alerts=%s, "
+            "email_alerts=%s, vault_callbacks=%s)",
             CONFIG.briefing_time or "off", CONFIG.meeting_alerts, CONFIG.email_alerts,
+            CONFIG.vault_callbacks_enabled,
         )
 
     def stop(self) -> None:
@@ -204,6 +233,7 @@ class ProactiveScheduler:
             return
         self._maybe_meeting_alerts(now)
         self._maybe_email_pings(now)
+        self._maybe_vault_callbacks(now)
 
     def _maybe_briefing(self, now: dt.datetime) -> None:
         target = parse_hhmm(CONFIG.briefing_time)
@@ -259,3 +289,23 @@ class ProactiveScheduler:
         if len(self._pinged_email_ids) > _MAX_PINGED_IDS:
             # Drop the oldest-ish half; exact order doesn't matter for dedup.
             self._pinged_email_ids = set(list(self._pinged_email_ids)[-_MAX_PINGED_IDS // 2:])
+
+    def _maybe_vault_callbacks(self, now: dt.datetime) -> None:
+        if not (CONFIG.vault_callbacks_enabled and CONFIG.obsidian_available):
+            return
+        try:
+            items = self._fetch_vault_items() or []
+        except Exception as exc:  # noqa: BLE001
+            log.error("vault-callback fetch failed: %s", exc)
+            return
+        for rel, meta, open_items in items:
+            if not callback_due(meta, CONFIG.vault_callback_days, now.date()):
+                continue
+            title = meta.get("title") or rel
+            preview = open_items[0]
+            extra = f" (+{len(open_items) - 1} more)" if len(open_items) > 1 else ""
+            self._notify("Still open?", f"{title}: {preview}{extra}")
+            try:
+                self._mark_vault_nudged(rel)
+            except Exception as exc:  # noqa: BLE001
+                log.error("could not mark vault callback nudged for %s: %s", rel, exc)

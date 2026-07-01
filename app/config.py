@@ -258,6 +258,15 @@ class Config:
     email_alerts: bool = field(default_factory=lambda: _get_bool("JARVIS_EMAIL_ALERTS"))
     # Speak proactive notifications aloud (in addition to the tray balloon).
     proactive_speak: bool = field(default_factory=lambda: _get_bool("JARVIS_PROACTIVE_SPEAK"))
+    # Vault callbacks: nudge once when a Sessions/ note's Action Items/Open
+    # Questions have sat untouched for this many days. Purely local (no API
+    # calls); dedup is a frontmatter stamp on the note itself, not a side file.
+    vault_callbacks_enabled: bool = field(
+        default_factory=lambda: _get_bool("JARVIS_VAULT_CALLBACKS_ENABLED")
+    )
+    vault_callback_days: int = field(
+        default_factory=lambda: _get_int("JARVIS_VAULT_CALLBACK_DAYS", 4)
+    )
 
     # Monarch Money — connects via official MCP server using OAuth.
     # Set MONARCH_ENABLED=true; a browser opens on first use for authorization.
