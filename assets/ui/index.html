@@ -15,11 +15,27 @@
         J A R V I S
       </div>
       <div id="header-actions">
+        <button id="notif-btn" class="icon-btn" title="Notifications">
+          &#128276;<span id="notif-badge" class="notif-badge hidden">0</span>
+        </button>
         <button id="settings-btn" class="icon-btn" title="Settings">&#9881;</button>
         <button id="dials-btn" class="icon-btn" title="Voice dials">&#127899;</button>
         <button id="clear-btn" class="icon-btn" title="Clear chat">&#8634;</button>
         <button id="close-btn" class="icon-btn" title="Close">&#10005;</button>
       </div>
+    </div>
+
+    <!-- Notifications: durable history of proactive nudges (meeting alerts,
+         email pings, vault "still open?" callbacks) — a tray balloon
+         disappears the moment it's dismissed, this doesn't. -->
+    <div id="notif-panel" class="hidden" aria-hidden="true">
+      <div id="notif-head">
+        <span class="dials-title">Notifications</span>
+        <div class="dials-head-actions">
+          <button id="notif-close" class="dials-link" title="Close">&#10005;</button>
+        </div>
+      </div>
+      <div id="notif-list"></div>
     </div>
 
     <!-- Voice dials: drag a slider to retune JARVIS instantly, no LLM call. -->

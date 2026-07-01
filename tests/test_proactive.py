@@ -122,6 +122,7 @@ def _sched(**fakes):
         fetch_email=fakes.get("fetch_email", lambda: []),
         fetch_vault_items=fakes.get("fetch_vault_items", lambda: []),
         mark_vault_nudged=fakes.get("mark_vault_nudged", lambda rel: None),
+        refresh_vault_callbacks=fakes.get("refresh_vault_callbacks", lambda: None),
     )
 
 
@@ -240,3 +241,56 @@ def test_vault_callback_suppressed_in_quiet_hours(monkeypatch):
     s = _sched(notify=lambda t, m: notes.append(m), fetch_vault_items=lambda: [item])
     s.tick(now)
     assert notes == []
+
+
+def test_vault_callback_refreshes_dashboard_when_something_nudged(monkeypatch):
+    _enable(monkeypatch, vault_callbacks_enabled=True, vault_callback_days=4)
+    _obsidian_available(monkeypatch, True)
+    now = dt.datetime(2026, 6, 22, 9, 0)
+    item = ("Sessions/old.md", {"title": "Old", "updated": "2026-06-01"}, ["Todo"])
+    refreshed = []
+    s = _sched(
+        fetch_vault_items=lambda: [item],
+        refresh_vault_callbacks=lambda: refreshed.append(1),
+    )
+    s.tick(now)
+    assert refreshed == [1]
+
+
+def test_vault_callback_refreshes_dashboard_even_when_nothing_newly_due(monkeypatch):
+    # Not just a log of past nudges — the note should also drop items the
+    # user resolved directly in Obsidian, so it refreshes every tick.
+    _enable(monkeypatch, vault_callbacks_enabled=True, vault_callback_days=4)
+    _obsidian_available(monkeypatch, True)
+    now = dt.datetime(2026, 6, 22, 9, 0)
+    item = ("Sessions/fresh.md", {"title": "Fresh", "updated": "2026-06-21"}, ["Todo"])
+    refreshed = []
+    s = _sched(
+        fetch_vault_items=lambda: [item],
+        refresh_vault_callbacks=lambda: refreshed.append(1),
+    )
+    s.tick(now)
+    assert refreshed == [1]
+
+
+def test_vault_callback_refresh_suppressed_in_quiet_hours(monkeypatch):
+    _enable(
+        monkeypatch, vault_callbacks_enabled=True, vault_callback_days=4,
+        quiet_hours="22:00-07:00",
+    )
+    _obsidian_available(monkeypatch, True)
+    now = dt.datetime(2026, 6, 22, 23, 0)  # inside quiet hours
+    refreshed = []
+    s = _sched(refresh_vault_callbacks=lambda: refreshed.append(1))
+    s.tick(now)
+    assert refreshed == []
+
+
+def test_vault_callback_refresh_noop_when_disabled(monkeypatch):
+    _enable(monkeypatch)  # vault_callbacks_enabled defaults False
+    _obsidian_available(monkeypatch, True)
+    now = dt.datetime(2026, 6, 22, 9, 0)
+    refreshed = []
+    s = _sched(refresh_vault_callbacks=lambda: refreshed.append(1))
+    s.tick(now)
+    assert refreshed == []

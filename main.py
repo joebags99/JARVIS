@@ -153,17 +153,18 @@ def _init_knowledge(log):
             if CONFIG.obsidian_auto_organize:
                 # Keep the vault tidy: refile meetings that slipped into an entity
                 # folder back to Sessions/, type-stamp notes, refresh the hub Maps
-                # of Content, the graph color config, the stats dashboard, and the
-                # entity Canvas. Idempotent — only rewrites what changed — so it's
-                # cheap on every launch.
+                # of Content, the graph color config, the stats dashboard, the
+                # entity Canvas, and the open-callbacks note. Idempotent — only
+                # rewrites what changed — so it's cheap on every launch.
                 refiled = obsidian.refile_meetings(dry_run=False)
                 typed = obsidian.backfill_types()
                 maps = obsidian.rebuild_mocs()
                 obsidian.write_graph_config()
                 obsidian.write_dashboard()
                 obsidian.write_canvas()
+                obsidian.write_callbacks()
                 log.info("  Vault: organized (%d meetings refiled, %d newly typed, "
-                         "%d maps, graph colored, dashboard + canvas refreshed)",
+                         "%d maps, graph colored, dashboard + canvas + callbacks refreshed)",
                          len(refiled), typed, maps)
             indexed = obsidian.reindex()
             log.info("  Vault: %s (%d note(s) indexed)",
@@ -221,6 +222,13 @@ def _start_proactive(overlay, speaker, tray_holder, scheduler_holder, schedule, 
 
     def notify(title: str, message: str) -> None:
         log.info("PROACTIVE [%s] %s", title, message)
+        # Durable record for the bell icon — a tray balloon disappears the
+        # moment it's dismissed, so this is what actually lets a nudge be
+        # tracked/reviewed later instead of only living in this log line.
+        try:
+            schedule(lambda: overlay.record_notification(title, message))
+        except Exception as exc:  # noqa: BLE001
+            log.debug("overlay notification record failed: %s", exc)
         tray = tray_holder.get("tray")
         delivered = tray.notify(title, message) if tray is not None else False
         if not delivered:
@@ -257,6 +265,10 @@ def _start_proactive(overlay, speaker, tray_holder, scheduler_holder, schedule, 
         from integrations import obsidian
         obsidian.mark_callback_nudged(rel)
 
+    def refresh_vault_callbacks() -> None:
+        from integrations import obsidian
+        obsidian.write_callbacks()
+
     scheduler = ProactiveScheduler(
         notify=notify,
         briefing=lambda: schedule(overlay.daily_briefing),
@@ -264,6 +276,7 @@ def _start_proactive(overlay, speaker, tray_holder, scheduler_holder, schedule, 
         fetch_email=fetch_email,
         fetch_vault_items=fetch_vault_items,
         mark_vault_nudged=mark_vault_nudged,
+        refresh_vault_callbacks=refresh_vault_callbacks,
     )
     scheduler.start()
     scheduler_holder["scheduler"] = scheduler

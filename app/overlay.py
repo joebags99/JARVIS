@@ -33,6 +33,7 @@ WINDOW_W = 420
 WINDOW_H = 640
 MARGIN = 16
 MIN_TURNS_FOR_SUMMARY = 5  # user messages required before auto-saving a summary
+_MAX_NOTIFICATIONS = 50  # bell-icon history — most recent kept, oldest dropped
 
 # 0 = fully invisible, 255 = fully opaque.
 WINDOW_ALPHA_IDLE = 150  # ~58% opaque — tints the desktop through when unfocused
@@ -149,6 +150,10 @@ class _JSApi:
     def get_settings(self) -> dict:
         return self._overlay._get_settings()
 
+    # ── Proactive-nudge history (bell icon) ───────────────────────────────────
+    def get_notifications(self) -> dict:
+        return self._overlay._get_notifications()
+
     def save_categories(self, categories: list[str]) -> dict:
         return self._overlay._save_categories(categories)
 
@@ -211,6 +216,13 @@ class Overlay:
         # sent message, and the (transient) region-selector window while open.
         self._pending_screenshot_b64: str | None = None
         self._selector_window = None
+
+        # Proactive-nudge history (bell icon): a tray balloon disappears the
+        # moment it's dismissed, so this durable, in-app list — most recent
+        # first — is what actually lets meeting alerts/email pings/vault
+        # callbacks be reviewed later instead of only living in the log.
+        self._notifications: list[dict] = []
+        self._unread_notifications = 0
 
         # Set by main.py after construction (mutual reference: the listener's
         # on_wake needs this Overlay, and this Overlay needs the listener to
@@ -743,6 +755,33 @@ class Overlay:
             log.warning("save_categories failed: %s", exc)
             return {**self._get_settings(), "error": str(exc)}
         return self._get_settings()
+
+    # ── Proactive-nudge history (bell icon) ─────────────────────────────────────
+
+    def record_notification(self, title: str, message: str) -> None:
+        """Durable, in-app record of a proactive nudge (meeting alert, email
+        ping, vault "still open?" callback, etc.).
+
+        The tray balloon (or spoken line) these also go through disappears
+        the moment it's dismissed — this list, surfaced via the bell icon, is
+        what actually lets them be reviewed later instead of only living in
+        the log. Pushed live to the page too, so a panel left open updates
+        without the user having to reopen it.
+        """
+        entry = {
+            "title": title,
+            "message": message,
+            "at": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        self._notifications.insert(0, entry)
+        del self._notifications[_MAX_NOTIFICATIONS:]
+        self._unread_notifications += 1
+        self._eval("pushNotification", entry, self._unread_notifications)
+
+    def _get_notifications(self) -> dict:
+        """Snapshot for the notifications panel; opening it marks all read."""
+        self._unread_notifications = 0
+        return {"items": list(self._notifications), "unread": 0}
 
     def quit(self) -> None:
         try:

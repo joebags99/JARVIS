@@ -947,6 +947,67 @@ def mark_callback_nudged(rel: str) -> None:
     log.info("marked vault callback nudged: %s", rel)
 
 
+_CALLBACKS_REL = "Maps/Callbacks.md"
+
+
+def render_callbacks(items: list[tuple[str, dict, list[str]]]) -> str:
+    """Render every open-item note as a durable, browsable checklist.
+
+    A tray balloon or spoken nudge disappears the moment it's dismissed; this
+    note is the persistent record — every ``Sessions/`` note with unchecked
+    Action Items/Open Questions, oldest-touched first so the stalest work
+    surfaces at the top. Whether a note has already been nudged is shown but
+    doesn't filter it out, so this is a complete "what's still open" view,
+    not just a log of past nudges.
+    """
+    lines = [
+        "---", "title: Callbacks", "type: map", "tags: [moc, callbacks]", "---", "",
+        "# 🔁 Open Callbacks", "",
+        "_Auto-generated — every Sessions/ note with unchecked Action Items or "
+        "Open Questions, refreshed at startup and roughly every minute while "
+        "JARVIS runs. Resolve or clear the section in the source note and it "
+        "drops off here on the next refresh._", "",
+    ]
+    if not items:
+        lines.append("_Nothing open right now._")
+        return "\n".join(lines) + "\n"
+
+    def _updated_date(entry: tuple[str, dict, list[str]]) -> dt.date:
+        raw = entry[1].get("updated") or entry[1].get("created") or ""
+        try:
+            return dt.date.fromisoformat(str(raw))
+        except ValueError:
+            return dt.date.min
+
+    for rel, meta, open_items in sorted(items, key=_updated_date):
+        title = meta.get("title") or Path(rel).stem
+        updated = meta.get("updated") or meta.get("created") or "?"
+        nudged = meta.get("callback_nudged")
+        status = f"nudged {nudged}" if nudged else "not yet nudged"
+        lines.append(f"## [[{rel[:-len(NOTE_EXT)]}|{title}]]")
+        lines.append(f"_Last touched {updated} — {status}._")
+        lines.append("")
+        lines.extend(f"- {item}" for item in open_items)
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def write_callbacks() -> str:
+    """Refresh ``Maps/Callbacks.md`` from the vault's current open items.
+
+    Cheap to call often (a plain scan of ``Sessions/`` plus a no-op write if
+    nothing changed) so it can run at startup and on every proactive tick,
+    keeping the note current whether an item newly went stale or the user
+    just checked one off directly in Obsidian. Returns the note's path.
+    """
+    items = list_open_callbacks()
+    dest = vault_root() / _CALLBACKS_REL
+    if _write_if_changed(dest, render_callbacks(items)):
+        _reindex_path(dest)
+        log.info("refreshed vault callbacks dashboard (%d note(s) with open items)", len(items))
+    return str(dest)
+
+
 def backfill_types() -> int:
     """Stamp a ``type:`` (from the taxonomy) onto any note that lacks one.
 

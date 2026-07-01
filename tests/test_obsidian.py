@@ -280,6 +280,46 @@ def test_mark_callback_nudged_stamps_frontmatter_and_excludes_from_next_list(vau
     assert out["Sessions/planning.md"].get("callback_nudged")
 
 
+def test_write_callbacks_lists_open_items_and_is_idempotent(vault):
+    obsidian.write_note(
+        "Sessions/planning.md", "## Action Items\n- Follow up with Sam\n",
+        title="Planning", canonicalize=False,
+    )
+    obsidian.write_note(
+        "Sessions/empty.md", "## Summary\nNothing outstanding.\n",
+        title="Empty", canonicalize=False,
+    )
+    dest = obsidian.write_callbacks()
+    path = vault / "Maps" / "Callbacks.md"
+    assert str(path) == dest
+    body = obsidian.read_note("Maps/Callbacks.md").body
+    assert "Open Callbacks" in body
+    assert "Planning" in body and "Follow up with Sam" in body
+    assert "not yet nudged" in body
+    assert "Empty" not in body  # no open items -> not listed
+
+    mtime = path.stat().st_mtime_ns
+    obsidian.write_callbacks()  # nothing changed -> no rewrite (no startup churn)
+    assert path.stat().st_mtime_ns == mtime
+
+
+def test_write_callbacks_reflects_nudged_status(vault):
+    obsidian.write_note(
+        "Sessions/planning.md", "## Action Items\n- Follow up with Sam\n",
+        title="Planning", canonicalize=False,
+    )
+    obsidian.mark_callback_nudged("Sessions/planning.md")
+    obsidian.write_callbacks()
+    body = obsidian.read_note("Maps/Callbacks.md").body
+    assert "nudged" in body and "not yet nudged" not in body
+
+
+def test_write_callbacks_empty_vault_says_nothing_open(vault):
+    dest = obsidian.write_callbacks()
+    body = Path(dest).read_text(encoding="utf-8")
+    assert "Nothing open right now" in body
+
+
 def test_find_misfiled_and_refile(vault):
     # A real person + a meeting wrongly in People, and the same person duplicated in Projects.
     obsidian.write_note("People/Felicity Kline.md", "person", title="Felicity Kline", canonicalize=False)

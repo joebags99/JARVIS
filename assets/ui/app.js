@@ -494,6 +494,7 @@ function renderDials(dials) {
 
 async function openDials() {
   closeSettings();
+  closeNotifications();
   const dials = await callApiAsync("get_dials");
   renderDials(dials);
   dialsPanel.classList.remove("hidden");
@@ -591,6 +592,7 @@ function applySettings(s) {
 
 async function openSettings() {
   closeDials();
+  closeNotifications();
   applySettings(await callApiAsync("get_settings"));
   settingsPanel.classList.remove("hidden");
   settingsPanel.setAttribute("aria-hidden", "false");
@@ -632,6 +634,95 @@ settingsSave.addEventListener("click", async () => {
     setTimeout(() => settingsSave.classList.remove("flash"), 600);
   }
 });
+
+// ── Notifications panel ──────────────────────────────────────────────────
+// Durable history of proactive nudges (meeting alerts, email pings, vault
+// "still open?" callbacks) — a tray balloon disappears the moment it's
+// dismissed; this + the bell badge is what actually lets them be tracked.
+
+const notifBtn = document.getElementById("notif-btn");
+const notifBadge = document.getElementById("notif-badge");
+const notifPanel = document.getElementById("notif-panel");
+const notifClose = document.getElementById("notif-close");
+const notifList = document.getElementById("notif-list");
+
+let notifItems = [];
+
+function setNotifBadge(count) {
+  notifBadge.textContent = count > 99 ? "99+" : String(count);
+  notifBadge.classList.toggle("hidden", !count);
+}
+
+function renderNotifications() {
+  notifList.innerHTML = "";
+  if (!notifItems.length) {
+    const empty = document.createElement("div");
+    empty.className = "notif-empty";
+    empty.textContent = "Nothing yet.";
+    notifList.appendChild(empty);
+    return;
+  }
+  for (const n of notifItems) {
+    const row = document.createElement("div");
+    row.className = "notif-row";
+    const top = document.createElement("div");
+    top.className = "notif-top";
+    const title = document.createElement("span");
+    title.className = "notif-title";
+    title.textContent = n.title;
+    const time = document.createElement("span");
+    time.className = "notif-time";
+    time.textContent = n.at;
+    top.append(title, time);
+    const message = document.createElement("div");
+    message.className = "notif-message";
+    message.textContent = n.message;
+    row.append(top, message);
+    notifList.appendChild(row);
+  }
+}
+
+async function openNotifications() {
+  closeSettings();
+  closeDials();
+  const res = await callApiAsync("get_notifications");
+  notifItems = (res && res.items) || [];
+  renderNotifications();
+  setNotifBadge(0);
+  notifPanel.classList.remove("hidden");
+  notifPanel.setAttribute("aria-hidden", "false");
+}
+
+function closeNotifications() {
+  notifPanel.classList.add("hidden");
+  notifPanel.setAttribute("aria-hidden", "true");
+}
+
+function toggleNotifications() {
+  if (notifPanel.classList.contains("hidden")) {
+    openNotifications();
+  } else {
+    closeNotifications();
+  }
+}
+
+// Called live by Python (Overlay.record_notification) whenever a proactive
+// nudge fires, so a panel left open updates without being reopened.
+function pushNotification(entry, unreadCount) {
+  notifItems.unshift(entry);
+  if (!notifPanel.classList.contains("hidden")) {
+    // Already looking at it — counts as read immediately; tell Python too
+    // so the count doesn't come back stale next time the panel opens.
+    renderNotifications();
+    setNotifBadge(0);
+    callApi("get_notifications");
+  } else {
+    setNotifBadge(unreadCount);
+  }
+}
+
+notifBtn.addEventListener("click", toggleNotifications);
+notifClose.addEventListener("click", closeNotifications);
 
 // ── Window dragging (frameless window — no native title bar) ──────────────
 

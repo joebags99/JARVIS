@@ -178,6 +178,7 @@ class ProactiveScheduler:
         fetch_email: Callable[[], list[dict]],
         fetch_vault_items: Callable[[], list[tuple[str, dict, list[str]]]] = lambda: [],
         mark_vault_nudged: Callable[[str], None] = lambda rel: None,
+        refresh_vault_callbacks: Callable[[], None] = lambda: None,
         tick_seconds: int = TICK_SECONDS,
     ) -> None:
         self._notify = notify
@@ -186,6 +187,7 @@ class ProactiveScheduler:
         self._fetch_email = fetch_email
         self._fetch_vault_items = fetch_vault_items
         self._mark_vault_nudged = mark_vault_nudged
+        self._refresh_vault_callbacks = refresh_vault_callbacks
         self._tick_seconds = tick_seconds
 
         self._stop = threading.Event()
@@ -309,3 +311,11 @@ class ProactiveScheduler:
                 self._mark_vault_nudged(rel)
             except Exception as exc:  # noqa: BLE001
                 log.error("could not mark vault callback nudged for %s: %s", rel, exc)
+        # Refreshed every tick (not just when something newly went stale) so
+        # the note also reflects items resolved/checked-off directly in
+        # Obsidian, not only JARVIS's own writes — a plain vault scan, cheap
+        # enough to run alongside the fetch above.
+        try:
+            self._refresh_vault_callbacks()
+        except Exception as exc:  # noqa: BLE001
+            log.error("could not refresh vault callbacks note: %s", exc)

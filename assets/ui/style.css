@@ -262,6 +262,28 @@ body[data-state="listening"] #core {
   cursor: default;
 }
 
+#notif-btn {
+  position: relative;
+}
+.notif-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--error);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+.notif-badge.hidden {
+  display: none;
+}
+
 #transcript {
   position: relative;
   z-index: 1;
@@ -931,4 +953,65 @@ body.has-messages #hud {
   color: var(--text-muted);
   margin-left: auto;
   text-align: right;
+}
+
+/* ── Notifications panel ───────────────────────────────────────────────────
+   Same drop-down treatment as settings/dials: a durable, browsable history
+   of proactive nudges instead of only living in a dismissed tray balloon. */
+#notif-panel {
+  position: absolute;
+  top: 44px;
+  left: 0;
+  right: 0;
+  z-index: 8;
+  max-height: calc(100% - 44px);
+  overflow-y: auto;
+  padding: 10px 14px 14px;
+  background: rgba(16, 16, 16, 0.97);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.5), 0 1px 0 var(--accent-dim) inset;
+  animation: dials-drop 0.16s ease;
+}
+#notif-panel.hidden {
+  display: none;
+}
+#notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.notif-row {
+  padding: 7px 0;
+  border-top: 1px solid rgba(42, 42, 42, 0.6);
+}
+.notif-row:first-child {
+  border-top: none;
+}
+.notif-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.notif-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.notif-time {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+.notif-message {
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.notif-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 6px 0;
 }
