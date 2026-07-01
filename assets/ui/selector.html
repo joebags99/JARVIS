@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JARVIS Capture</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+    cursor: crosshair; background: rgba(0, 0, 0, 0.28);
+    -webkit-user-select: none; user-select: none;
+  }
+  #hint {
+    position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
+    color: #eafcff; font: 13px -apple-system, "Segoe UI", sans-serif;
+    background: rgba(10, 10, 12, 0.7); padding: 6px 16px; border-radius: 6px;
+    letter-spacing: 0.02em; pointer-events: none;
+  }
+  /* box-shadow spotlight: dims everything OUTSIDE the drawn rectangle, so the
+     selection itself reads as a clear, lit-up region against a darker page. */
+  #box {
+    position: fixed; border: 2px solid #00bcd4; background: rgba(0, 188, 212, 0.14);
+    display: none; pointer-events: none; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.28);
+  }
+</style>
+</head>
+<body>
+  <div id="hint">Drag to select a region &middot; Esc to cancel</div>
+  <div id="box"></div>
+  <script>
+    const box = document.getElementById("box");
+    let startX = 0, startY = 0, dragging = false;
+
+    function callApi(method, ...args) {
+      if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api[method](...args);
+      }
+    }
+
+    function updateBox(x1, y1, x2, y2) {
+      box.style.left = Math.min(x1, x2) + "px";
+      box.style.top = Math.min(y1, y2) + "px";
+      box.style.width = Math.abs(x2 - x1) + "px";
+      box.style.height = Math.abs(y2 - y1) + "px";
+    }
+
+    document.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      updateBox(startX, startY, startX, startY);
+      box.style.display = "block";
+    });
+
+    document.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      updateBox(startX, startY, e.clientX, e.clientY);
+    });
+
+    document.addEventListener("mouseup", (e) => {
+      if (!dragging) return;
+      dragging = false;
+      const x2 = e.clientX, y2 = e.clientY;
+      if (Math.abs(x2 - startX) < 4 && Math.abs(y2 - startY) < 4) {
+        // A click with no real drag is a cancel, not a 0x0 capture.
+        callApi("cancel");
+        return;
+      }
+      callApi("report_selection", startX, startY, x2, y2);
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") callApi("cancel");
+    });
+  </script>
+</body>
+</html>

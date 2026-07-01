@@ -10,3 +10,6 @@ ruff>=0.6
 python-dotenv>=1.0.0
 parsedatetime>=2.6
 requests>=2.31.0
+# Pure image I/O only (resize/encode) — no display needed, so it's safe here
+# unlike the native audio/whisper stack. Used by tests/test_screenshot.py.
+Pillow>=10.2.0

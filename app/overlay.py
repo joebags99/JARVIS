@@ -46,6 +46,7 @@ STATUS_DONE = "Done"
 
 _UI_DIR = Path(__file__).resolve().parent.parent / "assets" / "ui"
 _INDEX_HTML = _UI_DIR / "index.html"
+_SELECTOR_HTML = _UI_DIR / "selector.html"
 
 
 def _screen_size() -> tuple[int, int]:
@@ -151,6 +152,30 @@ class _JSApi:
     def save_categories(self, categories: list[str]) -> dict:
         return self._overlay._save_categories(categories)
 
+    # ── Vision: screenshot capture ────────────────────────────────────────────
+    def start_screenshot_capture(self) -> None:
+        self._overlay.start_screenshot_capture()
+
+    def clear_attached_screenshot(self) -> None:
+        self._overlay.clear_attached_screenshot()
+
+
+class _SelectorApi:
+    """Methods callable from the screenshot selector page (its own tiny window)."""
+
+    def __init__(
+        self, on_select: Callable[[float, float, float, float], None],
+        on_cancel: Callable[[], None],
+    ) -> None:
+        self._on_select = on_select
+        self._on_cancel = on_cancel
+
+    def report_selection(self, x1: float, y1: float, x2: float, y2: float) -> None:
+        self._on_select(x1, y1, x2, y2)
+
+    def cancel(self) -> None:
+        self._on_cancel()
+
 
 class Overlay:
     def __init__(
@@ -180,6 +205,11 @@ class Overlay:
         self._win_x, self._win_y = self._initial_position()
         self._current_alpha: int = WINDOW_ALPHA_IDLE
         self._alpha_cancel: threading.Event | None = None
+
+        # Vision: a captured screenshot waiting to ride along with the next
+        # sent message, and the (transient) region-selector window while open.
+        self._pending_screenshot_b64: str | None = None
+        self._selector_window = None
 
         self._js_api = _JSApi(self)
         self.window = webview.create_window(
@@ -227,6 +257,9 @@ class Overlay:
         self._eval("setTTSEnabled", self._tts_enabled)
         if not tts_ok:
             log.info("TTS disabled (speaker unavailable)")
+        self._eval("setVisionAvailable", CONFIG.vision_available)
+        if not CONFIG.vision_available:
+            log.info("screen capture disabled (Pillow's ImageGrab unavailable on this platform)")
         # pywebview only wires up real per-pixel transparency on EdgeChromium if
         # the window is shown (not created with hidden=True) — see the "hack to
         # make transparent window work" in its winforms backend. So we start
@@ -435,6 +468,13 @@ class Overlay:
         # the chat, the session notes, or any tool call.
         from . import name_corrector
         text = name_corrector.normalize_names(text)
+        # A pending screenshot rides along with this one message only — clear
+        # it (and its UI chip) now so it can never silently reattach to the
+        # next message too, regardless of how this turn turns out.
+        image_b64 = self._pending_screenshot_b64
+        if image_b64:
+            self._pending_screenshot_b64 = None
+            self._eval("clearAttachedImage")
         # Barge-in: never let JARVIS talk over a new request.
         if self.speaker is not None:
             self.speaker.stop()
@@ -465,7 +505,7 @@ class Overlay:
                     # together mid-sentence.
                     self.speaker.start_utterance()
 
-            reply = self.claude.send(text, on_delta=on_delta, on_reset=on_reset)
+            reply = self.claude.send(text, on_delta=on_delta, on_reset=on_reset, image_b64=image_b64)
             # Flush whatever's left in the sentence buffer as the final clip.
             if speaking:
                 self.speaker.finish()
@@ -485,6 +525,76 @@ class Overlay:
             self.speaker.stop()
         self._eval("setTTSEnabled", self._tts_enabled)
         log.info("TTS %s", "on" if self._tts_enabled else "off")
+
+    # ── Vision: screenshot capture ──────────────────────────────────────────────
+
+    def start_screenshot_capture(self) -> None:
+        """Open a full-screen drag-to-select overlay to capture a screen region.
+
+        A second, transient pywebview window (not the main overlay) — a
+        darkened full-screen page the user drags a rectangle on. Reports back
+        via ``_SelectorApi`` to ``_finish_screenshot_capture``/
+        ``_cancel_screenshot_capture``, which close it again.
+        """
+        if not CONFIG.vision_available:
+            self.set_status("Screen capture isn't available on this system.")
+            return
+        if self._selector_window is not None:
+            return  # a capture is already in progress
+        import webview
+
+        sw, sh = _screen_size()
+        selector_api = _SelectorApi(
+            on_select=self._finish_screenshot_capture,
+            on_cancel=self._cancel_screenshot_capture,
+        )
+        self._selector_window = webview.create_window(
+            "JARVIS Capture",
+            url=str(_SELECTOR_HTML),
+            js_api=selector_api,
+            width=sw,
+            height=sh,
+            x=0,
+            y=0,
+            frameless=True,
+            on_top=True,
+            transparent=True,
+            background_color="#000000",
+            resizable=False,
+        )
+        log.info("screenshot selector opened")
+
+    def _close_selector(self) -> None:
+        if self._selector_window is not None:
+            try:
+                self._selector_window.destroy()
+            except Exception as exc:  # noqa: BLE001
+                log.debug("closing screenshot selector failed: %s", exc)
+            self._selector_window = None
+
+    def _cancel_screenshot_capture(self) -> None:
+        self._close_selector()
+        log.info("screenshot capture cancelled")
+
+    def _finish_screenshot_capture(self, x1: float, y1: float, x2: float, y2: float) -> None:
+        self._close_selector()
+        try:
+            from . import screenshot
+            image = screenshot.capture_region(x1, y1, x2, y2)
+            self._pending_screenshot_b64 = screenshot.to_base64_png(image)
+            self._eval(
+                "setAttachedImage",
+                f"data:image/png;base64,{self._pending_screenshot_b64}",
+            )
+            log.info("screenshot captured and attached (%dx%d region)", image.width, image.height)
+        except Exception as exc:  # noqa: BLE001
+            log.error("screenshot capture failed: %s", exc)
+            self.set_status("Screenshot capture failed — check logs.")
+
+    def clear_attached_screenshot(self) -> None:
+        """✕ on the attached-image chip: drop the pending screenshot."""
+        self._pending_screenshot_b64 = None
+        self._eval("clearAttachedImage")
 
     # ── Voice ─────────────────────────────────────────────────────────────────
 

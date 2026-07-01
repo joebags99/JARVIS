@@ -148,6 +148,9 @@ class Config:
         default_factory=lambda: _get("JARVIS_WINDOW_POSITION", "top-right")
     )
     hotkey: str = field(default_factory=lambda: _get("JARVIS_HOTKEY"))
+    # A second global hotkey that opens the drag-to-select screenshot capture
+    # (see app/screenshot.py). Blank = off, same convention as `hotkey` above.
+    screenshot_hotkey: str = field(default_factory=lambda: _get("JARVIS_SCREENSHOT_HOTKEY"))
     # Default location for weather / "what's it like out" when the user doesn't
     # name one, e.g. "Chicago, IL". Blank = JARVIS asks which city.
     location: str = field(default_factory=lambda: _get("JARVIS_LOCATION"))
@@ -372,6 +375,21 @@ class Config:
         """
         return self.obsidian_enabled and bool(self.obsidian_vault_path)
 
+    @property
+    def vision_available(self) -> bool:
+        """Whether screen capture works on this platform (Pillow's ImageGrab).
+
+        Lazily imports app.screenshot (a top-level import would be circular —
+        that module imports logging_setup, which imports this one). Not gated
+        on screenshot_hotkey: the capture button in the overlay works even
+        without a hotkey configured, so this only reflects platform support.
+        """
+        try:
+            from app.screenshot import capture_available
+            return capture_available()
+        except Exception:  # noqa: BLE001
+            return False
+
     def save_categories(self, categories: list[str]) -> list[str]:
         """Validate, persist, and apply a new category set (settings panel).
 
@@ -426,6 +444,10 @@ class Config:
             ("Obsidian vault", self.obsidian_available,
              f"vault={self.obsidian_vault_path}" if self.obsidian_available
              else "set OBSIDIAN_ENABLED=true + OBSIDIAN_VAULT_PATH"),
+            ("Vision (screenshot)", self.vision_available,
+             (f"hotkey={self.screenshot_hotkey}" if self.screenshot_hotkey
+              else "capture button in the overlay (set JARVIS_SCREENSHOT_HOTKEY for a hotkey too)")
+             if self.vision_available else "Pillow's ImageGrab isn't available on this platform"),
             ("Proactive", self.proactive_enabled,
              "scheduler on" if self.proactive_enabled
              else "set JARVIS_PROACTIVE_ENABLED=true"),

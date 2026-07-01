@@ -180,16 +180,28 @@ def _init_knowledge(log):
 
 
 def _setup_hotkey(overlay, schedule, log) -> None:
-    if not CONFIG.hotkey:
-        return
+    """Register the global toggle hotkey and the screenshot-capture hotkey.
+
+    Each is independent (a blank/failed one never blocks the other) — a user
+    can set just one, both, or neither.
+    """
+    if CONFIG.hotkey:
+        _register_hotkey(CONFIG.hotkey, lambda: schedule(overlay.toggle), log)
+    if CONFIG.screenshot_hotkey:
+        _register_hotkey(
+            CONFIG.screenshot_hotkey, lambda: schedule(overlay.start_screenshot_capture), log
+        )
+
+
+def _register_hotkey(combo: str, callback, log) -> None:
     try:
         import keyboard
 
-        keyboard.add_hotkey(CONFIG.hotkey, lambda: schedule(overlay.toggle))
-        log.info("global hotkey registered: %s", CONFIG.hotkey)
+        keyboard.add_hotkey(combo, callback)
+        log.info("global hotkey registered: %s", combo)
     except Exception as exc:  # noqa: BLE001
         # keyboard often needs root/admin on Linux/macOS; fail soft.
-        log.warning("could not register global hotkey '%s': %s", CONFIG.hotkey, exc)
+        log.warning("could not register global hotkey '%s': %s", combo, exc)
 
 
 def _start_proactive(overlay, speaker, tray_holder, scheduler_holder, schedule, log) -> None:

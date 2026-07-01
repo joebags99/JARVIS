@@ -350,6 +350,7 @@ class ClaudeClient:
         user_message: str,
         on_delta: Callable[[str], None] | None = None,
         on_reset: Callable[[], None] | None = None,
+        image_b64: str | None = None,
     ) -> str:
         """Send a message with full context; stream deltas via ``on_delta``.
 
@@ -362,18 +363,21 @@ class ClaudeClient:
         whenever a round's pre-tool text is discarded (the model spoke, then
         decided to call a tool) so the UI can roll its live stream back to a
         "thinking" state instead of showing text that's about to be replaced.
+        ``image_b64`` is an optional base64-encoded PNG (see
+        ``app.screenshot.to_base64_png``) attached alongside the text as a
+        vision content block — e.g. a screen-region capture the user selected.
         """
         new_turn_id()
         if not self.ready:
             return self._init_error or "Claude client is not available."
 
-        log.info("turn start: %r", user_message[:120])
+        log.info("turn start: %r%s", user_message[:120], " [+image]" if image_b64 else "")
         # Fire the easter egg (if the phrase was said) before the prompt is
         # built, so the boosted dials land in this turn — then restore them once
         # the one snarky reply is done.
         egg_restore = self._maybe_fire_easter_egg(user_message)
         try:
-            return self._run_send(user_message, on_delta, on_reset)
+            return self._run_send(user_message, on_delta, on_reset, image_b64)
         finally:
             if egg_restore:
                 egg_restore()
@@ -423,11 +427,25 @@ class ClaudeClient:
         user_message: str,
         on_delta: Callable[[str], None] | None = None,
         on_reset: Callable[[], None] | None = None,
+        image_b64: str | None = None,
     ) -> str:
         """Core send: history compaction, prompt build, the bounded tool loop."""
         self._compact_history()
         history_snapshot = len(self.history)
-        self.history.append({"role": "user", "content": user_message})
+        if image_b64:
+            # Image first, text last: with_message_cache_breakpoint() marks
+            # the *last* block, so keeping the breakpoint on the text block
+            # avoids any cache-control quirk around marking an image block.
+            content = [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": image_b64},
+                },
+                {"type": "text", "text": user_message},
+            ]
+            self.history.append({"role": "user", "content": content})
+        else:
+            self.history.append({"role": "user", "content": user_message})
         system_prompt = self.context.build_system_prompt()
 
         # The Monarch MCP path needs parallel tool use DISABLED (so a local

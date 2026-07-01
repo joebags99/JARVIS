@@ -72,8 +72,16 @@
 
     <div id="status">Idle</div>
 
+    <!-- Shown once a screenshot is captured; cleared on send or the ✕. -->
+    <div id="attached-image-row" class="hidden" aria-hidden="true">
+      <img id="attached-image-thumb" alt="Attached screenshot" />
+      <span class="attached-image-label">Screenshot attached</span>
+      <button id="attached-image-remove" class="icon-btn" title="Remove screenshot">&#10005;</button>
+    </div>
+
     <div id="input-row">
       <textarea id="entry" placeholder="Ask JARVIS…" rows="1"></textarea>
+      <button id="camera-btn" class="icon-btn" title="Capture a screen region">&#128247;</button>
       <button id="speak-btn" class="icon-btn" title="Speak replies">&#128263;</button>
       <button id="mic-btn" class="icon-btn" title="Voice input">&#127908;</button>
       <button id="send-btn" class="icon-btn" title="Send">&#10148;</button>

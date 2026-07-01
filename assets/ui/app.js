@@ -7,10 +7,14 @@ const statusEl = document.getElementById("status");
 const entry = document.getElementById("entry");
 const sendBtn = document.getElementById("send-btn");
 const micBtn = document.getElementById("mic-btn");
+const cameraBtn = document.getElementById("camera-btn");
 const speakBtn = document.getElementById("speak-btn");
 const clearBtn = document.getElementById("clear-btn");
 const closeBtn = document.getElementById("close-btn");
 const header = document.getElementById("header");
+const attachedImageRow = document.getElementById("attached-image-row");
+const attachedImageThumb = document.getElementById("attached-image-thumb");
+const attachedImageRemove = document.getElementById("attached-image-remove");
 
 let userName = "User";
 let streamEl = null;
@@ -356,6 +360,24 @@ function setVoiceAvailable(available) {
   micBtn.disabled = !available;
 }
 
+function setVisionAvailable(available) {
+  cameraBtn.disabled = !available;
+}
+
+// Shows the captured-screenshot chip above the input row; dataUri is a
+// "data:image/png;base64,..." string the thumbnail renders directly.
+function setAttachedImage(dataUri) {
+  attachedImageThumb.src = dataUri;
+  attachedImageRow.classList.remove("hidden");
+  attachedImageRow.setAttribute("aria-hidden", "false");
+}
+
+function clearAttachedImage() {
+  attachedImageRow.classList.add("hidden");
+  attachedImageRow.setAttribute("aria-hidden", "true");
+  attachedImageThumb.src = "";
+}
+
 // Speaker (TTS) toggle — filled speaker + cyan glow when on, muted when off.
 function setTTSEnabled(enabled) {
   speakBtn.classList.toggle("active", enabled);
@@ -391,6 +413,8 @@ entry.addEventListener("keydown", (e) => {
 });
 sendBtn.addEventListener("click", sendMessage);
 micBtn.addEventListener("click", () => callApi("toggle_recording"));
+cameraBtn.addEventListener("click", () => callApi("start_screenshot_capture"));
+attachedImageRemove.addEventListener("click", () => callApi("clear_attached_screenshot"));
 speakBtn.addEventListener("click", () => callApi("toggle_tts"));
 clearBtn.addEventListener("click", () => callApi("clear_chat"));
 closeBtn.addEventListener("click", () => callApi("close_overlay"));
