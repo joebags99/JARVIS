@@ -105,7 +105,36 @@
       bellBadge.textContent = count > 99 ? "99+" : String(count);
     }
 
-    card.addEventListener("click", () => callApi("open_overlay"));
+    // The whole card doubles as a drag handle (frameless window, no native
+    // title bar) — same screenX/screenY-delta approach as the main
+    // overlay's header drag. A mouseup with barely any movement counts as
+    // a click (open the overlay) rather than a completed drag.
+    let dragging = false;
+    let lastScreenX = 0;
+    let lastScreenY = 0;
+    let totalMove = 0;
+
+    card.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      lastScreenX = e.screenX;
+      lastScreenY = e.screenY;
+      totalMove = 0;
+    });
+    window.addEventListener("mousemove", (e) => {
+      if (!dragging) return;
+      const dx = e.screenX - lastScreenX;
+      const dy = e.screenY - lastScreenY;
+      lastScreenX = e.screenX;
+      lastScreenY = e.screenY;
+      totalMove += Math.abs(dx) + Math.abs(dy);
+      callApi("move_window", dx, dy);
+    });
+    window.addEventListener("mouseup", () => {
+      if (!dragging) return;
+      dragging = false;
+      if (totalMove < 4) callApi("open_overlay");
+    });
   </script>
 </body>
 </html>

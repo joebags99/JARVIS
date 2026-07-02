@@ -74,19 +74,13 @@ def _hint_matches(result: dict, hint: str) -> bool:
     return False
 
 
-def get_weather(location: str | None = None, days: int = 1) -> str:
-    """Return current conditions + a 1-to-16 day forecast for *location*. Never raises."""
-    place = (location or CONFIG.location or "").strip()
-    if not place:
-        return (
-            "No location given and no default set. Ask the user which city, or "
-            "set JARVIS_LOCATION in .env."
-        )
-    days = max(1, min(int(days or 1), 16))
+def _geocode(place: str) -> tuple[float, float, str] | str:
+    """Resolve a place name to ``(lat, lon, display_label)``, or an error string.
 
-    # Open-Meteo geocodes on the bare place name, so "Charlotte, NC" finds
-    # nothing — split the city from any state/country hints and use the hints
-    # to disambiguate among the candidates instead.
+    Open-Meteo geocodes on the bare place name, so "Charlotte, NC" finds
+    nothing — split the city from any state/country hints and use the hints
+    to disambiguate among the candidates instead.
+    """
     parts = [p.strip() for p in place.split(",") if p.strip()]
     name = parts[0] if parts else place
     hints = parts[1:]
@@ -109,9 +103,62 @@ def get_weather(location: str | None = None, days: int = 1) -> str:
             part for part in (top.get("name"), top.get("admin1"), top.get("country_code"))
             if part
         )
+        return lat, lon, label
     except Exception as exc:  # noqa: BLE001
         log.error("geocode failed for %r: %s", place, exc)
         return f"Error looking up '{place}': {exc}"
+
+
+def get_current_compact(location: str | None = None) -> str:
+    """Terse ``"72°F, clear sky"`` — no location label, forecast, wind, or
+    humidity. For space-constrained displays (the ambient HUD's meeting/
+    weather card) where get_weather()'s full one-liner ("Fort Wayne,
+    Indiana, US: clear sky, 72°F (feels 70°), high 75° / low 60°, ...")
+    is too long to fit before it gets truncated. Never raises.
+    """
+    place = (location or CONFIG.location or "").strip()
+    if not place:
+        return "No location set"
+    geocoded = _geocode(place)
+    if isinstance(geocoded, str):
+        return "Weather unavailable"
+    lat, lon, _label = geocoded
+    try:
+        fc = requests.get(
+            _FORECAST_URL,
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "current": "temperature_2m,weather_code",
+                "temperature_unit": "fahrenheit",
+                "timezone": "auto",
+            },
+            timeout=15,
+        )
+        fc.raise_for_status()
+        cur = fc.json().get("current", {})
+    except Exception as exc:  # noqa: BLE001
+        log.debug("compact weather fetch failed for %r: %s", place, exc)
+        return "Weather unavailable"
+    desc = _describe(cur.get("weather_code"))
+    temp = cur.get("temperature_2m")
+    return f"{round(temp)}°F, {desc}" if temp is not None else desc
+
+
+def get_weather(location: str | None = None, days: int = 1) -> str:
+    """Return current conditions + a 1-to-16 day forecast for *location*. Never raises."""
+    place = (location or CONFIG.location or "").strip()
+    if not place:
+        return (
+            "No location given and no default set. Ask the user which city, or "
+            "set JARVIS_LOCATION in .env."
+        )
+    days = max(1, min(int(days or 1), 16))
+
+    geocoded = _geocode(place)
+    if isinstance(geocoded, str):
+        return geocoded
+    lat, lon, label = geocoded
 
     try:
         fc = requests.get(

@@ -88,6 +88,25 @@ def test_set_unread_count_calls_eval():
     assert calls == [("setUnread", (3,))]
 
 
+def test_drag_move_updates_position_and_calls_window_move():
+    hud = _hud()
+    hud._win_x, hud._win_y = 100, 50
+    moves = []
+
+    class _FakeWin:
+        def move(self, x, y):
+            moves.append((x, y))
+
+    hud.window = _FakeWin()
+    hud._drag_move(10, -5)
+    assert (hud._win_x, hud._win_y) == (110, 45)
+    assert moves == [(110, 45)]
+
+    hud._drag_move(-20, 3)  # accumulates rather than resetting each call
+    assert (hud._win_x, hud._win_y) == (90, 48)
+    assert moves == [(110, 45), (90, 48)]
+
+
 def test_on_overlay_visibility_changed_hides_when_overlay_shown():
     hud = _hud()
     hud.window = _FakeWindow()
@@ -133,7 +152,7 @@ def test_tick_calls_eval_with_meeting_and_weather(monkeypatch):
     import integrations.weather as weather
     monkeypatch.setattr(calendar_sources, "get_all_events", lambda days, max_events: [])
     monkeypatch.setattr(calendar_sources, "next_event", lambda events, now: None)
-    monkeypatch.setattr(weather, "get_weather", lambda: "72°F, sunny")
+    monkeypatch.setattr(weather, "get_current_compact", lambda: "72°F, sunny")
 
     hud._tick()
 
@@ -151,7 +170,7 @@ def test_tick_respects_weather_refresh_cadence(monkeypatch):
     monkeypatch.setattr(calendar_sources, "get_all_events", lambda days, max_events: [])
     monkeypatch.setattr(calendar_sources, "next_event", lambda events, now: None)
     weather_calls = []
-    monkeypatch.setattr(weather, "get_weather", lambda: weather_calls.append(1) or "clear")
+    monkeypatch.setattr(weather, "get_current_compact", lambda: weather_calls.append(1) or "clear")
 
     fixed_time = [1000.0]
     monkeypatch.setattr("time.monotonic", lambda: fixed_time[0])

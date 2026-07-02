@@ -63,11 +63,17 @@ def _weather_due(now_mono: float, next_fetch: float) -> bool:
 class _HudApi:
     """Methods callable from hud.html via ``window.pywebview.api.<name>()``."""
 
-    def __init__(self, on_click: Callable[[], None]) -> None:
+    def __init__(
+        self, on_click: Callable[[], None], on_drag: Callable[[float, float], None],
+    ) -> None:
         self._on_click = on_click
+        self._on_drag = on_drag
 
     def open_overlay(self) -> None:
         self._on_click()
+
+    def move_window(self, dx: float, dy: float) -> None:
+        self._on_drag(dx, dy)
 
 
 class Hud:
@@ -89,6 +95,8 @@ class Hud:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._next_weather_fetch = 0.0
+        self._win_x = 0
+        self._win_y = 0
 
     def start(self) -> None:
         """Create the window and start the refresh loop. No-op if disabled."""
@@ -96,21 +104,26 @@ class Hud:
             return
         import webview
 
-        x, y = self._initial_position()
-        api = _HudApi(on_click=self._on_click)
+        self._win_x, self._win_y = self._initial_position()
+        api = _HudApi(on_click=self._on_click, on_drag=self._drag_move)
         self.window = webview.create_window(
             "JARVIS HUD",
             url=str(_HUD_HTML),
             js_api=api,
             width=HUD_W,
             height=HUD_H,
-            x=x,
-            y=y,
+            x=self._win_x,
+            y=self._win_y,
             frameless=True,
             on_top=True,
             transparent=True,
             background_color="#0f0f0f",
             resizable=False,
+            # The whole card is a drag handle (own mousedown/mousemove/mouseup
+            # in hud.html, same pattern as the main overlay's header drag) so
+            # a stationary click can still open the overlay while a real drag
+            # repositions the window — pywebview's blanket easy_drag can't
+            # tell those apart, so it stays off here too.
             easy_drag=False,
         )
         self.window.events.loaded += self._on_loaded
@@ -137,6 +150,17 @@ class Hud:
             self.window.evaluate_js(f"{fn_name}({arg_str})")
         except Exception as exc:  # noqa: BLE001
             log.debug("HUD evaluate_js(%s) failed: %s", fn_name, exc)
+
+    def _drag_move(self, dx: float, dy: float) -> None:
+        """Reposition by a screen-pixel delta — called from hud.html's own
+        mousedown/mousemove drag tracking, same pattern as the main
+        overlay's header drag (Overlay._drag_move)."""
+        self._win_x += int(dx)
+        self._win_y += int(dy)
+        try:
+            self.window.move(self._win_x, self._win_y)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("HUD window.move failed: %s", exc)
 
     # ── external hooks (wired by main.py) ────────────────────────────────────
 
@@ -175,9 +199,9 @@ class Hud:
 
         now_mono = time.monotonic()
         if _weather_due(now_mono, self._next_weather_fetch):
-            from integrations.weather import get_weather
+            from integrations.weather import get_current_compact
 
-            self._eval("setWeather", get_weather())
+            self._eval("setWeather", get_current_compact())
             self._next_weather_fetch = now_mono + WEATHER_REFRESH_SECONDS
 
     def stop(self) -> None:
