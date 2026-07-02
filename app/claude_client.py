@@ -8,8 +8,10 @@ module is intentionally synchronous and stream-oriented.
 Tool use flow:
   Bounded loop (see MAX_TOOL_ROUNDS): each round streams a response, and if
   Claude emits a local tool_use block, the tool runs and its result is fed
-  back for another round. Parallel tool use is disabled so a local tool_use
-  and the remote Monarch MCP tool are never requested in the same turn —
+  back for another round. Parallel tool use is disabled whenever a remote MCP
+  tool is attached (Monarch, or a user-configured server from
+  mcp_servers.json — see _server_wanted/CONFIG.extra_mcp_servers) so a local
+  tool_use and a remote mcp_tool_use are never requested in the same turn —
   that combination left a dangling, unpaired mcp_tool_use block in history.
 """
 
@@ -90,6 +92,28 @@ def _looks_meal_related(message: str) -> bool:
     lowered = message.lower()
     return any(kw in lowered for kw in _MEAL_KEYWORDS)
 
+
+def _server_wanted(
+    spec, message: str, was_active: bool, other_sticky_topic_now: bool,
+) -> bool:
+    """Whether a user-configured MCP server (config.McpServerSpec) should
+    attach this turn — same keyword-or-sticky contract _looks_financial's
+    caller already applies to Monarch.
+
+    No keywords configured means the user opted every turn in (always
+    attach whenever enabled, no topic gating). With keywords, attach when
+    this message matches one, or — sticky, like Monarch — it was active
+    last turn and this message doesn't clearly belong to a different
+    sticky topic (currently just the meal/web-search topic; configured
+    servers and Monarch are allowed to coexist, so Monarch being active
+    isn't an "other" topic here).
+    """
+    if not spec.keywords:
+        return True
+    lowered = message.lower()
+    matches_now = any(kw in lowered for kw in spec.keywords)
+    return matches_now or (was_active and not other_sticky_topic_now)
+
 # ── Tool list ────────────────────────────────────────────────────────────────
 # Built once from the registry; per-install availability gating (Gmail/Spotify)
 # lives in tool_registry.api_tools(), so the cached tool prefix stays stable.
@@ -112,20 +136,25 @@ def _is_easter_egg(message: str) -> bool:
 
 
 class _MonarchUnavailable(Exception):
-    """Internal signal that the Monarch MCP server couldn't be reached this turn.
+    """Internal signal that an attached MCP server couldn't be reached this turn
+    (Monarch, or a user-configured server from mcp_servers.json — the API's
+    error text doesn't say which one, so all of them get detached together).
 
-    Raised from the per-turn helper so ``send`` can retry once with the MCP
-    server detached instead of failing the whole answer."""
+    Raised from the per-turn helper so ``send`` can retry once with every MCP
+    server detached instead of failing the whole answer. Name kept as-is
+    (Monarch was the first and is still the most common case) rather than
+    renamed for a purely cosmetic generalization."""
 
 
 def _is_mcp_connection_error(exc: Exception) -> bool:
     """True for the transient 400 the API raises when it can't reach an MCP server.
 
-    Monarch's hosted MCP server occasionally goes unavailable/unresponsive; the
-    API surfaces that as ``invalid_request_error`` with a "Connection error
-    while communicating with MCP server" message. That's not a problem with the
-    request itself, so it's worth retrying the turn without the MCP server
-    attached rather than failing the whole answer.
+    A remote MCP server (Monarch's hosted one, or a user-configured one)
+    occasionally goes unavailable/unresponsive; the API surfaces that as
+    ``invalid_request_error`` with a "Connection error while communicating
+    with MCP server" message. That's not a problem with the request itself,
+    so it's worth retrying the turn without any MCP server attached rather
+    than failing the whole answer.
     """
     msg = str(exc).lower()
     return "mcp server" in msg and (
@@ -234,6 +263,11 @@ class ClaudeClient:
         self._monarch_active = False
         # Same stickiness for meal-prep conversations and the web search tool.
         self._meal_active = False
+        # Same stickiness per user-configured MCP server (config.py's
+        # extra_mcp_servers), keyed by server name — each tracked
+        # independently since one server's topic shouldn't keep an
+        # unrelated server attached.
+        self._extra_mcp_active: dict[str, bool] = {}
         # The "Hey Jarvis, what on the calendar for today?" gag fires once per
         # session so it stays a surprise rather than replaying every time.
         self._easter_egg_fired = False
@@ -271,6 +305,7 @@ class ClaudeClient:
         self.history.clear()
         self._monarch_active = False
         self._meal_active = False
+        self._extra_mcp_active.clear()
         self._easter_egg_fired = False  # re-arm the gag for the new session
         # Voice-dial tweaks are scoped to a conversation ("...for this convo"),
         # so a fresh session restores the saved defaults.
@@ -448,15 +483,18 @@ class ClaudeClient:
             self.history.append({"role": "user", "content": user_message})
         system_prompt = self.context.build_system_prompt()
 
-        # The Monarch MCP path needs parallel tool use DISABLED (so a local
-        # tool_use and an mcp_tool_use never land in the same turn and leave
-        # a dangling block); the web-search path needs it ENABLED (the API
-        # rejects disable_parallel_tool_use alongside that programmatic
-        # server tool). Those requirements are mutually exclusive, so at
-        # most one may attach per turn. Both flags stay sticky for the
-        # session, so we pick per-turn by the *current* message's topic:
-        # finance wins a finance message, meal wins a meal message, and a
-        # neutral follow-up favors Monarch's parallel-safe path.
+        # Any remote MCP server (Monarch or user-configured) needs parallel
+        # tool use DISABLED (so a local tool_use and an mcp_tool_use never
+        # land in the same turn and leave a dangling block); the web-search
+        # path needs it ENABLED (the API rejects disable_parallel_tool_use
+        # alongside that programmatic server tool). Those requirements are
+        # mutually exclusive, so web search may only attach when no MCP
+        # server is attaching this turn — MCP servers themselves (Monarch
+        # plus any number of configured ones) CAN coexist in one
+        # `mcp_servers` list. Both flags stay sticky for the session, so we
+        # pick per-turn by the *current* message's topic: finance wins a
+        # finance message, meal wins a meal message, and a neutral
+        # follow-up favors the MCP-safe path.
         fin_now = _looks_financial(user_message)
         meal_now = _looks_meal_related(user_message)
         if fin_now:
@@ -467,14 +505,29 @@ class ClaudeClient:
         want_monarch = CONFIG.monarch_enabled and (
             fin_now or (self._monarch_active and not meal_now)
         )
+        # Same keyword-or-sticky decision as Monarch's, generalized per
+        # user-configured server (mcp_servers.json) — each server's
+        # stickiness is tracked independently.
+        mcp_servers_to_attach: list = []
+        for spec in CONFIG.extra_mcp_servers:
+            if not spec.enabled:
+                continue
+            was_active = self._extra_mcp_active.get(spec.name, False)
+            wanted = _server_wanted(spec, user_message, was_active, meal_now)
+            self._extra_mcp_active[spec.name] = wanted
+            if wanted:
+                mcp_servers_to_attach.append(spec)
+
         want_web = meal_now or (self._meal_active and not fin_now)
-        if want_monarch and want_web:
+        if (want_monarch or mcp_servers_to_attach) and want_web:
             want_web = False  # can't share a turn — keep the MCP-safe path
 
-        # If Monarch's hosted MCP server is unreachable mid-turn the API rejects
-        # the whole request; rather than fail the answer we retry once with the
-        # MCP server detached, so the user still gets a (finance-less) reply.
-        allow_monarch = True
+        # If a remote MCP server is unreachable mid-turn the API rejects the
+        # whole request; rather than fail the answer we retry once with
+        # every MCP server detached (Monarch and configured alike — the
+        # API's error message doesn't say which one failed), so the user
+        # still gets a reply.
+        allow_mcp = True
         transient_attempts = 0
         while True:
             base_kwargs: dict = dict(
@@ -484,24 +537,24 @@ class ClaudeClient:
                 tools=TOOLS,
                 # Allow parallel tool use so the model can batch several actions
                 # (e.g. one note + six to-dos) into a single round instead of
-                # burning one round each and exhausting MAX_TOOL_ROUNDS. Only the
-                # Monarch MCP path re-disables this (in _run_turn), where a local
-                # tool_use sharing a turn with an mcp_tool_use leaves a dangling,
-                # unpaired block.
+                # burning one round each and exhausting MAX_TOOL_ROUNDS. Only an
+                # attached MCP server re-disables this (in _run_turn), where a
+                # local tool_use sharing a turn with an mcp_tool_use leaves a
+                # dangling, unpaired block.
                 tool_choice={"type": "auto"},
             )
             try:
                 return self._run_turn(
-                    base_kwargs, want_monarch, want_web, allow_monarch,
-                    on_delta, on_reset,
+                    base_kwargs, want_monarch, mcp_servers_to_attach, want_web,
+                    allow_mcp, on_delta, on_reset,
                 )
             except _MonarchUnavailable as exc:
                 log.warning(
-                    "Monarch MCP server unreachable; retrying without finance data: %s",
+                    "MCP server unreachable; retrying without any MCP servers attached: %s",
                     exc.__cause__,
                 )
                 del self.history[history_snapshot + 1:]  # keep the user message
-                allow_monarch = False
+                allow_mcp = False
                 continue
             except Exception as exc:  # noqa: BLE001
                 # A transient overload/rate-limit before any tool has executed
@@ -538,41 +591,65 @@ class ClaudeClient:
         self,
         base_kwargs: dict,
         want_monarch: bool,
+        mcp_servers_to_attach: list,
         want_web: bool,
-        allow_monarch: bool,
+        allow_mcp: bool,
         on_delta: Callable[[str], None] | None,
         on_reset: Callable[[], None] | None,
     ) -> str:
         """Run one full tool-use loop and return the assistant's reply.
 
-        Attaches the Monarch MCP server (or web search) per the want_* flags.
-        Raises ``_MonarchUnavailable`` if the MCP server can't be reached so the
-        caller can retry without it; any other failure propagates for the caller
-        to roll back and surface.
+        Attaches Monarch and/or any wanted user-configured MCP servers
+        (or, failing that, web search) per the want_* flags. Raises
+        ``_MonarchUnavailable`` if an attached MCP server can't be reached
+        so the caller can retry without any of them; any other failure
+        propagates for the caller to roll back and surface.
         """
         full_text = ""
         last_pretext = ""  # most recent pre-tool narration, kept as a fallback
         stream_fn = self._client.messages.stream
-        monarch_attached = False
-        if want_monarch and allow_monarch:
-            try:
-                from integrations.monarch_oauth import get_monarch_token
-                base_kwargs["mcp_servers"] = [{
-                    "type": "url",
-                    "name": "monarch",
-                    "url": _MONARCH_MCP_URL,
-                    "authorization_token": get_monarch_token(),
-                }]
-                base_kwargs["betas"] = [_MCP_BETA]
-                # Keep local and MCP tool calls on separate rounds so a local
-                # tool_use never shares a turn with an mcp_tool_use (which would
-                # leave a dangling, unpaired block).
-                base_kwargs["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
-                stream_fn = self._client.beta.messages.stream
-                monarch_attached = True
-                log.info("using beta endpoint with monarch mcp_servers attached")
-            except Exception as exc:
-                log.error("Monarch token error, falling back to plain endpoint: %s", exc, exc_info=True)
+        any_remote_mcp = False
+        servers_payload: list[dict] = []
+        if allow_mcp:
+            if want_monarch:
+                try:
+                    from integrations.monarch_oauth import get_monarch_token
+                    servers_payload.append({
+                        "type": "url",
+                        "name": "monarch",
+                        "url": _MONARCH_MCP_URL,
+                        "authorization_token": get_monarch_token(),
+                    })
+                except Exception as exc:
+                    log.error("Monarch token error, dropping it for this turn: %s", exc, exc_info=True)
+            for spec in mcp_servers_to_attach:
+                from integrations.mcp_auth import resolve_token
+                token = resolve_token(spec)
+                if spec.auth_type == "bearer_env" and not token:
+                    # A required token that didn't resolve — skip attaching
+                    # rather than send a request that would just 401 mid-turn.
+                    log.warning(
+                        "mcp server %r: no token resolved; skipping for this turn", spec.name,
+                    )
+                    continue
+                entry = {"type": "url", "name": spec.name, "url": spec.url}
+                if token:
+                    entry["authorization_token"] = token
+                servers_payload.append(entry)
+
+        if servers_payload:
+            base_kwargs["mcp_servers"] = servers_payload
+            base_kwargs["betas"] = [_MCP_BETA]
+            # Keep local and MCP tool calls on separate rounds so a local
+            # tool_use never shares a turn with an mcp_tool_use (which would
+            # leave a dangling, unpaired block).
+            base_kwargs["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
+            stream_fn = self._client.beta.messages.stream
+            any_remote_mcp = True
+            log.info(
+                "using beta endpoint with %d mcp server(s) attached: %s",
+                len(servers_payload), ", ".join(s["name"] for s in servers_payload),
+            )
         elif want_web:
             base_kwargs["tools"] = TOOLS + [_WEB_SEARCH_TOOL]
             base_kwargs["tool_choice"] = {"type": "auto"}
@@ -708,9 +785,10 @@ class ClaudeClient:
             return full_text
 
         except Exception as exc:  # noqa: BLE001
-            # A transient Monarch MCP outage is recoverable — signal the caller
-            # to retry without it. Everything else propagates for the caller to
-            # roll back the turn and surface a readable error.
-            if monarch_attached and _is_mcp_connection_error(exc):
+            # A transient MCP outage (Monarch or a configured server) is
+            # recoverable — signal the caller to retry without any of them.
+            # Everything else propagates for the caller to roll back the
+            # turn and surface a readable error.
+            if any_remote_mcp and _is_mcp_connection_error(exc):
                 raise _MonarchUnavailable from exc
             raise

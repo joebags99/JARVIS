@@ -42,6 +42,19 @@ DEFAULT_CATEGORIES = ["Daedabyte", "General", "Brightpoint", "DnD"]
 # same convention as persona_dials.json; values here win over the .env defaults.
 USER_CONFIG_FILE = ROOT_DIR / "jarvis_config.json"
 
+# User-defined MCP (Model Context Protocol) servers beyond the built-in Monarch
+# integration. Gitignored (may reference env vars holding secrets); copy
+# mcp_servers.example.json to get started. Absence is not an error — just no
+# extra servers configured.
+MCP_SERVERS_FILE = ROOT_DIR / "mcp_servers.json"
+
+# auth.type values integrations/mcp_auth.py knows how to resolve into a bearer
+# token. Duplicated here (rather than importing integrations.mcp_auth) so
+# config.py — which nothing in app/ or integrations/ depends on — never has to
+# import back out of integrations/; mcp_auth.resolve_token() is the single
+# runtime source of truth for what each type actually does.
+_KNOWN_MCP_AUTH_TYPES = frozenset({"none", "bearer_env"})
+
 
 # ── UI color palette (from the spec) ─────────────────────────────────────────
 @dataclass(frozen=True)
@@ -55,6 +68,24 @@ class Palette:
     text_muted: str = "#666666"
     error: str = "#cf6679"
     success: str = "#4caf79"
+
+
+# ── A user-configured MCP server (mcp_servers.json) ──────────────────────────
+@dataclass(frozen=True)
+class McpServerSpec:
+    """One entry from mcp_servers.json, validated and defaulted.
+
+    Frozen/hashable (unlike ``Config`` itself, which is a plain mutable
+    dataclass) since these are immutable, parsed-once snapshots — matches
+    ``Palette``'s reasoning above, not ``Config``'s.
+    """
+
+    name: str
+    url: str
+    enabled: bool = True
+    auth_type: str = "none"       # "none" | "bearer_env"
+    auth_env_var: str = ""        # only used when auth_type == "bearer_env"
+    keywords: tuple[str, ...] = ()  # empty = always-attach whenever enabled
 
 
 def _get(name: str, default: str = "") -> str:
@@ -100,6 +131,68 @@ def _read_user_config() -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _read_mcp_servers_config() -> dict:
+    """Read the gitignored mcp_servers.json. Returns {} if absent or unreadable."""
+    if not MCP_SERVERS_FILE.exists():
+        return {}
+    try:
+        data = json.loads(MCP_SERVERS_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _resolve_extra_mcp_servers() -> list["McpServerSpec"]:
+    """Parse mcp_servers.json's ``servers`` array into validated specs.
+
+    An entry missing ``name``/``url``, naming an unknown ``auth.type``, or
+    named "monarch" (which would collide with the built-in Monarch entry in
+    the same API-level ``mcp_servers`` list) is skipped with a warning rather
+    than raising — one bad entry must never stop JARVIS from starting.
+    Duplicate names keep the last entry (also warned).
+    """
+    raw = _read_mcp_servers_config().get("servers")
+    if not isinstance(raw, list):
+        return []
+    from app.logging_setup import get_logger  # lazy: avoid a config<->logging cycle
+    log = get_logger("config")
+
+    by_name: dict[str, McpServerSpec] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        url = str(entry.get("url") or "").strip()
+        if not name or not url:
+            log.warning("mcp_servers.json: skipping entry missing name/url: %r", entry)
+            continue
+        if name.lower() == "monarch":
+            log.warning(
+                "mcp_servers.json: skipping entry named 'monarch' — that name is "
+                "reserved for the built-in Monarch Money integration"
+            )
+            continue
+        auth = entry.get("auth") or {"type": "none"}
+        auth_type = str(auth.get("type") or "none")
+        if auth_type not in _KNOWN_MCP_AUTH_TYPES:
+            log.warning(
+                "mcp_servers.json: server %r has unknown auth.type %r; skipping "
+                "(known types: %s)", name, auth_type, ", ".join(sorted(_KNOWN_MCP_AUTH_TYPES)),
+            )
+            continue
+        if name in by_name:
+            log.warning("mcp_servers.json: duplicate server name %r; keeping the last one", name)
+        by_name[name] = McpServerSpec(
+            name=name,
+            url=url,
+            enabled=bool(entry.get("enabled", True)),
+            auth_type=auth_type,
+            auth_env_var=str(auth.get("env_var") or ""),
+            keywords=tuple(str(k).strip().lower() for k in (entry.get("keywords") or []) if str(k).strip()),
+        )
+    return list(by_name.values())
 
 
 def _clean_categories(categories: list[str]) -> list[str]:
@@ -300,6 +393,12 @@ class Config:
         default_factory=lambda: _get("MONARCH_ENABLED").lower() in ("true", "1", "yes")
     )
 
+    # Additional MCP servers beyond Monarch, defined in mcp_servers.json (copy
+    # mcp_servers.example.json to get started) — JARVIS attaches whichever ones
+    # are relevant to a given message (see claude_client._server_wanted), same
+    # keyword-or-sticky mechanism Monarch already uses for finance topics.
+    extra_mcp_servers: list[McpServerSpec] = field(default_factory=_resolve_extra_mcp_servers)
+
     # Spotify — Web API playback control via OAuth (Authorization Code + PKCE,
     # so only the client id is needed). Requires Spotify Premium and an open
     # Spotify device to control playback. First music request opens a browser.
@@ -464,6 +563,10 @@ class Config:
              else "set SPOTIFY_ENABLED=true + SPOTIFY_CLIENT_ID"),
             ("Monarch Money", self.monarch_enabled,
              "enabled (MCP)" if self.monarch_enabled else "set MONARCH_ENABLED=true"),
+            ("Extra MCP servers", bool(self.extra_mcp_servers),
+             (f"{len(self.extra_mcp_servers)} configured "
+              f"({', '.join(s.name for s in self.extra_mcp_servers if s.enabled)})")
+             if self.extra_mcp_servers else "add mcp_servers.json (see mcp_servers.example.json)"),
             ("Obsidian vault", self.obsidian_available,
              f"vault={self.obsidian_vault_path}" if self.obsidian_available
              else "set OBSIDIAN_ENABLED=true + OBSIDIAN_VAULT_PATH"),

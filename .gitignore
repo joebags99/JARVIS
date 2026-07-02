@@ -32,6 +32,10 @@ name_corrections.json
 # Settings-panel overrides (your categories, etc.)
 jarvis_config.json
 
+# User-defined MCP server list (may reference env vars holding secrets;
+# copy mcp_servers.example.json to get started)
+mcp_servers.json
+
 # Long-term memory store (your facts + past session summaries)
 memory.db
 memory.db-journal

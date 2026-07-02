@@ -1,0 +1,19 @@
+{
+  "_comment": "Copy to mcp_servers.json to attach additional MCP servers beyond the built-in Monarch Money integration. Each entry's tools run server-side by Anthropic against the url you give it -- only add servers you trust. auth.type is 'none' (no token) or 'bearer_env' (reads a static token from the named .env var). keywords is optional: omit or leave empty to always attach the server whenever enabled; list words/phrases to only attach it when a message mentions one (same behavior Monarch already uses for finance topics).",
+  "servers": [
+    {
+      "name": "example-server",
+      "url": "https://mcp.example.com/mcp",
+      "enabled": false,
+      "auth": {"type": "none"},
+      "keywords": []
+    },
+    {
+      "name": "example-bearer-server",
+      "url": "https://mcp.example.com/mcp",
+      "enabled": false,
+      "auth": {"type": "bearer_env", "env_var": "EXAMPLE_MCP_TOKEN"},
+      "keywords": ["example", "widget"]
+    }
+  ]
+}

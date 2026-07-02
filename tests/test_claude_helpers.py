@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app import claude_client as cc
+from app.config import McpServerSpec
 
 
 def test_looks_financial():
@@ -57,6 +58,38 @@ def test_is_transient_api_error():
     assert cc._is_transient_api_error(Exception("Overloaded"))
     assert cc._is_transient_api_error(Exception("rate limit exceeded"))
     assert not cc._is_transient_api_error(ValueError("bad input"))
+
+
+def _spec(**over) -> McpServerSpec:
+    defaults = dict(name="s", url="https://x.example.com/mcp")
+    defaults.update(over)
+    return McpServerSpec(**defaults)
+
+
+def test_server_wanted_no_keywords_always_true():
+    spec = _spec(keywords=())
+    assert cc._server_wanted(spec, "anything at all", was_active=False, other_sticky_topic_now=False)
+    assert cc._server_wanted(spec, "anything at all", was_active=False, other_sticky_topic_now=True)
+
+
+def test_server_wanted_keyword_match_now():
+    spec = _spec(keywords=("widget",))
+    assert cc._server_wanted(spec, "tell me about my widget", was_active=False, other_sticky_topic_now=False)
+
+
+def test_server_wanted_sticky_when_previously_active():
+    spec = _spec(keywords=("widget",))
+    assert cc._server_wanted(spec, "what about yesterday?", was_active=True, other_sticky_topic_now=False)
+
+
+def test_server_wanted_sticky_broken_by_other_topic():
+    spec = _spec(keywords=("widget",))
+    assert not cc._server_wanted(spec, "what's for dinner?", was_active=True, other_sticky_topic_now=True)
+
+
+def test_server_wanted_no_match_not_active_not_sticky():
+    spec = _spec(keywords=("widget",))
+    assert not cc._server_wanted(spec, "what's on my calendar", was_active=False, other_sticky_topic_now=False)
 
 
 def test_history_to_lines_text_blocks_only():

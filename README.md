@@ -443,6 +443,47 @@ de-duplicated entities, and their graph color all live in the **taxonomy**
 JARVIS will scaffold the folder, stamp the new `type:`, color it in the graph, and
 (for `entity: true`) de-duplicate names in it — all automatically.
 
+### 7h. (Optional) Monarch Money & additional MCP servers
+JARVIS can connect to remote [MCP](https://modelcontextprotocol.io) servers —
+Anthropic calls their tools directly, server-side, so JARVIS never runs their
+code locally.
+
+**Monarch Money** (built in): connects via Monarch's official MCP server using
+OAuth — no password stored. Set `MONARCH_ENABLED=true` in `.env`, then on your
+first financial question a browser opens to authorize. The token is cached to
+`tokens/monarch_oauth.json` and refreshes silently; re-auth is only needed if
+you revoke access.
+
+**Any other MCP server**: copy `mcp_servers.example.json` to `mcp_servers.json`
+and list them there:
+```json
+{
+  "servers": [
+    {
+      "name": "my-server",
+      "url": "https://mcp.example.com/mcp",
+      "enabled": true,
+      "auth": {"type": "bearer_env", "env_var": "MY_MCP_TOKEN"},
+      "keywords": ["widget", "gadget"]
+    }
+  ]
+}
+```
+- `auth.type` is `"none"` (no token) or `"bearer_env"` (reads a static bearer
+  token from the named `.env` variable — set `MY_MCP_TOKEN=...` in `.env` too).
+- `keywords` is optional: omit or leave empty to attach the server on every
+  message; list words/phrases to only attach it when a message mentions one
+  (the same keyword-triggered behavior Monarch already uses for finance
+  topics, so JARVIS isn't paying for tool definitions it won't use).
+- Multiple servers (Monarch included) can be attached in the same turn.
+- `mcp_servers.json` is gitignored — it's your personal server list, and may
+  reference env vars holding secrets.
+
+**Trust note**: any server you configure here has its tools invoked
+server-side by Anthropic against the URL you provide — the same trust model
+Monarch already has. Only point this at MCP servers you trust with whatever
+token and conversation data ends up going to them.
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
@@ -568,6 +609,8 @@ invalidating the cached prefix.
 | `OBSIDIAN_VAULT_PATH` | Absolute path to the vault folder (created if missing), e.g. `C:\Users\you\Documents\Brain`. |
 | `JARVIS_VAULT_CALLBACKS_ENABLED` | `true` to nudge once when a Sessions/ note's open items go stale. Default off. |
 | `JARVIS_VAULT_CALLBACK_DAYS` | How many days untouched before a nudge (default `4`). |
+| `MONARCH_ENABLED` | `true` to connect Monarch Money's MCP server (OAuth, browser auth on first use). Default off. |
+| *(`mcp_servers.json`)* | Additional MCP servers beyond Monarch — see "7h. (Optional) Monarch Money & additional MCP servers" above. File-based, not an env var; `bearer_env`-type entries reference an env var you set here. |
 
 ---
 
