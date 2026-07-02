@@ -13,3 +13,8 @@ requests>=2.31.0
 # Pure image I/O only (resize/encode) — no display needed, so it's safe here
 # unlike the native audio/whisper stack. Used by tests/test_screenshot.py.
 Pillow>=10.2.0
+# Pure-Python iCalendar parsing (no native deps) — both imported at module
+# load by integrations/outlook_ics.py, which tests/test_calendar_sources.py
+# exercises.
+icalendar>=5.0.0
+recurring-ical-events>=2.1.0

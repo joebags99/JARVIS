@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>JARVIS HUD</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+    background: transparent;
+    -webkit-user-select: none; user-select: none;
+  }
+  #card {
+    box-sizing: border-box;
+    width: 100%; height: 100%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    background: rgba(15, 15, 15, 0.88);
+    border: 1px solid #2a2a2a;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45), 0 0 16px rgba(0, 188, 212, 0.12);
+    font: 12px -apple-system, "Segoe UI", sans-serif;
+    color: #e8e8e8;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+  }
+  #card:hover {
+    border-color: #006f7e;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .icon {
+    flex: 0 0 auto;
+    opacity: 0.85;
+  }
+  .text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #meeting-row .text {
+    color: #e8e8e8;
+    font-weight: 600;
+  }
+  #weather-row .text {
+    color: #666666;
+  }
+  #bell-row {
+    color: #00bcd4;
+  }
+  #bell-row.hidden {
+    display: none;
+  }
+  #bell-badge {
+    flex: 0 0 auto;
+    min-width: 15px;
+    height: 15px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: #cf6679;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 15px;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <div id="card">
+    <div id="meeting-row" class="row"><span class="icon">&#128197;</span><span id="meeting-text" class="text">Loading…</span></div>
+    <div id="weather-row" class="row"><span class="icon">&#127777;&#65039;</span><span id="weather-text" class="text"></span></div>
+    <div id="bell-row" class="row hidden"><span class="icon">&#128276;</span><span id="bell-badge">0</span></div>
+  </div>
+  <script>
+    const card = document.getElementById("card");
+    const meetingText = document.getElementById("meeting-text");
+    const weatherText = document.getElementById("weather-text");
+    const bellRow = document.getElementById("bell-row");
+    const bellBadge = document.getElementById("bell-badge");
+
+    function callApi(method, ...args) {
+      if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api[method](...args);
+      }
+    }
+
+    // Called by Python (app/hud.py's Hud._eval) to push fresh data in.
+    function setMeeting(text) {
+      meetingText.textContent = text;
+    }
+
+    function setWeather(text) {
+      weatherText.textContent = text;
+    }
+
+    function setUnread(count) {
+      bellRow.classList.toggle("hidden", !count);
+      bellBadge.textContent = count > 99 ? "99+" : String(count);
+    }
+
+    card.addEventListener("click", () => callApi("open_overlay"));
+  </script>
+</body>
+</html>

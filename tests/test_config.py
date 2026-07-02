@@ -95,3 +95,20 @@ def test_resolve_extra_mcp_servers_dedupes_by_name_keeping_last(isolated_mcp_con
 def test_resolve_extra_mcp_servers_ignores_non_list_servers_key(isolated_mcp_config):
     _write(cfg.MCP_SERVERS_FILE, {"servers": "not-a-list"})
     assert cfg._resolve_extra_mcp_servers() == []
+
+
+# ── Ambient HUD (see app/hud.py) ──────────────────────────────────────────────
+
+def test_hud_enabled_defaults_false(monkeypatch):
+    monkeypatch.delenv("JARVIS_HUD_ENABLED", raising=False)
+    assert cfg.Config().hud_enabled is False
+
+
+def test_hud_enabled_true_from_env(monkeypatch):
+    monkeypatch.setenv("JARVIS_HUD_ENABLED", "true")
+    assert cfg.Config().hud_enabled is True
+
+
+def test_hud_position_defaults_top_left(monkeypatch):
+    monkeypatch.delenv("JARVIS_HUD_POSITION", raising=False)
+    assert cfg.Config().hud_position == "top-left"

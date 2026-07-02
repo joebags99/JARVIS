@@ -15,17 +15,15 @@ Behavior:
 
 from __future__ import annotations
 
-import ctypes
 import datetime as dt
 import json
-import sys
 import threading
-from ctypes import wintypes
 from pathlib import Path
 from typing import Callable
 
 from .config import CONFIG, NOTES_DIR
 from .logging_setup import get_logger
+from .screen import enable_real_transparency, screen_size
 
 log = get_logger("overlay")
 
@@ -48,52 +46,6 @@ STATUS_DONE = "Done"
 _UI_DIR = Path(__file__).resolve().parent.parent / "assets" / "ui"
 _INDEX_HTML = _UI_DIR / "index.html"
 _SELECTOR_HTML = _UI_DIR / "selector.html"
-
-
-def _screen_size() -> tuple[int, int]:
-    """Primary display size, used to position the overlay on startup."""
-    if sys.platform.startswith("win"):
-        try:
-            user32 = ctypes.windll.user32
-            return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-        except Exception:  # noqa: BLE001
-            pass
-    return 1920, 1080
-
-
-def _enable_real_transparency(title: str, alpha: int) -> None:
-    """Blend the whole window against the desktop with a constant alpha.
-
-    pywebview's own ``transparent=True`` only sets the WebView2 control's
-    background to transparent *inside* the host Form (avoiding a white
-    flash and giving the rounded corners clean edges) — the Form itself is
-    still a perfectly opaque top-level window as far as the desktop
-    compositor is concerned, which is why the window never actually showed
-    anything behind it no matter what alpha the CSS background used. Real
-    desktop blending needs the Win32 layered-window attribute, which
-    pywebview doesn't set up, so we do it ourselves here.
-    """
-    if not sys.platform.startswith("win"):
-        return
-    try:
-        user32 = ctypes.windll.user32
-        user32.FindWindowW.restype = wintypes.HWND
-        user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-        hwnd = user32.FindWindowW(None, title)
-        if not hwnd:
-            log.warning("could not find window handle for layered transparency")
-            return
-
-        GWL_EXSTYLE = -20
-        WS_EX_LAYERED = 0x00080000
-        LWA_ALPHA = 0x2
-
-        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
-        user32.SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA)
-        log.info("layered window transparency enabled (alpha=%d)", alpha)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("could not enable layered transparency: %s", exc)
 
 
 class _JSApi:
@@ -224,6 +176,15 @@ class Overlay:
         self._notifications: list[dict] = []
         self._unread_notifications = 0
 
+        # Set by main.py after construction, same pattern as
+        # wake_word_listener below — the ambient HUD (app/hud.py) needs to
+        # know when this window's own visibility changes (to auto-hide
+        # itself while the user is actively chatting) and when the unread
+        # notification count changes (to mirror the bell badge). None when
+        # the HUD is disabled or not yet wired up.
+        self.on_visibility_changed: Callable[[bool], None] | None = None
+        self.on_notifications_changed: Callable[[int], None] | None = None
+
         # Set by main.py after construction (mutual reference: the listener's
         # on_wake needs this Overlay, and this Overlay needs the listener to
         # pause/resume around every recording). None when wake word is off.
@@ -252,7 +213,7 @@ class Overlay:
         self.window.events.loaded += self._on_loaded
 
     def _initial_position(self) -> tuple[int, int]:
-        sw, sh = _screen_size()
+        sw, sh = screen_size()
         pos = CONFIG.window_position
         x = sw - WINDOW_W - MARGIN if "right" in pos else MARGIN
         y = sh - WINDOW_H - MARGIN if "bottom" in pos else MARGIN
@@ -282,7 +243,7 @@ class Overlay:
         # the window is shown (not created with hidden=True) — see the "hack to
         # make transparent window work" in its winforms backend. So we start
         # visible and hide ourselves now that the page has finished loading.
-        _enable_real_transparency("JARVIS", WINDOW_ALPHA_IDLE)
+        enable_real_transparency("JARVIS", WINDOW_ALPHA_IDLE)
         self.window.hide()
 
     def _eval(self, fn_name: str, *args) -> None:
@@ -300,8 +261,16 @@ class Overlay:
         self.window.show()
         self._set_focused(True)
         self._visible = True
+        self._notify_visibility(True)
         self.set_status(STATUS_IDLE)
         log.info("overlay shown")
+
+    def _notify_visibility(self, visible: bool) -> None:
+        if self.on_visibility_changed:
+            try:
+                self.on_visibility_changed(visible)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _set_focused(self, is_focused: bool) -> None:
         """Animate the window alpha toward fully opaque (focused) or idle (unfocused)."""
@@ -328,7 +297,7 @@ class Overlay:
                     return
                 alpha = round(start + (target - start) * i / steps)
                 self._current_alpha = alpha
-                _enable_real_transparency("JARVIS", alpha)
+                enable_real_transparency("JARVIS", alpha)
                 if i < steps:
                     cancel.wait(STEP_MS / 1000)
 
@@ -340,6 +309,7 @@ class Overlay:
             self._stop_recording()
         self.window.hide()
         self._visible = False
+        self._notify_visibility(False)
         log.info("overlay hidden")
 
     def toggle(self) -> None:
@@ -403,6 +373,7 @@ class Overlay:
         self._eval("resetEntry")
         self.window.hide()
         self._visible = False
+        self._notify_visibility(False)
         log.info("overlay closed and chat cleared")
 
     # ── Dragging ──────────────────────────────────────────────────────────────
@@ -572,7 +543,7 @@ class Overlay:
             return  # a capture is already in progress
         import webview
 
-        sw, sh = _screen_size()
+        sw, sh = screen_size()
         selector_api = _SelectorApi(
             on_select=self._finish_screenshot_capture,
             on_cancel=self._cancel_screenshot_capture,
@@ -777,11 +748,20 @@ class Overlay:
         del self._notifications[_MAX_NOTIFICATIONS:]
         self._unread_notifications += 1
         self._eval("pushNotification", entry, self._unread_notifications)
+        self._notify_unread_count()
 
     def _get_notifications(self) -> dict:
         """Snapshot for the notifications panel; opening it marks all read."""
         self._unread_notifications = 0
+        self._notify_unread_count()
         return {"items": list(self._notifications), "unread": 0}
+
+    def _notify_unread_count(self) -> None:
+        if self.on_notifications_changed:
+            try:
+                self.on_notifications_changed(self._unread_notifications)
+            except Exception:  # noqa: BLE001
+                pass
 
     def quit(self) -> None:
         try:

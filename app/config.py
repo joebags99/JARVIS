@@ -240,6 +240,15 @@ class Config:
     window_position: str = field(
         default_factory=lambda: _get("JARVIS_WINDOW_POSITION", "top-right")
     )
+    # Ambient HUD (app/hud.py): a small always-on-top widget separate from the
+    # main chat window, showing a meeting countdown/weather/unread-nudge
+    # count. Off by default like every other optional feature.
+    hud_enabled: bool = field(default_factory=lambda: _get_bool("JARVIS_HUD_ENABLED"))
+    # Default corner is the opposite one from window_position's own default
+    # ("top-right") so the two windows don't naturally overlap.
+    hud_position: str = field(
+        default_factory=lambda: _get("JARVIS_HUD_POSITION", "top-left")
+    )
     hotkey: str = field(default_factory=lambda: _get("JARVIS_HOTKEY"))
     # A second global hotkey that opens the drag-to-select screenshot capture
     # (see app/screenshot.py). Blank = off, same convention as `hotkey` above.
@@ -580,6 +589,9 @@ class Config:
             ("Wake word", self.wake_word_enabled,
              f"phrase={self.wake_word_phrase}" if self.wake_word_enabled
              else "set JARVIS_WAKE_WORD_ENABLED=true (needs openwakeword)"),
+            ("Ambient HUD", self.hud_enabled,
+             f"position={self.hud_position}" if self.hud_enabled
+             else "set JARVIS_HUD_ENABLED=true"),
         ]
 
 

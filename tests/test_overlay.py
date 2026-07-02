@@ -16,6 +16,8 @@ def _bare_overlay() -> Overlay:
     overlay = Overlay.__new__(Overlay)
     overlay._notifications = []
     overlay._unread_notifications = 0
+    overlay.on_notifications_changed = None
+    overlay.on_visibility_changed = None
     overlay._eval_calls: list[tuple[str, tuple]] = []
     overlay._eval = lambda fn, *args: overlay._eval_calls.append((fn, args))
     return overlay
@@ -62,3 +64,42 @@ def test_record_notification_trims_to_max_history():
     assert len(overlay._notifications) == _MAX_NOTIFICATIONS
     # Most recent survives the trim; oldest are dropped.
     assert overlay._notifications[0]["title"] == f"T{_MAX_NOTIFICATIONS + 9}"
+
+
+# ── Hooks consumed by app/hud.py ──────────────────────────────────────────────
+
+def test_record_notification_calls_on_notifications_changed():
+    overlay = _bare_overlay()
+    seen = []
+    overlay.on_notifications_changed = seen.append
+    overlay.record_notification("A", "1")
+    overlay.record_notification("B", "2")
+    assert seen == [1, 2]
+
+
+def test_get_notifications_calls_on_notifications_changed_with_zero():
+    overlay = _bare_overlay()
+    overlay.record_notification("A", "1")
+    seen = []
+    overlay.on_notifications_changed = seen.append
+    overlay._get_notifications()
+    assert seen == [0]
+
+
+def test_notify_unread_count_noop_when_no_hook_set():
+    overlay = _bare_overlay()
+    overlay.record_notification("A", "1")  # must not raise with hook left None
+
+
+def test_notify_visibility_calls_on_visibility_changed():
+    overlay = _bare_overlay()
+    seen = []
+    overlay.on_visibility_changed = seen.append
+    overlay._notify_visibility(True)
+    overlay._notify_visibility(False)
+    assert seen == [True, False]
+
+
+def test_notify_visibility_noop_when_no_hook_set():
+    overlay = _bare_overlay()
+    overlay._notify_visibility(True)  # must not raise with hook left None

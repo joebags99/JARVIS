@@ -79,6 +79,21 @@ def main() -> int:
         on_state_change=on_state_change,
     )
 
+    # Ambient HUD (optional) — a small always-on-top widget separate from the
+    # chat window. Constructed unconditionally (cheap, no-op unless enabled,
+    # same convention as ProactiveScheduler/WakeWordListener); wired to the
+    # overlay's visibility (auto-hide while chatting) and unread-notification
+    # count (mirrors the bell badge) via the two hooks Overlay exposes for
+    # exactly this. Built before on_quit() below so it can be a plain
+    # captured local — unlike tray/scheduler/listener, nothing here needs
+    # the _holder-dict forward-reference trick.
+    from app.hud import Hud
+
+    hud = Hud(on_click=overlay.show)
+    overlay.on_visibility_changed = hud.on_overlay_visibility_changed
+    overlay.on_notifications_changed = hud.set_unread_count
+    hud.start()
+
     # schedule(): run a callable safely regardless of calling thread.
     def schedule(fn) -> None:
         overlay.schedule(fn)
@@ -95,6 +110,7 @@ def main() -> int:
         listener = wakeword_holder.get("listener")
         if listener is not None:
             listener.stop()
+        hud.destroy()
         tray = tray_holder.get("tray")
         if tray is not None:
             tray.stop()

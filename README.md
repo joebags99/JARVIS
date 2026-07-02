@@ -17,6 +17,11 @@ calendars, and meeting notes.
   Briefing, Reload Context, Settings, and Quit.
 - **Floating overlay** — frameless, always-on-top, draggable, dark theme
   (`#0f0f0f` + cyan `#00bcd4`). Closes on `Esc` or click-away.
+- **Ambient HUD (optional)** — a small, separate always-on-top widget showing
+  your next meeting countdown, current weather, and unread proactive-nudge
+  count, so JARVIS stays glanceable on your desktop even when you're not
+  actively chatting. Auto-hides while the main window is open. Off by default
+  (`JARVIS_HUD_ENABLED`).
 - **Type or talk** — push-to-talk voice via local `faster-whisper` (no audio
   ever leaves your machine; transcription is free and offline).
 - **Wake word (optional)** — say "Hey JARVIS" for hands-free activation, on top
@@ -85,6 +90,11 @@ calendars, and meeting notes.
   spending and how well caching is working (`python -m app.usage_report`).
 - **Graceful degradation** — missing mic, missing calendar creds, or a missing
   API key are handled with clear messages, never a crash.
+- **MCP plug-in support (optional)** — attach any remote
+  [MCP](https://modelcontextprotocol.io) server (Monarch Money is built in;
+  anything else via `mcp_servers.json`) so JARVIS grows new abilities without
+  code changes. Servers attach only when a message is actually relevant
+  (keyword-triggered, same mechanism Monarch already uses for finance topics).
 
 ---
 
@@ -484,6 +494,19 @@ server-side by Anthropic against the URL you provide — the same trust model
 Monarch already has. Only point this at MCP servers you trust with whatever
 token and conversation data ends up going to them.
 
+### 7i. (Optional) Ambient HUD
+A small, separate always-on-top widget — next meeting countdown, current
+weather, and the unread count from the notification bell — so JARVIS is
+glanceable on your desktop even when the main chat window is closed.
+
+Set `JARVIS_HUD_ENABLED=true` in `.env`. It anchors to a screen corner
+(`JARVIS_HUD_POSITION`, default `top-left` — the opposite corner from the
+main window's own default, so they don't overlap), refreshes itself in the
+background (meeting countdown every 5 minutes, weather every 15), and
+auto-hides whenever you open the main overlay to chat, reappearing once you
+close it again. Click the HUD to open the full overlay. No tray toggle for
+this one — it's a set-and-forget config flag, same as wake word.
+
 ### 8. Add your personal context
 ```bash
 cp context/profile.example.md context/profile.md
@@ -595,6 +618,8 @@ invalidating the cached prefix.
 | `JARVIS_WAKE_WORD_ENABLED` | `true` for hands-free "Hey JARVIS" activation on top of push-to-talk. Default off. |
 | `JARVIS_WAKE_WORD_PHRASE` | A bundled openWakeWord phrase, default `hey_jarvis`. |
 | `JARVIS_WAKE_WORD_THRESHOLD` | Detection confidence 0-1 (default `0.5`) — tune after trying it live. |
+| `JARVIS_HUD_ENABLED` | `true` for a small always-on-top widget (meeting countdown/weather/unread count) separate from the chat window. Default off. |
+| `JARVIS_HUD_POSITION` | `top-right` / `top-left` / `bottom-right` / `bottom-left` (default `top-left`). |
 | `TTS_ENABLED` | `true` to start with spoken replies on (toggle live anytime). Default off. |
 | `TTS_ENGINE` | `edge` (free neural) / `system` (offline pyttsx3) / `elevenlabs` (premium). |
 | `TTS_VOICE` | Engine-specific voice (blank = engine default). |
